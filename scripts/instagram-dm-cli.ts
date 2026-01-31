@@ -296,6 +296,63 @@ const commands = {
     console.log('✅ Done');
   },
 
+  'read-all-tabs': async () => {
+    console.log('\n📬 Reading all Instagram DM tabs...\n');
+    
+    // Navigate to inbox first
+    await execAsync(`osascript -e 'tell application "Safari" to set URL of front document to "https://www.instagram.com/direct/inbox/"'`);
+    await wait(3000);
+    
+    const tabs = ['Primary', 'General', 'Requests'];
+    const results: Record<string, string> = {};
+    
+    for (const tab of tabs) {
+      console.log(`\n=== ${tab.toUpperCase()} ===`);
+      
+      // Click tab
+      await safari(`
+        (function() {
+          var tabs = document.querySelectorAll('[role="tab"]');
+          for (var i = 0; i < tabs.length; i++) {
+            if (tabs[i].innerText.includes('${tab}')) {
+              tabs[i].click();
+              return 'clicked';
+            }
+          }
+          return 'not found';
+        })()
+      `);
+      await wait(2000);
+      
+      // Get content
+      const content = await safari(`document.body.innerText.substring(0, 2000)`);
+      results[tab] = content;
+      console.log(content.split('\n').slice(10, 35).join('\n'));
+    }
+    
+    // Try Hidden Requests
+    console.log('\n=== HIDDEN REQUESTS ===');
+    await safari(`
+      (function() {
+        var els = document.querySelectorAll('a, div[role="button"], span');
+        for (var i = 0; i < els.length; i++) {
+          if ((els[i].innerText || '').includes('Hidden Requests')) {
+            els[i].click();
+            return 'clicked';
+          }
+        }
+        return 'not found';
+      })()
+    `);
+    await wait(2000);
+    
+    const hiddenContent = await safari(`document.body.innerText.substring(0, 1500)`);
+    results['Hidden Requests'] = hiddenContent;
+    console.log(hiddenContent.split('\n').slice(5, 20).join('\n'));
+    
+    console.log('\n✅ Done reading all tabs');
+  },
+
   'help': async () => {
     console.log(`
 Instagram DM CLI - Reproducible Commands
@@ -314,6 +371,7 @@ Commands:
   type-msg <text>      Type a message
   send                 Send the typed message
   dm <user> <msg>      Full workflow: open, type, send
+  read-all-tabs        Read all tabs (Primary, General, Requests, Hidden)
 
 Examples:
   npx tsx scripts/instagram-dm-cli.ts go-inbox
