@@ -59,36 +59,31 @@ function getReadyVideos(): string[] {
 }
 
 /**
- * Send video to MediaPoster Smart Queue Manager
- * Uses /api/external/smart-schedule - MediaPoster decides optimal times
+ * Send video to MediaPoster via Video Ready Webhook
+ * Uses /api/webhooks/video-ready (tested and working)
  */
 async function sendToMediaPoster(videoPath: string, config: ScheduleConfig): Promise<PostResult> {
   const filename = path.basename(videoPath);
   const baseName = path.basename(videoPath, '.mp4').replace('_ready', '');
   
   try {
-    // Use /api/external/submit endpoint with video_path for local files
-    // Build targets with scheduled times (1 hour apart per platform)
-    const baseTime = new Date();
-    baseTime.setHours(baseTime.getHours() + 1, 0, 0, 0); // Start 1 hour from now
-    
-    const targets = config.platforms.map((platform, index) => ({
-      platform,
-      account_id: platform === 'tiktok' ? '710' : platform === 'youtube' ? '228' : '807',
-      scheduled_at: new Date(baseTime.getTime() + (index * 60 * 60 * 1000)).toISOString(),
-    }));
-    
-    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/external/submit`, {
+    // Use the working webhook endpoint
+    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/webhooks/video-ready`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        video_path: videoPath,  // Local path - MediaPoster handles directly
-        title: `Badass Marathon - ${baseName}`,
-        caption: `🔥 Daily motivation! #badass #motivation #ai #sora`,
-        hashtags: ['#badass', '#motivation', '#ai', '#sora', '#viral'],
-        targets,  // Explicit targets with times
-        source_id: `safari-${baseName}-${Date.now()}`,
-        source_system: 'safari-automation-hq-pipeline',
+        video_path: videoPath,
+        source: 'sora',
+        character: config.character,
+        platforms: config.platforms,
+        auto_publish: false,  // Queue for review
+        metadata: {
+          title: `Badass Marathon - ${baseName}`,
+          caption: `🔥 Daily motivation! #badass #motivation #ai #sora`,
+          series: 'badass-marathon',
+          processed_by: 'safari-automation-hq-pipeline',
+          scheduled_date: new Date().toISOString().split('T')[0],
+        },
       }),
     });
     
