@@ -43,6 +43,19 @@ import {
   fullSync,
 } from './services/sync-service.js';
 
+import {
+  registerWebhook,
+  unregisterWebhook,
+  getWebhooks,
+  getWebhook,
+  updateWebhook,
+  dispatchEvent,
+  getEventLog,
+  emitSyncCompleted,
+  emitMessageSent,
+  type WebhookEvent,
+} from './services/webhook-service.js';
+
 // Load environment
 dotenv.config();
 
@@ -373,6 +386,110 @@ app.get('/api/mediaposter/recent', async (req: Request, res: Response) => {
   }
 });
 
+// ===== WEBHOOKS =====
+
+app.get('/api/webhooks', (req: Request, res: Response) => {
+  const webhooks = getWebhooks();
+  res.json({ webhooks, count: webhooks.length });
+});
+
+app.get('/api/webhooks/:id', (req: Request, res: Response) => {
+  const webhook = getWebhook(req.params.id);
+  if (!webhook) {
+    res.status(404).json({ error: 'Webhook not found' });
+    return;
+  }
+  res.json({ webhook });
+});
+
+app.post('/api/webhooks', (req: Request, res: Response) => {
+  try {
+    const { url, events, secret } = req.body;
+    
+    if (!url || !events || !Array.isArray(events)) {
+      res.status(400).json({ error: 'url and events array required' });
+      return;
+    }
+    
+    const webhook = registerWebhook(url, events as WebhookEvent[], secret);
+    res.json({ webhook });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.put('/api/webhooks/:id', (req: Request, res: Response) => {
+  try {
+    const { active, events, url } = req.body;
+    const updated = updateWebhook(req.params.id, { active, events, url });
+    
+    if (!updated) {
+      res.status(404).json({ error: 'Webhook not found' });
+      return;
+    }
+    
+    res.json({ webhook: updated });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.delete('/api/webhooks/:id', (req: Request, res: Response) => {
+  const deleted = unregisterWebhook(req.params.id);
+  res.json({ deleted });
+});
+
+app.get('/api/webhooks/events/log', (req: Request, res: Response) => {
+  const limit = parseInt(req.query.limit as string) || 50;
+  const log = getEventLog(limit);
+  res.json({ events: log, count: log.length });
+});
+
+app.post('/api/webhooks/test', async (req: Request, res: Response) => {
+  try {
+    const { event, data } = req.body;
+    
+    if (!event) {
+      res.status(400).json({ error: 'event required' });
+      return;
+    }
+    
+    const result = await dispatchEvent(event as WebhookEvent, data || { test: true });
+    res.json({ event, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// ===== INCOMING WEBHOOKS (from MediaPoster) =====
+
+app.post('/api/incoming/mediaposter', async (req: Request, res: Response) => {
+  try {
+    const { event, data } = req.body;
+    
+    console.log(`[Incoming] MediaPoster event: ${event}`);
+    
+    // Handle different MediaPoster events
+    switch (event) {
+      case 'video.posted':
+        // A video was posted - potentially notify contacts interested in the topic
+        await dispatchEvent('mediaposter.video_posted', data);
+        break;
+        
+      case 'schedule.updated':
+        await dispatchEvent('mediaposter.schedule_updated', data);
+        break;
+        
+      default:
+        console.log(`[Incoming] Unknown MediaPoster event: ${event}`);
+    }
+    
+    res.json({ received: true, event });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // ===== START SERVER =====
 
 const PORT = parseInt(process.env.CRM_SERVER_PORT || process.env.PORT || '3200');
@@ -410,6 +527,15 @@ Endpoints:
   GET  /api/mediaposter/videos     - List videos
   GET  /api/mediaposter/schedule   - Get posting schedule
   GET  /api/mediaposter/recent     - Recent posts
+
+  GET  /api/webhooks               - List webhooks
+  POST /api/webhooks               - Register webhook
+  PUT  /api/webhooks/:id           - Update webhook
+  DELETE /api/webhooks/:id         - Delete webhook
+  GET  /api/webhooks/events/log    - Event log
+  POST /api/webhooks/test          - Test dispatch event
+
+  POST /api/incoming/mediaposter   - Receive MediaPoster events
 `);
 });
 

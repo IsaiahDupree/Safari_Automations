@@ -117,6 +117,109 @@ MEDIAPOSTER_SUPABASE_KEY=your-key
 WEBHOOK_SECRET=your-secret
 ```
 
+## Webhooks
+
+### Registering a Webhook
+
+```bash
+curl -X POST http://localhost:3200/api/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://your-server/webhook",
+    "events": ["message.sent", "contact.score_changed"],
+    "secret": "your-secret-key"
+  }'
+```
+
+### Available Events
+
+| Event | Description |
+|-------|-------------|
+| `contact.created` | New contact added |
+| `contact.updated` | Contact info changed |
+| `contact.score_changed` | Relationship score updated |
+| `message.sent` | DM sent successfully |
+| `message.received` | DM received |
+| `message.failed` | DM send failed |
+| `sync.completed` | Instagram sync finished |
+| `outreach.queued` | Message added to queue |
+| `outreach.sent` | Queued message sent |
+| `mediaposter.video_posted` | Video posted to platform |
+| `mediaposter.schedule_updated` | Schedule changed |
+
+### Webhook Payload
+
+```json
+{
+  "event": "message.sent",
+  "timestamp": "2024-01-15T14:30:00.000Z",
+  "data": {
+    "username": "johndoe",
+    "text": "Hello!",
+    "automated": true
+  }
+}
+```
+
+### Verifying Signatures
+
+```typescript
+import crypto from 'crypto';
+
+function verifyWebhook(payload: string, signature: string, secret: string): boolean {
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+  return signature === expected;
+}
+```
+
+### Incoming Webhooks from MediaPoster
+
+MediaPoster can notify CRM of events:
+
+```bash
+# MediaPoster calls this when a video is posted
+curl -X POST http://localhost:3200/api/incoming/mediaposter \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "video.posted",
+    "data": {
+      "video_id": "abc123",
+      "platform": "instagram",
+      "title": "New video"
+    }
+  }'
+```
+
+## MediaPoster Integration
+
+### Local Supabase Connection
+
+MediaPoster runs on local Supabase:
+
+| Setting | Value |
+|---------|-------|
+| API URL | `http://127.0.0.1:54321` |
+| Studio | `http://127.0.0.1:54323` |
+| Database | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` |
+
+Get keys:
+```bash
+cd /Users/isaiahdupree/Documents/Software/MediaPoster && supabase status
+```
+
+### Syncing Content to DMs
+
+```
+1. MediaPoster posts video → sends webhook to CRM
+2. CRM receives webhook at /api/incoming/mediaposter
+3. CRM queries contacts interested in topic
+4. CRM queues personalized DM outreach
+5. Safari Automation sends DMs (rate-limited)
+```
+
 ## Security
 
 1. **Internal network only** - Services communicate on localhost/LAN
