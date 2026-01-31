@@ -711,7 +711,7 @@ async function main() {
   }
   
   // Commands that don't require username
-  if (command === 'known' || command === 'lookup' || command === 'stats' || command === 'batch') {
+  if (command === 'known' || command === 'lookup' || command === 'stats' || command === 'batch' || command === 'search' || command === 'top' || command === 'recent') {
     // Handle below
   } else if (!username) {
     console.log('Error: Username required');
@@ -849,6 +849,45 @@ async function main() {
       console.log(`  Contacts:      ${stats.contacts}`);
       console.log(`  Conversations: ${stats.conversations}`);
       console.log(`  Messages:      ${stats.messages}`);
+      console.log(`  Patterns:      ${stats.patterns}`);
+      break;
+      
+    case 'search': {
+      const searchQuery = args.slice(1).join(' ');
+      if (!searchQuery) {
+        console.log('Usage: search <query>');
+        break;
+      }
+      console.log(`\n🔍 Searching messages for "${searchQuery}"...\n`);
+      const results = await searchMessages(searchQuery);
+      if (results.length === 0) {
+        console.log('  No messages found');
+      } else {
+        results.forEach((m, i) => {
+          const contact = (m as any).instagram_contacts;
+          const dir = m.is_outbound ? '→' : '←';
+          const who = contact?.instagram_username || 'unknown';
+          console.log(`  ${i + 1}. ${dir} @${who}: ${m.message_text?.substring(0, 60)}...`);
+        });
+      }
+      break;
+    }
+    
+    case 'top':
+      console.log('\n🏆 Top Contacts by Relationship Score:\n');
+      const topContacts = await getTopContacts(10);
+      topContacts.forEach((c, i) => {
+        console.log(`  ${i + 1}. @${c.instagram_username?.padEnd(25)} Score: ${c.relationship_score}`);
+      });
+      break;
+      
+    case 'recent':
+      console.log('\n📬 Recent Conversations:\n');
+      const recent = await getRecentConversations(10);
+      recent.forEach((c, i) => {
+        const contact = (c as any).instagram_contacts;
+        console.log(`  ${i + 1}. @${contact?.instagram_username?.padEnd(25)} ${c.last_message_preview?.substring(0, 40)}...`);
+      });
       break;
       
     case 'batch': {
@@ -981,16 +1020,114 @@ async function saveConversationToDatabase(
 /**
  * Get database stats
  */
-async function getDatabaseStats(): Promise<{ contacts: number; conversations: number; messages: number }> {
+async function getDatabaseStats(): Promise<{ contacts: number; conversations: number; messages: number; patterns: number }> {
   const { count: contacts } = await supabase.from('instagram_contacts').select('*', { count: 'exact', head: true });
   const { count: conversations } = await supabase.from('instagram_conversations').select('*', { count: 'exact', head: true });
   const { count: messages } = await supabase.from('instagram_messages').select('*', { count: 'exact', head: true });
+  const { count: patterns } = await supabase.from('automation_patterns').select('*', { count: 'exact', head: true });
   
   return {
     contacts: contacts || 0,
     conversations: conversations || 0,
-    messages: messages || 0
+    messages: messages || 0,
+    patterns: patterns || 0
   };
+}
+
+/**
+ * Search messages in database
+ */
+async function searchMessages(query: string, limit = 20): Promise<any[]> {
+  const { data } = await supabase
+    .from('instagram_messages')
+    .select(`
+      id,
+      message_text,
+      is_outbound,
+      sent_at,
+      instagram_contacts(instagram_username, display_name)
+    `)
+    .ilike('message_text', `%${query}%`)
+    .order('sent_at', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
+/**
+ * Get contact by username with full data
+ */
+async function getContactFromDB(username: string): Promise<any> {
+  const clean = username.replace('@', '').toLowerCase();
+  const { data } = await supabase
+    .from('instagram_contacts')
+    .select(`
+      *,
+      instagram_conversations(*),
+      instagram_messages(count)
+    `)
+    .eq('instagram_username', clean)
+    .single();
+  
+  return data;
+}
+
+/**
+ * Update relationship score based on interaction
+ */
+async function updateRelationshipScore(username: string, delta: number): Promise<boolean> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  const { data: contact } = await supabase
+    .from('instagram_contacts')
+    .select('id, relationship_score')
+    .eq('instagram_username', clean)
+    .single();
+  
+  if (!contact) return false;
+  
+  const newScore = Math.min(100, Math.max(0, (contact.relationship_score || 50) + delta));
+  
+  const { error } = await supabase
+    .from('instagram_contacts')
+    .update({ 
+      relationship_score: newScore,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', contact.id);
+  
+  return !error;
+}
+
+/**
+ * Get top contacts by relationship score
+ */
+async function getTopContacts(limit = 10): Promise<any[]> {
+  const { data } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name, relationship_score, total_messages_sent, total_messages_received')
+    .order('relationship_score', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
+/**
+ * Get recent conversations with message counts
+ */
+async function getRecentConversations(limit = 10): Promise<any[]> {
+  const { data } = await supabase
+    .from('instagram_conversations')
+    .select(`
+      id,
+      last_message_preview,
+      updated_at,
+      instagram_contacts(instagram_username, display_name)
+    `)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
 }
 
 // ============== Utility Functions ==============
