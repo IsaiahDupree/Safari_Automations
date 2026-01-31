@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "event.schema.json",
+  "title": "Event Envelope",
+  "type": "object",
+  "required": ["version", "event_id", "type", "emitted_at", "payload"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"],
+      "description": "Protocol version"
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique event identifier"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID to correlate related events"
+    },
+    "command_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID of the command that triggered this event"
+    },
+    "cursor": {
+      "type": "string",
+      "description": "Monotonic cursor for replay"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"],
+      "description": "Event severity level"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "status.changed",
+        "action.attempted",
+        "action.verified",
+        "selector.missing",
+        "rate.limited",
+        "human.required",
+        "artifact.captured",
+        "sora.prompt.submitted",
+        "sora.polling.started",
+        "sora.video.ready",
+        "sora.video.downloaded",
+        "sora.usage.checked"
+      ],
+      "description": "Event type"
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["instagram", "tiktok", "threads", "x", "sora"]
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event-specific payload"
+    }
+  }
+}

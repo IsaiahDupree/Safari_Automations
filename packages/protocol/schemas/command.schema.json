@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "command.schema.json",
+  "title": "Command Envelope",
+  "type": "object",
+  "required": ["version", "command_id", "type", "payload"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"],
+      "description": "Protocol version"
+    },
+    "command_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique command identifier"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Client-provided key for deduplication"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID to correlate related commands"
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp"
+    },
+    "requester": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string",
+          "description": "Name of requesting service"
+        },
+        "instance_id": {
+          "type": "string",
+          "description": "Instance identifier"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["instagram", "tiktok", "threads", "x", "sora"]
+        }
+      }
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "flow.run",
+        "action.run",
+        "selector.sweep",
+        "session.create",
+        "session.close",
+        "sora.generate",
+        "sora.batch",
+        "sora.poll",
+        "sora.download",
+        "sora.usage"
+      ],
+      "description": "Command type"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Command-specific payload"
+    }
+  }
+}
