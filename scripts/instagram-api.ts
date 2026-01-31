@@ -660,20 +660,19 @@ async function main() {
     console.log('  dm <username> <message>      - Send a DM');
     console.log('  full <username>              - Full analysis (profile + conversation)');
     console.log('  full <username> --save       - Full analysis + save to database');
+    console.log('  batch                        - Extract from ALL known contacts');
     console.log('  known                        - List all known handle mappings');
     console.log('  lookup <query>               - Lookup handle or display name');
     console.log('  stats                        - Show database statistics');
     console.log('\nExamples:');
-    console.log('  npx tsx scripts/instagram-api.ts profile saraheashley');
     console.log('  npx tsx scripts/instagram-api.ts messages owentheaiguy --save');
-    console.log('  npx tsx scripts/instagram-api.ts dm tonygaskins "Hey, checking in!"');
-    console.log('  npx tsx scripts/instagram-api.ts full chase.h.ai --save');
+    console.log('  npx tsx scripts/instagram-api.ts batch');
     console.log('  npx tsx scripts/instagram-api.ts stats');
     return;
   }
   
   // Commands that don't require username
-  if (command === 'known' || command === 'lookup' || command === 'stats') {
+  if (command === 'known' || command === 'lookup' || command === 'stats' || command === 'batch') {
     // Handle below
   } else if (!username) {
     console.log('Error: Username required');
@@ -812,6 +811,45 @@ async function main() {
       console.log(`  Conversations: ${stats.conversations}`);
       console.log(`  Messages:      ${stats.messages}`);
       break;
+      
+    case 'batch': {
+      console.log('\n📬 Batch Extraction from Known Contacts\n');
+      const handles = Object.keys(KNOWN_HANDLES);
+      let totalExtracted = 0;
+      let totalSaved = 0;
+      let successful = 0;
+      
+      for (let i = 0; i < handles.length; i++) {
+        const handle = handles[i];
+        const displayName = KNOWN_HANDLES[handle];
+        process.stdout.write(`[${i + 1}/${handles.length}] @${handle.padEnd(25)}`);
+        
+        try {
+          const conv = await extractConversationByUsername(handle);
+          if (conv && conv.messageCount > 0) {
+            const { saved } = await saveConversationToDatabase(conv.username, conv.displayName, conv.messages);
+            totalExtracted += conv.messageCount;
+            totalSaved += saved;
+            successful++;
+            console.log(`✅ ${conv.messageCount} msgs, ${saved} saved`);
+          } else {
+            console.log(`⏭️ no messages`);
+          }
+        } catch (e) {
+          console.log(`❌ error`);
+        }
+      }
+      
+      console.log(`\n📊 Batch Summary:`);
+      console.log(`  Contacts processed: ${handles.length}`);
+      console.log(`  Successful: ${successful}`);
+      console.log(`  Messages extracted: ${totalExtracted}`);
+      console.log(`  New messages saved: ${totalSaved}`);
+      
+      const finalStats = await getDatabaseStats();
+      console.log(`\n  Database total: ${finalStats.messages} messages`);
+      break;
+    }
       
     default:
       console.log(`Unknown command: ${command}`);
