@@ -409,6 +409,279 @@ async function extractProfileData(): Promise<TwitterProfile | null> {
   }
 }
 
+// ============== Database Operations ==============
+
+/**
+ * Save conversation to database
+ */
+async function saveConversationToDatabase(username: string, displayName: string, messages: TwitterMessage[]): Promise<{ contactId: string; saved: number }> {
+  // Upsert contact
+  const { data: contact, error: contactError } = await supabase
+    .from('twitter_contacts')
+    .upsert({
+      twitter_username: username.toLowerCase(),
+      display_name: displayName,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'twitter_username' })
+    .select('id')
+    .single();
+  
+  if (contactError || !contact) {
+    console.error('Error upserting contact:', contactError?.message);
+    return { contactId: '', saved: 0 };
+  }
+  
+  // Upsert conversation
+  const { data: conversation } = await supabase
+    .from('twitter_conversations')
+    .upsert({
+      contact_id: contact.id,
+      last_message_at: new Date().toISOString(),
+      last_message_preview: messages[messages.length - 1]?.text?.substring(0, 100) || '',
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'contact_id' })
+    .select('id')
+    .single();
+  
+  if (!conversation) return { contactId: contact.id, saved: 0 };
+  
+  // Insert messages
+  let saved = 0;
+  for (const msg of messages) {
+    const { error } = await supabase
+      .from('twitter_messages')
+      .insert({
+        conversation_id: conversation.id,
+        contact_id: contact.id,
+        message_text: msg.text,
+        is_outbound: msg.isOutbound,
+        sent_at: new Date().toISOString()
+      });
+    if (!error) saved++;
+  }
+  
+  return { contactId: contact.id, saved };
+}
+
+/**
+ * Get database stats
+ */
+async function getDatabaseStats(): Promise<{ contacts: number; conversations: number; messages: number }> {
+  const { count: contacts } = await supabase.from('twitter_contacts').select('*', { count: 'exact', head: true });
+  const { count: conversations } = await supabase.from('twitter_conversations').select('*', { count: 'exact', head: true });
+  const { count: messages } = await supabase.from('twitter_messages').select('*', { count: 'exact', head: true });
+  
+  return {
+    contacts: contacts || 0,
+    conversations: conversations || 0,
+    messages: messages || 0
+  };
+}
+
+// ============== Relationship Health Score (Revio Framework) ==============
+
+interface RelationshipScore {
+  total: number;
+  recency: number;
+  resonance: number;
+  needClarity: number;
+  valueDelivered: number;
+  reliability: number;
+  consent: number;
+  stage: string;
+  nextAction: string | null;
+}
+
+/**
+ * Calculate relationship health score (0-100)
+ */
+async function calculateRelationshipScore(username: string): Promise<RelationshipScore | null> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  const { data: contact } = await supabase
+    .from('twitter_contacts')
+    .select('*')
+    .eq('twitter_username', clean)
+    .single();
+  
+  if (!contact) return null;
+  
+  const lastTouch = contact.last_meaningful_touch ? new Date(contact.last_meaningful_touch) : null;
+  const daysSinceTouch = lastTouch ? (Date.now() - lastTouch.getTime()) / (1000 * 60 * 60 * 24) : 999;
+  const recency = daysSinceTouch <= 7 ? 20 : daysSinceTouch <= 14 ? 15 : daysSinceTouch <= 30 ? 10 : daysSinceTouch <= 60 ? 5 : 0;
+  
+  const resonance = Math.min(20, contact.resonance_score || 0);
+  const needClarity = Math.min(15, contact.need_clarity_score || 0);
+  const valueDelivered = Math.min(20, contact.value_delivered_score || 0);
+  const reliability = Math.min(15, contact.reliability_score || 0);
+  const consent = Math.min(10, contact.consent_level || 0);
+  
+  const total = recency + resonance + needClarity + valueDelivered + reliability + consent;
+  const stage = contact.relationship_stage || 'first_touch';
+  
+  let nextAction = null;
+  if (total < 40) nextAction = 'rewarm: low_friction';
+  else if (total < 60) nextAction = 'service: permission_to_help';
+  else if (total < 80) nextAction = 'friendship: check_in';
+  else if (stage === 'fit_repeats') nextAction = 'offer: permissioned_offer';
+  
+  return { total, recency, resonance, needClarity, valueDelivered, reliability, consent, stage, nextAction };
+}
+
+/**
+ * Record interaction to update scores
+ */
+async function recordInteraction(
+  username: string,
+  interactionType: 'reply_received' | 'value_delivered' | 'promise_kept' | 'consent_given' | 'trust_signal'
+): Promise<boolean> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  const { data: contact } = await supabase
+    .from('twitter_contacts')
+    .select('id, resonance_score, value_delivered_score, reliability_score, consent_level, trust_signals')
+    .eq('twitter_username', clean)
+    .single();
+  
+  if (!contact) return false;
+  
+  const updates: any = { 
+    last_meaningful_touch: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  
+  switch (interactionType) {
+    case 'reply_received':
+      updates.resonance_score = Math.min(20, (contact.resonance_score || 0) + 2);
+      break;
+    case 'value_delivered':
+      updates.value_delivered_score = Math.min(20, (contact.value_delivered_score || 0) + 5);
+      break;
+    case 'promise_kept':
+      updates.reliability_score = Math.min(15, (contact.reliability_score || 0) + 3);
+      break;
+    case 'consent_given':
+      updates.consent_level = Math.min(10, (contact.consent_level || 0) + 2);
+      break;
+    case 'trust_signal':
+      const signals = contact.trust_signals || [];
+      signals.push({ type: 'trust_signal', at: new Date().toISOString() });
+      updates.trust_signals = signals;
+      break;
+  }
+  
+  const { error } = await supabase
+    .from('twitter_contacts')
+    .update(updates)
+    .eq('id', contact.id);
+  
+  return !error;
+}
+
+/**
+ * Get next-best-action for a contact
+ */
+async function getNextBestAction(username: string): Promise<any> {
+  const score = await calculateRelationshipScore(username);
+  if (!score) return null;
+  
+  let lane = 'friendship';
+  if (score.total < 40) lane = 'rewarm';
+  else if (score.total < 60) lane = 'service';
+  else if (score.stage === 'fit_repeats') lane = 'offer';
+  else if (score.stage === 'post_win') lane = 'retention';
+  
+  const { data: actions } = await supabase
+    .from('next_best_actions')
+    .select('*')
+    .eq('lane', lane)
+    .eq('is_active', true);
+  
+  if (!actions || actions.length === 0) return null;
+  
+  const action = actions[Math.floor(Math.random() * actions.length)];
+  return { score, lane, action };
+}
+
+/**
+ * Detect fit signals from message text
+ */
+async function detectFitSignals(messageText: string): Promise<any[]> {
+  const { data: signals } = await supabase
+    .from('fit_signals')
+    .select('*')
+    .eq('is_active', true);
+  
+  if (!signals) return [];
+  
+  const detected: any[] = [];
+  const lowerText = messageText.toLowerCase();
+  
+  for (const signal of signals) {
+    const keywords = signal.signal_description.toLowerCase().split(' ');
+    const matches = keywords.filter((k: string) => k.length > 3 && lowerText.includes(k));
+    if (matches.length >= 2) {
+      detected.push({
+        product: signal.product,
+        signal: signal.signal_key,
+        description: signal.signal_description,
+        offer: signal.offer_template
+      });
+    }
+  }
+  
+  return detected;
+}
+
+/**
+ * Get contacts needing attention
+ */
+async function getContactsNeedingAttention(limit = 10): Promise<any[]> {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  
+  const { data } = await supabase
+    .from('twitter_contacts')
+    .select('twitter_username, display_name, relationship_score, last_meaningful_touch, relationship_stage')
+    .or(`last_meaningful_touch.lt.${thirtyDaysAgo},last_meaningful_touch.is.null`)
+    .order('relationship_score', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
+/**
+ * Get top contacts by relationship score
+ */
+async function getTopContacts(limit = 10): Promise<any[]> {
+  const { data } = await supabase
+    .from('twitter_contacts')
+    .select('twitter_username, display_name, relationship_score, total_messages_sent, total_messages_received')
+    .order('relationship_score', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
+/**
+ * Search messages in database
+ */
+async function searchMessages(query: string, limit = 20): Promise<any[]> {
+  const { data } = await supabase
+    .from('twitter_messages')
+    .select(`
+      id,
+      message_text,
+      is_outbound,
+      sent_at,
+      twitter_contacts(twitter_username, display_name)
+    `)
+    .ilike('message_text', `%${query}%`)
+    .order('sent_at', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
 // ============== Status & Diagnostics ==============
 
 /**
@@ -455,18 +728,28 @@ async function main() {
     console.log('  status                       - Check Twitter DM status');
     console.log('  navigate                     - Navigate to DMs inbox');
     console.log('  conversations                - List all conversations');
-    console.log('  open <conversation_id>       - Open a conversation');
-    console.log('  messages                     - Extract messages from current conversation');
-    console.log('  send <message>               - Send message to current conversation');
-    console.log('  dm <username> <message>      - Send DM to user by username');
+    console.log('  open <id>                    - Open a conversation');
+    console.log('  messages                     - Extract messages');
+    console.log('  send <message>               - Send message');
+    console.log('  dm <username> <message>      - Send DM to user');
     console.log('  profile <username>           - Extract profile data');
-    console.log('  explore                      - Explore current page DOM');
+    console.log('  stats                        - Database statistics');
+    console.log('  health <username>            - Relationship health score');
+    console.log('  nextaction <username>        - AI next-best-action');
+    console.log('  detect <text>                - Detect fit signals');
+    console.log('  attention                    - Contacts needing care');
+    console.log('  top                          - Top contacts by score');
+    console.log('  search <query>               - Search messages');
+    console.log('  explore                      - Explore DOM');
     console.log('\nExamples:');
-    console.log('  npx tsx scripts/twitter-api.ts status');
     console.log('  npx tsx scripts/twitter-api.ts conversations');
+    console.log('  npx tsx scripts/twitter-api.ts health elonmusk');
     console.log('  npx tsx scripts/twitter-api.ts dm elonmusk "Hello!"');
     return;
   }
+  
+  // Commands that don't require arguments
+  const noArgCommands = ['status', 'navigate', 'conversations', 'messages', 'stats', 'attention', 'top', 'explore'];
   
   switch (command) {
     case 'status': {
@@ -582,6 +865,126 @@ async function main() {
       break;
     }
     
+    case 'stats': {
+      const stats = await getDatabaseStats();
+      console.log('📊 Twitter Database Stats:\n');
+      console.log(`  Contacts:      ${stats.contacts}`);
+      console.log(`  Conversations: ${stats.conversations}`);
+      console.log(`  Messages:      ${stats.messages}`);
+      break;
+    }
+    
+    case 'health': {
+      const username = args[1];
+      if (!username) {
+        console.log('Usage: health <username>');
+        break;
+      }
+      console.log(`💚 Relationship Health Score for @${username}:\n`);
+      const health = await calculateRelationshipScore(username);
+      if (health) {
+        console.log(`  Total Score:     ${health.total}/100`);
+        console.log(`  ├─ Recency:      ${health.recency}/20`);
+        console.log(`  ├─ Resonance:    ${health.resonance}/20`);
+        console.log(`  ├─ Need Clarity: ${health.needClarity}/15`);
+        console.log(`  ├─ Value Given:  ${health.valueDelivered}/20`);
+        console.log(`  ├─ Reliability:  ${health.reliability}/15`);
+        console.log(`  └─ Consent:      ${health.consent}/10`);
+        console.log(`\n  Stage: ${health.stage}`);
+        if (health.nextAction) {
+          console.log(`  Next Action: ${health.nextAction}`);
+        }
+      } else {
+        console.log('  Contact not found');
+      }
+      break;
+    }
+    
+    case 'nextaction': {
+      const username = args[1];
+      if (!username) {
+        console.log('Usage: nextaction <username>');
+        break;
+      }
+      console.log(`🎯 Next Best Action for @${username}:\n`);
+      const nba = await getNextBestAction(username);
+      if (nba) {
+        console.log(`  Score: ${nba.score.total}/100 | Stage: ${nba.score.stage}`);
+        console.log(`  Lane:  ${nba.lane}`);
+        console.log(`\n  💬 Suggested message:`);
+        console.log(`  "${nba.action.action_text}"`);
+      } else {
+        console.log('  Contact not found');
+      }
+      break;
+    }
+    
+    case 'detect': {
+      const text = args.slice(1).join(' ');
+      if (!text) {
+        console.log('Usage: detect <message text>');
+        break;
+      }
+      console.log(`🔍 Detecting fit signals in: "${text.substring(0, 50)}..."\n`);
+      const fits = await detectFitSignals(text);
+      if (fits.length === 0) {
+        console.log('  No fit signals detected');
+      } else {
+        fits.forEach((f, i) => {
+          console.log(`  ${i + 1}. [${f.product}] ${f.signal}`);
+          console.log(`     Offer: "${f.offer}"`);
+        });
+      }
+      break;
+    }
+    
+    case 'attention': {
+      console.log('⚠️ Twitter Contacts Needing Attention:\n');
+      const needAttention = await getContactsNeedingAttention(10);
+      if (needAttention.length === 0) {
+        console.log('  All contacts are healthy!');
+      } else {
+        needAttention.forEach((c, i) => {
+          const lastTouch = c.last_meaningful_touch ? new Date(c.last_meaningful_touch).toLocaleDateString() : 'never';
+          console.log(`  ${i + 1}. @${c.twitter_username?.padEnd(25)} Last: ${lastTouch}`);
+        });
+      }
+      break;
+    }
+    
+    case 'top': {
+      console.log('🏆 Top Twitter Contacts:\n');
+      const top = await getTopContacts(10);
+      if (top.length === 0) {
+        console.log('  No contacts yet');
+      } else {
+        top.forEach((c, i) => {
+          console.log(`  ${i + 1}. @${c.twitter_username?.padEnd(25)} Score: ${c.relationship_score || 50}`);
+        });
+      }
+      break;
+    }
+    
+    case 'search': {
+      const query = args.slice(1).join(' ');
+      if (!query) {
+        console.log('Usage: search <query>');
+        break;
+      }
+      console.log(`🔍 Searching messages for "${query}"...\n`);
+      const results = await searchMessages(query);
+      if (results.length === 0) {
+        console.log('  No messages found');
+      } else {
+        results.forEach((m, i) => {
+          const dir = m.is_outbound ? '→' : '←';
+          const contact = (m as any).twitter_contacts;
+          console.log(`  ${i + 1}. ${dir} @${contact?.twitter_username}: ${m.message_text.substring(0, 60)}...`);
+        });
+      }
+      break;
+    }
+    
     default:
       console.log(`Unknown command: ${command}`);
       console.log('Run with no arguments for help.');
@@ -591,14 +994,32 @@ async function main() {
 main();
 
 export {
+  // Navigation
   navigateToDMs,
   navigateToConversation,
+  
+  // Conversations
   listConversations,
   openConversation,
   extractMessages,
   sendMessage,
   sendDMByUsername,
   extractProfileData,
+  
+  // Database
+  saveConversationToDatabase,
+  getDatabaseStats,
+  
+  // Relationship Scoring (Revio Framework)
+  calculateRelationshipScore,
+  recordInteraction,
+  getNextBestAction,
+  detectFitSignals,
+  getContactsNeedingAttention,
+  getTopContacts,
+  searchMessages,
+  
+  // Status
   getStatus,
   SELECTORS
 };
