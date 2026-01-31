@@ -1,11 +1,14 @@
 #!/usr/bin/env npx tsx
 /**
- * Daily MediaPoster Scheduler
+ * Daily MediaPoster Smart Scheduler
  * 
- * Sends videos from ready-to-post folder to MediaPoster External Scheduling API.
- * Videos are scheduled via Blotato for YouTube and TikTok posting.
+ * Sends videos to MediaPoster Smart Queue Manager for optimal posting.
+ * MediaPoster automatically decides the best posting times based on:
+ * - Platform rate limits (TikTok: 8/day, YouTube: 3/day)
+ * - Minimum spacing between posts
+ * - Current queue state
  * 
- * Uses: /api/external/submit endpoint
+ * Uses: /api/external/smart-schedule endpoint
  * Docs: MediaPoster/docs/EXTERNAL_SCHEDULING_API.md
  * 
  * Usage:
@@ -21,26 +24,10 @@ const READY_DIR = path.join(process.env.HOME || '', 'sora-videos/ready-to-post')
 const POSTED_DIR = path.join(process.env.HOME || '', 'sora-videos/posted');
 const MEDIAPOSTER_BASE_URL = process.env.MEDIAPOSTER_URL || 'http://localhost:5555';
 
-// Blotato Account IDs (from EXTERNAL_SCHEDULING_API.md)
-const BLOTATO_ACCOUNTS = {
-  tiktok: '710',      // @isaiah_dupree
-  youtube: '228',     // Isaiah Dupree
-  instagram: '807',   // @the_isaiah_dupree
-};
-
-interface ScheduleTarget {
-  platform: string;
-  account_id: string;
-  scheduled_at: string;
-  title?: string;
-  caption?: string;
-}
-
 interface ScheduleConfig {
   videosPerDay: number;
   platforms: string[];
   character: string;
-  postIntervalHours: number;  // Hours between TikTok and YouTube posts
 }
 
 interface PostResult {
@@ -55,7 +42,6 @@ const DEFAULT_CONFIG: ScheduleConfig = {
   videosPerDay: 2,           // Post 2 videos per day
   platforms: ['tiktok', 'youtube'],
   character: 'isaiahdupree',
-  postIntervalHours: 1,      // YouTube posts 1 hour after TikTok
 };
 
 /**
@@ -73,63 +59,24 @@ function getReadyVideos(): string[] {
 }
 
 /**
- * Build schedule targets for a video
- * Schedules TikTok first, then YouTube 1 hour later
+ * Send video to MediaPoster Smart Queue Manager
+ * Uses /api/external/smart-schedule - MediaPoster decides optimal times
  */
-function buildScheduleTargets(config: ScheduleConfig, baseTime: Date): ScheduleTarget[] {
-  const targets: ScheduleTarget[] = [];
-  
-  config.platforms.forEach((platform, index) => {
-    const accountId = BLOTATO_ACCOUNTS[platform as keyof typeof BLOTATO_ACCOUNTS];
-    if (!accountId) {
-      console.warn(`    ⚠️  Unknown platform: ${platform}`);
-      return;
-    }
-    
-    // Stagger posts by postIntervalHours
-    const scheduledTime = new Date(baseTime.getTime() + (index * config.postIntervalHours * 60 * 60 * 1000));
-    
-    targets.push({
-      platform,
-      account_id: accountId,
-      scheduled_at: scheduledTime.toISOString(),
-    });
-  });
-  
-  return targets;
-}
-
-/**
- * Send video to MediaPoster External Scheduling API
- * Uses /api/external/submit endpoint with Blotato account IDs
- */
-async function sendToMediaPoster(videoPath: string, config: ScheduleConfig, videoIndex: number): Promise<PostResult> {
+async function sendToMediaPoster(videoPath: string, config: ScheduleConfig): Promise<PostResult> {
   const filename = path.basename(videoPath);
   const baseName = path.basename(videoPath, '.mp4').replace('_ready', '');
   
-  // Calculate scheduled time (stagger videos throughout the day)
-  // First video at 12 PM, second at 3 PM, etc.
-  const baseTime = new Date();
-  baseTime.setHours(12 + (videoIndex * 3), 0, 0, 0);  // 12 PM, 3 PM, 6 PM...
-  
-  // If time has passed today, schedule for tomorrow
-  if (baseTime < new Date()) {
-    baseTime.setDate(baseTime.getDate() + 1);
-  }
-  
-  const targets = buildScheduleTargets(config, baseTime);
-  
   try {
-    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/external/submit`, {
+    // Use smart-schedule endpoint - MediaPoster decides optimal posting times
+    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/external/smart-schedule`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        video_url: `file://${videoPath}`,  // Local file path
-        video_path: videoPath,              // Alternative for local files
+        video_path: videoPath,
         title: `Badass Marathon - ${baseName}`,
         caption: `🔥 Daily motivation! #badass #motivation #ai #sora`,
         hashtags: ['#badass', '#motivation', '#ai', '#sora', '#viral'],
-        targets,
+        platforms: config.platforms,  // Just specify platforms, not times
         source_id: `safari-${baseName}-${Date.now()}`,
         source_system: 'safari-automation-hq-pipeline',
       }),
@@ -203,11 +150,12 @@ async function main() {
     console.log(`[${i + 1}/${toPost.length}] 📹 ${filename}`);
     
     if (dryRun) {
-      console.log(`    ⏭️  [DRY RUN] Would send to MediaPoster External API`);
-      console.log(`    🎯 Targets: TikTok (710), YouTube (228)`);
+      console.log(`    ⏭️  [DRY RUN] Would send to MediaPoster Smart Queue`);
+      console.log(`    🎯 Platforms: ${DEFAULT_CONFIG.platforms.join(', ')}`);
+      console.log(`    📅 MediaPoster will decide optimal posting times`);
       results.push({ video: filename, success: true, videoId: 'dry-run' });
     } else {
-      const result = await sendToMediaPoster(video, { ...DEFAULT_CONFIG, videosPerDay: limit }, i);
+      const result = await sendToMediaPoster(video, DEFAULT_CONFIG);
       results.push(result);
       
       if (result.success) {
