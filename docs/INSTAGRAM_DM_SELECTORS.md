@@ -494,3 +494,138 @@ Message requests
 Open a chat to get more info about who's messaging you. 
 They won't know you've seen it until you accept.
 ```
+
+---
+
+## Message Requests Patterns (NEW - 2026-01-31)
+
+### Request List Page Elements
+| Element | Selector/Pattern |
+|---------|------------------|
+| Requests tab | `[role="tab"]` containing "Requests" |
+| Request count | `Requests (N)` - parse N from text |
+| Hidden Requests link | Element containing "Hidden Requests" text |
+| Delete all button | `Delete all N` text button |
+| Decide who link | "Decide who can message you" text |
+
+### Request Conversation Actions
+When viewing a message request, these buttons appear:
+
+| Button | Selector | Action |
+|--------|----------|--------|
+| **Accept** | `div[role="button"]` with innerText "Accept" | Accept message request |
+| **Delete** | `div[role="button"]` with innerText "Delete" | Delete without accepting |
+| **Block** | `div[role="button"]` with innerText "Block" | Block the user |
+
+### JavaScript Patterns
+
+```javascript
+// Click Accept button
+(function(){
+  var btns = document.querySelectorAll("div[role=button]");
+  for(var i=0; i<btns.length; i++){
+    if(btns[i].innerText === "Accept"){
+      btns[i].click();
+      return "accepted";
+    }
+  }
+  return "not found";
+})()
+
+// Click Delete button
+(function(){
+  var btns = document.querySelectorAll("div[role=button]");
+  for(var i=0; i<btns.length; i++){
+    if(btns[i].innerText === "Delete"){
+      btns[i].click();
+      return "deleted";
+    }
+  }
+  return "not found";
+})()
+
+// Click Block button
+(function(){
+  var btns = document.querySelectorAll("div[role=button]");
+  for(var i=0; i<btns.length; i++){
+    if(btns[i].innerText === "Block"){
+      btns[i].click();
+      return "blocked";
+    }
+  }
+  return "not found";
+})()
+
+// Delete all requests
+(function(){
+  var btns = document.querySelectorAll("div[role=button]");
+  for(var i=0; i<btns.length; i++){
+    if(btns[i].innerText.includes("Delete all")){
+      btns[i].click();
+      return "delete all clicked";
+    }
+  }
+  return "not found";
+})()
+
+// Navigate to Hidden Requests
+(function(){
+  var els = document.querySelectorAll("a, div, span");
+  for(var i=0; i<els.length; i++){
+    if((els[i].innerText||"").includes("Hidden Requests")){
+      els[i].click();
+      return "clicked";
+    }
+  }
+  return "not found";
+})()
+```
+
+### Request-Specific Aria Labels
+| aria-label | Purpose |
+|------------|---------|
+| `Back` | Go back to requests list |
+| `Decide who can message you` | Settings link |
+| `Eye-off icon for the hidden requests` | Hidden requests icon |
+| `Chevron icon to indicate entering the hidden requests window` | Navigation indicator |
+| `Conversation with [Name]` | Current conversation |
+| `Open the profile page of [handle]` | Profile link |
+| `Conversation information` | Conversation details |
+
+### Request Page Detection
+```javascript
+// Check if on requests page
+(function(){
+  var text = document.body.innerText;
+  return {
+    isRequestsPage: text.includes("Message requests"),
+    hasAcceptButton: text.includes("Accept"),
+    hasDeleteAll: text.includes("Delete all"),
+    deleteAllCount: (text.match(/Delete all (\d+)/) || [])[1],
+    hasHiddenRequests: text.includes("Hidden Requests")
+  };
+})()
+```
+
+### Message Request Indicators in List
+| Pattern | Meaning |
+|---------|---------|
+| `[Name] sent an attachment` | Request contains media |
+| `[Name] sent a video` | Request contains video |
+| `Instagram User` | Deleted/deactivated account |
+| `Unread` | Request not viewed yet |
+| Relative time (`2d`, `1w`, `2w`) | When request was sent |
+
+### Spam Detection Patterns
+Common spam indicators in requests:
+```javascript
+var spamPatterns = [
+  /followers instantly/i,
+  /\$\d+/,                    // Price mentions
+  /free trial/i,
+  /DM.*to claim/i,
+  /shorten\.(so|ee)/,         // Shortened URLs
+  /blucheckmark/i,
+  /10K.*followers/i
+];
+```

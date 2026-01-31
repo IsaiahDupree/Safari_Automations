@@ -366,6 +366,98 @@ async function getConversationInfo(): Promise<{
   }
 }
 
+// ============== Request Actions ==============
+
+/**
+ * Accept a message request (must be viewing request conversation)
+ * Pattern: div[role="button"] with innerText "Accept"
+ */
+async function acceptRequest(): Promise<boolean> {
+  const script = `(function(){
+    var btns = document.querySelectorAll("div[role=button]");
+    for(var i=0; i<btns.length; i++){
+      if(btns[i].innerText === "Accept"){
+        btns[i].click();
+        return "accepted";
+      }
+    }
+    return "not found";
+  })()`;
+  return (await exec(script)).includes('accepted');
+}
+
+/**
+ * Delete a message request (must be viewing request conversation)
+ */
+async function deleteRequest(): Promise<boolean> {
+  const script = `(function(){
+    var btns = document.querySelectorAll("div[role=button]");
+    for(var i=0; i<btns.length; i++){
+      if(btns[i].innerText === "Delete"){
+        btns[i].click();
+        return "deleted";
+      }
+    }
+    return "not found";
+  })()`;
+  return (await exec(script)).includes('deleted');
+}
+
+/**
+ * Block user from message request
+ */
+async function blockRequest(): Promise<boolean> {
+  const script = `(function(){
+    var btns = document.querySelectorAll("div[role=button]");
+    for(var i=0; i<btns.length; i++){
+      if(btns[i].innerText === "Block"){
+        btns[i].click();
+        return "blocked";
+      }
+    }
+    return "not found";
+  })()`;
+  return (await exec(script)).includes('blocked');
+}
+
+/**
+ * Check if viewing a message request (has Accept button)
+ */
+async function isMessageRequest(): Promise<boolean> {
+  const script = `(function(){
+    var btns = document.querySelectorAll("div[role=button]");
+    for(var i=0; i<btns.length; i++){
+      if(btns[i].innerText === "Accept") return "true";
+    }
+    return "false";
+  })()`;
+  return (await exec(script)) === 'true';
+}
+
+/**
+ * Get request page info
+ */
+async function getRequestInfo(): Promise<{
+  isRequestsPage: boolean;
+  deleteAllCount: number | null;
+  hasHiddenRequests: boolean;
+}> {
+  const script = `(function(){
+    var text = document.body.innerText;
+    var match = text.match(/Delete all (\\d+)/);
+    return JSON.stringify({
+      isRequestsPage: text.includes("Message requests"),
+      deleteAllCount: match ? parseInt(match[1]) : null,
+      hasHiddenRequests: text.includes("Hidden Requests")
+    });
+  })()`;
+  try {
+    return JSON.parse(await exec(script));
+  } catch {
+    return { isRequestsPage: false, deleteAllCount: null, hasHiddenRequests: false };
+  }
+}
+
 // ============== Status Indicators ==============
 
 /**
@@ -525,6 +617,60 @@ async function main() {
       }
       break;
       
+    case 'request-info':
+      await navigateToInbox();
+      await wait(1500);
+      await switchTab('Requests');
+      await wait(1500);
+      const reqInfo = await getRequestInfo();
+      console.log('Request Page Info:');
+      console.log(`  Is Requests Page: ${reqInfo.isRequestsPage}`);
+      console.log(`  Total Requests: ${reqInfo.deleteAllCount || 'unknown'}`);
+      console.log(`  Has Hidden Requests: ${reqInfo.hasHiddenRequests}`);
+      break;
+      
+    case 'accept':
+      const acceptName = args.slice(1).join(' ');
+      if (!acceptName) {
+        console.log('Usage: accept <contact name>');
+        break;
+      }
+      await navigateToInbox();
+      await wait(1500);
+      await switchTab('Requests');
+      await wait(1500);
+      if (await clickContact(acceptName)) {
+        await wait(2000);
+        if (await isMessageRequest()) {
+          const accepted = await acceptRequest();
+          console.log(accepted ? `✅ Accepted request from ${acceptName}` : `❌ Failed to accept`);
+        } else {
+          console.log('❌ Not a message request');
+        }
+      } else {
+        console.log(`❌ Contact "${acceptName}" not found in Requests`);
+      }
+      break;
+      
+    case 'delete-request':
+      const deleteName = args.slice(1).join(' ');
+      if (!deleteName) {
+        console.log('Usage: delete-request <contact name>');
+        break;
+      }
+      await navigateToInbox();
+      await wait(1500);
+      await switchTab('Requests');
+      await wait(1500);
+      if (await clickContact(deleteName)) {
+        await wait(2000);
+        const deleted = await deleteRequest();
+        console.log(deleted ? `✅ Deleted request from ${deleteName}` : `❌ Failed to delete`);
+      } else {
+        console.log(`❌ Contact "${deleteName}" not found in Requests`);
+      }
+      break;
+      
     default:
       console.log('Commands:');
       console.log('  tabs                    - Show DM tabs info');
@@ -534,6 +680,9 @@ async function main() {
       console.log('  open <name>             - Open conversation');
       console.log('  extract <name>          - Extract messages from contact');
       console.log('  send <name> <message>   - Send message to contact');
+      console.log('  request-info            - Show request page info');
+      console.log('  accept <name>           - Accept message request');
+      console.log('  delete-request <name>   - Delete message request');
   }
 }
 
