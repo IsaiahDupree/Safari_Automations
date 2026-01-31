@@ -21,3 +21,15 @@ export {
 // Servers
 export { startControlServer, app as controlApp } from './control-server';
 export { startTelemetryServer, broadcast } from './telemetry-server';
+
+// Supabase Client
+export {
+  SafariSupabaseClient,
+  getSupabaseClient,
+  initSupabaseClient,
+  type DbCommand,
+  type DbVideo,
+  type DbWatermarkRemoval,
+  type DbEvent,
+  type DbSession,
+} from './supabase-client';
