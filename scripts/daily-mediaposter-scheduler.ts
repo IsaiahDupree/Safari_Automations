@@ -67,16 +67,26 @@ async function sendToMediaPoster(videoPath: string, config: ScheduleConfig): Pro
   const baseName = path.basename(videoPath, '.mp4').replace('_ready', '');
   
   try {
-    // Use smart-schedule endpoint - MediaPoster decides optimal posting times
-    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/external/smart-schedule`, {
+    // Use /api/external/submit endpoint with video_path for local files
+    // Build targets with scheduled times (1 hour apart per platform)
+    const baseTime = new Date();
+    baseTime.setHours(baseTime.getHours() + 1, 0, 0, 0); // Start 1 hour from now
+    
+    const targets = config.platforms.map((platform, index) => ({
+      platform,
+      account_id: platform === 'tiktok' ? '710' : platform === 'youtube' ? '228' : '807',
+      scheduled_at: new Date(baseTime.getTime() + (index * 60 * 60 * 1000)).toISOString(),
+    }));
+    
+    const response = await fetch(`${MEDIAPOSTER_BASE_URL}/api/external/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        video_path: videoPath,
+        video_path: videoPath,  // Local path - MediaPoster handles directly
         title: `Badass Marathon - ${baseName}`,
         caption: `🔥 Daily motivation! #badass #motivation #ai #sora`,
         hashtags: ['#badass', '#motivation', '#ai', '#sora', '#viral'],
-        platforms: config.platforms,  // Just specify platforms, not times
+        targets,  // Explicit targets with times
         source_id: `safari-${baseName}-${Date.now()}`,
         source_system: 'safari-automation-hq-pipeline',
       }),
