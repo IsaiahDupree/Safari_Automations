@@ -7,23 +7,43 @@ const supabase = createClient(
   process.env.CRM_SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || ''
 );
 
-// Known handle mappings from instagram-api.ts
+// Known handle mappings from instagram-api.ts and docs
 const KNOWN_HANDLES: Record<string, string> = {
   'saraheashley': 'Sarah Ashley',
   'tonygaskins': 'Tony Gaskins',
-  'owentheaiguy': 'Owen',
+  'owentheaiguy': 'Owen Case',
   'day1marketing': 'Evan Dawson',
   'chase.h.ai': 'Chase AI',
   'ajla_talks': 'Ajla',
   'lucapetty': 'Luca Petty',
   'spincity_hq_': 'Spin City HQ',
-  'thrive_with_angelak': 'Thrive with Angela K',
-  'expand_lab': 'Expand Lab',
+  'thrivewithangelak': 'Thrive with Angela K',
+  'theexpandlab': 'Expand Lab',
   'liz_elliott_ig': 'Liz Elliott',
   'sabrina_ramonov': 'Sabrina Ramonov',
-  'steven_thiel': 'Steven Thiel',
-  'ahmed_alassafi': 'Ahmed Alassafi',
+  'steveofallstreets': 'Steven Thiel',
+  'alassafi.ai': 'Ahmed Alassafi',
   'tiffany_kyazze': 'Tiffany Kyazze',
+  'nateherkai': 'Nate Herk',
+  'liamjohnston.ai': 'Liam Johnston',
+  'cyphyr.ai': 'cyphyr.ai',
+  'nicolasboucherfinance': 'Nicolas Boucher',
+  'startuparchive_': 'Startup Archive',
+  'tonya.qualls': 'Tonya Qualls',
+  'kenda.laney': 'Kenda Laney',
+  'jeltz.green': 'Demetrius Jeltz-Green',
+  'mrnotion.co': 'Mr. Notion',
+  'officialjoelyi': 'Joel Yi',
+  'andrew.sandler': 'Andrew Sandler',
+  'nick_saraev': 'Nick Saraev',
+  'jordanlee__': 'Jordan Lee',
+  'michaelkitka': 'Michael Kitka',
+  'haroonkhaans': 'HAROON KHAN',
+  'gaelevated': 'Georgia Elevated Motor Sales',
+  'tech_me_stuff': 'TechMeStuff',
+  'ninjaaitools': 'Brad Gaines',
+  'dillonxlatham': 'Dillon Latham',
+  'producergrind': 'ProducerGrind®',
 };
 
 // UI selectors

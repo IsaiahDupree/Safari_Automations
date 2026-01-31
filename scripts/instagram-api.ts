@@ -24,6 +24,38 @@ const SUPABASE_KEY = process.env.CRM_SUPABASE_KEY || '';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// ============== Database Pattern Loading ==============
+
+let dbPatternsLoaded = false;
+let DB_KNOWN_HANDLES: Record<string, string> = {};
+
+async function loadPatternsFromDatabase(): Promise<void> {
+  if (dbPatternsLoaded) return;
+  
+  try {
+    const { data: handles } = await supabase
+      .from('automation_patterns')
+      .select('pattern_key, pattern_value')
+      .eq('pattern_type', 'known_handle')
+      .eq('is_active', true);
+    
+    if (handles) {
+      for (const h of handles) {
+        DB_KNOWN_HANDLES[h.pattern_key] = h.pattern_value;
+      }
+    }
+    dbPatternsLoaded = true;
+  } catch (e) {
+    // Fall back to hardcoded patterns
+  }
+}
+
+// Get known handle from DB or fallback
+function getKnownHandle(username: string): string | null {
+  const clean = username.replace('@', '').toLowerCase();
+  return DB_KNOWN_HANDLES[clean] || KNOWN_HANDLES[clean] || null;
+}
+
 // ============== Known Handle Mappings (from pattern discovery) ==============
 
 const KNOWN_HANDLES: Record<string, string> = {
