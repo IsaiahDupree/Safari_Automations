@@ -271,6 +271,59 @@ Server responds:
 
 ---
 
+## 9b) Example: "Sora Video + Watermark Removal" Sequence
+
+```
+1. Orchestrator -> POST /v1/commands
+   {type: "sora.generate.clean", payload: {prompt: "@isaiahdupree volcano surfing"}}
+
+2. Safari Manager emits events:
+   - status.changed: RUNNING
+   - sora.prompt.submitted
+   - sora.polling.started
+   - sora.video.downloaded
+   - action.attempted: WATERMARK_REMOVAL
+   - sora.video.cleaned
+   - status.changed: SUCCEEDED
+
+3. GET /v1/commands/{id} returns:
+   {
+     "result": {
+       "video_path": "/Users/.../sora-videos/sora-isaiahdupree-123.mp4",
+       "file_size": 971234,
+       "cleaned_path": "/Users/.../sora-videos/cleaned/cleaned_sora-isaiahdupree-123.mp4",
+       "cleaned_size": 1146839,
+       "duration_ms": 220000
+     }
+   }
+```
+
+---
+
+## 9c) Example: "Clean Existing Video" Sequence
+
+```
+1. Orchestrator -> POST /v1/commands
+   {type: "sora.clean", payload: {input_path: "/path/to/video.mp4"}}
+
+2. Safari Manager emits events:
+   - status.changed: RUNNING
+   - action.attempted: WATERMARK_REMOVAL
+   - sora.video.cleaned
+   - status.changed: SUCCEEDED
+
+3. GET /v1/commands/{id} returns:
+   {
+     "result": {
+       "input_path": "/path/to/video.mp4",
+       "output_path": "/path/to/cleaned/cleaned_video.mp4",
+       "file_size": 1146839
+     }
+   }
+```
+
+---
+
 ## 10) Tests You Should Add for This Interface
 
 ### Contract Tests

@@ -215,10 +215,13 @@ Must be able to run multiple accounts with isolation:
 | Type | Description |
 |------|-------------|
 | sora.generate | Submit prompt and wait for video |
+| sora.generate.clean | Submit prompt, wait for video, **remove watermark** |
+| sora.batch | Run multiple prompts sequentially |
+| sora.batch.clean | Run multiple prompts, **remove watermarks from all** |
+| sora.clean | Remove watermark from existing video file |
 | sora.poll | Poll drafts for video status |
 | sora.download | Download completed video |
 | sora.usage | Get usage info |
-| sora.batch | Run multiple prompts sequentially |
 
 ---
 

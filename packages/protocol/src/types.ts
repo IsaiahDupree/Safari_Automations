@@ -10,10 +10,13 @@ export type CommandType =
   | 'session.create'
   | 'session.close'
   | 'sora.generate'
+  | 'sora.generate.clean'  // Generate + watermark removal
   | 'sora.batch'
+  | 'sora.batch.clean'     // Batch generate + watermark removal
   | 'sora.poll'
   | 'sora.download'
-  | 'sora.usage';
+  | 'sora.usage'
+  | 'sora.clean';           // Watermark removal only
 
 export type Platform = 'instagram' | 'tiktok' | 'threads' | 'x' | 'sora';
 
@@ -68,6 +71,7 @@ export type EventType =
   | 'sora.polling.started'
   | 'sora.video.ready'
   | 'sora.video.downloaded'
+  | 'sora.video.cleaned'
   | 'sora.usage.checked';
 
 export type Severity = 'debug' | 'info' | 'warn' | 'error';
@@ -157,4 +161,19 @@ export interface SoraGenerateResult {
   video_path: string;
   file_size: number;
   duration_ms: number;
+  cleaned_path?: string;
+  cleaned_size?: number;
+}
+
+export interface SoraCleanPayload {
+  input_path: string;    // Path to video with watermark
+  output_path?: string;  // Optional custom output path
+}
+
+export interface SoraCleanResult {
+  input_path: string;
+  output_path: string;
+  success: boolean;
+  file_size?: number;
+  error?: string;
 }
