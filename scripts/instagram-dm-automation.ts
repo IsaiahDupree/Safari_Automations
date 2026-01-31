@@ -470,13 +470,24 @@ async function main() {
       break;
       
     case 'extract':
-      const extractName = args.slice(1).join(' ');
+      // Support --tab option: extract --tab General "Tony Gaskins"
+      let extractTab: DMTab = 'Primary';
+      let extractArgs = args.slice(1);
+      if (extractArgs[0] === '--tab' && extractArgs[1]) {
+        extractTab = extractArgs[1] as DMTab;
+        extractArgs = extractArgs.slice(2);
+      }
+      const extractName = extractArgs.join(' ');
       if (!extractName) {
-        console.log('Usage: extract <contact name>');
+        console.log('Usage: extract [--tab Primary|General|Requests] <contact name>');
         break;
       }
       await navigateToInbox();
       await wait(2000);
+      if (extractTab !== 'Primary') {
+        await switchTab(extractTab);
+        await wait(1500);
+      }
       if (await clickContact(extractName)) {
         await wait(3000);
         await scrollMessagesUp();
