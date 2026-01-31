@@ -711,7 +711,7 @@ async function main() {
   }
   
   // Commands that don't require username
-  if (command === 'known' || command === 'lookup' || command === 'stats' || command === 'batch' || command === 'search' || command === 'top' || command === 'recent') {
+  if (command === 'known' || command === 'lookup' || command === 'stats' || command === 'batch' || command === 'search' || command === 'top' || command === 'recent' || command === 'attention' || command === 'weekly' || command === 'detect') {
     // Handle below
   } else if (!username) {
     console.log('Error: Username required');
@@ -961,6 +961,65 @@ async function main() {
           console.log(`  ${i + 1}. [${f.product}] ${f.signal}`);
           console.log(`     Offer: "${f.offer}"`);
         });
+      }
+      break;
+    }
+    
+    case 'grade': {
+      if (!username) {
+        console.log('Usage: grade <username>');
+        break;
+      }
+      console.log(`\n📊 Conversation Grade for @${username}:\n`);
+      const grade = await scoreConversation(username);
+      if (grade) {
+        console.log(`  Score: ${grade.score}/100\n`);
+        if (grade.strengths.length > 0) {
+          console.log('  ✅ Strengths:');
+          grade.strengths.forEach(s => console.log(`     - ${s}`));
+        }
+        if (grade.improvements.length > 0) {
+          console.log('\n  📈 Improvements:');
+          grade.improvements.forEach(i => console.log(`     - ${i}`));
+        }
+        console.log('\n  ' + grade.feedback.join(' | '));
+      } else {
+        console.log('  Contact not found');
+      }
+      break;
+    }
+    
+    case 'weekly':
+      console.log('\n📅 Weekly Operating System Tasks:\n');
+      const tasks = await getWeeklyTasks();
+      
+      console.log('  🎁 Micro-Wins (send value):');
+      tasks.microWins.slice(0, 5).forEach((t: any) => console.log(`     @${t.username}`));
+      
+      console.log('\n  🤔 Curiosity (ask questions):');
+      tasks.curiosity.slice(0, 5).forEach((t: any) => console.log(`     @${t.username}`));
+      
+      console.log('\n  🔄 Re-warm (gentle re-engage):');
+      tasks.rewarm.forEach((t: any) => console.log(`     @${t.username}`));
+      
+      if (tasks.offers.length > 0) {
+        console.log('\n  💼 Ready for Offer:');
+        tasks.offers.forEach((t: any) => console.log(`     @${t.username}`));
+      }
+      break;
+    
+    case 'suggest': {
+      if (!username) {
+        console.log('Usage: suggest <username> [last message]');
+        break;
+      }
+      const lastMsg = args.slice(2).join(' ') || '';
+      console.log(`\n🤖 AI Copilot Suggestion for @${username}:\n`);
+      const suggestion = await generateReplySuggestion(username, lastMsg);
+      if (suggestion) {
+        console.log(`  💬 "${suggestion}"`);
+      } else {
+        console.log('  Contact not found');
       }
       break;
     }
@@ -1385,6 +1444,223 @@ async function getContactsNeedingAttention(limit = 10): Promise<any[]> {
     .limit(limit);
   
   return data || [];
+}
+
+// ============== AI Copilot & Conversation Scoring ==============
+
+/**
+ * Generate AI reply suggestion based on conversation context
+ * Uses templates and context to suggest next message
+ */
+async function generateReplySuggestion(username: string, lastMessage: string): Promise<string | null> {
+  const score = await calculateRelationshipScore(username);
+  if (!score) return null;
+  
+  // Get appropriate lane based on score
+  let lane = 'friendship';
+  if (score.total < 40) lane = 'rewarm';
+  else if (score.total < 60) lane = 'service';
+  else if (score.stage === 'fit_repeats') lane = 'offer';
+  
+  // Check for fit signals in last message
+  const fits = await detectFitSignals(lastMessage);
+  if (fits.length > 0) {
+    return fits[0].offer; // Use the offer template for detected fit
+  }
+  
+  // Get random action from appropriate lane
+  const { data: actions } = await supabase
+    .from('next_best_actions')
+    .select('action_text')
+    .eq('lane', lane)
+    .eq('is_active', true);
+  
+  if (actions && actions.length > 0) {
+    return actions[Math.floor(Math.random() * actions.length)].action_text;
+  }
+  
+  return null;
+}
+
+/**
+ * Score a conversation based on quality indicators
+ * Returns 0-100 score with feedback
+ */
+interface ConversationGrade {
+  score: number;
+  feedback: string[];
+  strengths: string[];
+  improvements: string[];
+}
+
+async function scoreConversation(username: string): Promise<ConversationGrade | null> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  // Get messages for this contact
+  const { data: contact } = await supabase
+    .from('instagram_contacts')
+    .select('id')
+    .eq('instagram_username', clean)
+    .single();
+  
+  if (!contact) return null;
+  
+  const { data: messages } = await supabase
+    .from('instagram_messages')
+    .select('message_text, is_outbound')
+    .eq('contact_id', contact.id)
+    .order('sent_at', { ascending: true })
+    .limit(50);
+  
+  if (!messages || messages.length === 0) {
+    return { score: 0, feedback: ['No messages found'], strengths: [], improvements: ['Start a conversation'] };
+  }
+  
+  let score = 50; // Base score
+  const feedback: string[] = [];
+  const strengths: string[] = [];
+  const improvements: string[] = [];
+  
+  // Analyze conversation patterns
+  const outbound = messages.filter(m => m.is_outbound);
+  const inbound = messages.filter(m => !m.is_outbound);
+  
+  // Check balance (good conversations are balanced)
+  const ratio = outbound.length / (inbound.length || 1);
+  if (ratio >= 0.5 && ratio <= 2) {
+    score += 10;
+    strengths.push('Good back-and-forth balance');
+  } else if (ratio > 3) {
+    score -= 10;
+    improvements.push('Too many outbound messages without replies');
+  }
+  
+  // Check for questions asked (curiosity)
+  const questionsAsked = outbound.filter(m => m.message_text?.includes('?')).length;
+  if (questionsAsked >= 2) {
+    score += 10;
+    strengths.push('Asking good questions');
+  } else {
+    improvements.push('Ask more questions to show curiosity');
+  }
+  
+  // Check for value-first language
+  const valueKeywords = ['help', 'resource', 'template', 'intro', 'idea'];
+  const hasValueLanguage = outbound.some(m => 
+    valueKeywords.some(k => m.message_text?.toLowerCase().includes(k))
+  );
+  if (hasValueLanguage) {
+    score += 10;
+    strengths.push('Using value-first language');
+  }
+  
+  // Check for pushy language (negative)
+  const pushyKeywords = ['buy', 'purchase', 'discount', 'limited time', 'act now'];
+  const hasPushyLanguage = outbound.some(m =>
+    pushyKeywords.some(k => m.message_text?.toLowerCase().includes(k))
+  );
+  if (hasPushyLanguage) {
+    score -= 15;
+    improvements.push('Avoid pushy sales language');
+  }
+  
+  // Check for permission-based offers
+  const permissionKeywords = ['want me to', 'would you like', 'interested in', 'no pressure'];
+  const hasPermissionLanguage = outbound.some(m =>
+    permissionKeywords.some(k => m.message_text?.toLowerCase().includes(k))
+  );
+  if (hasPermissionLanguage) {
+    score += 10;
+    strengths.push('Using permission-based offers');
+  }
+  
+  // Check message length (not too short, not too long)
+  const avgLength = outbound.reduce((sum, m) => sum + (m.message_text?.length || 0), 0) / (outbound.length || 1);
+  if (avgLength >= 20 && avgLength <= 200) {
+    score += 5;
+  } else if (avgLength < 10) {
+    improvements.push('Messages are too short - add more context');
+  } else if (avgLength > 300) {
+    improvements.push('Messages are too long - keep them concise');
+  }
+  
+  // Cap score
+  score = Math.min(100, Math.max(0, score));
+  
+  feedback.push(`Analyzed ${messages.length} messages`);
+  feedback.push(`Outbound: ${outbound.length}, Inbound: ${inbound.length}`);
+  
+  return { score, feedback, strengths, improvements };
+}
+
+/**
+ * Get weekly operating system tasks
+ * Returns suggested actions for the week
+ */
+async function getWeeklyTasks(): Promise<any> {
+  // Get contacts by score ranges
+  const { data: highScore } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name, relationship_score')
+    .gte('relationship_score', 60)
+    .order('relationship_score', { ascending: false })
+    .limit(10);
+  
+  const { data: medScore } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name, relationship_score')
+    .gte('relationship_score', 40)
+    .lt('relationship_score', 60)
+    .limit(10);
+  
+  const { data: lowScore } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name, relationship_score')
+    .lt('relationship_score', 40)
+    .limit(5);
+  
+  // Get contacts in fit_repeats stage (ready for offer)
+  const { data: fitReady } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name')
+    .eq('relationship_stage', 'fit_repeats')
+    .limit(5);
+  
+  return {
+    microWins: (highScore || []).slice(0, 10).map(c => ({
+      username: c.instagram_username,
+      task: 'Send micro-win, resource, or intro'
+    })),
+    curiosity: (medScore || []).slice(0, 10).map(c => ({
+      username: c.instagram_username,
+      task: 'Ask curiosity question'
+    })),
+    rewarm: (lowScore || []).slice(0, 5).map(c => ({
+      username: c.instagram_username,
+      task: 'Gentle re-engagement'
+    })),
+    offers: (fitReady || []).slice(0, 5).map(c => ({
+      username: c.instagram_username,
+      task: 'Permissioned offer (only if fit confirmed)'
+    }))
+  };
+}
+
+/**
+ * Update pipeline stage for a contact
+ */
+async function updatePipelineStage(username: string, stage: string): Promise<boolean> {
+  const clean = username.replace('@', '').toLowerCase();
+  const validStages = ['first_touch', 'context_captured', 'micro_win_delivered', 'cadence_established', 'trust_signals', 'fit_repeats', 'permissioned_offer', 'post_win'];
+  
+  if (!validStages.includes(stage)) return false;
+  
+  const { error } = await supabase
+    .from('instagram_contacts')
+    .update({ relationship_stage: stage, updated_at: new Date().toISOString() })
+    .eq('instagram_username', clean);
+  
+  return !error;
 }
 
 // ============== Utility Functions ==============
