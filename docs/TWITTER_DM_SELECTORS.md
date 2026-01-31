@@ -268,9 +268,40 @@ npx tsx scripts/twitter-api.ts explore
 
 ---
 
+## Verified Working Patterns (Tested Jan 2026)
+
+### Message Extraction
+```javascript
+// Primary: tweetText captures actual DM content
+document.querySelectorAll('[data-testid="tweetText"]')
+
+// Fallback: cellInnerDiv for conversation list
+document.querySelectorAll('[data-testid="cellInnerDiv"]')
+```
+
+### Text Input (Draft.js Editor)
+```javascript
+// Focus textbox
+var tb = document.querySelector('[role="textbox"]');
+tb.focus();
+
+// Type using execCommand (required for Draft.js)
+document.execCommand('insertText', false, 'Your message');
+
+// Click send
+document.querySelector('[data-testid="dmComposerSendButton"]').click();
+```
+
+### Open Conversation by ID
+```javascript
+// Navigate directly to conversation
+window.location.href = "https://x.com/messages/284133102-1387950383134281733";
+```
+
 ## Notes
 
 1. **Rate Limiting**: Twitter has strict rate limits. Keep automation human-paced.
 2. **Authentication**: Must be logged in to access DMs.
 3. **Dynamic Loading**: Conversations load dynamically; wait for elements.
 4. **Data-testid Stability**: These selectors are relatively stable but may change with Twitter updates.
+5. **Draft.js Editor**: Twitter uses Draft.js for the composer - use `execCommand` for text input.

@@ -208,34 +208,27 @@ interface TwitterMessage {
 
 /**
  * Extract messages from current conversation
+ * Uses tweetText selector which captures actual message content
  */
 async function extractMessages(): Promise<TwitterMessage[]> {
   const result = await exec(`(function(){
-    // Try multiple selectors for messages
     var messages = [];
-    
-    // Look for message entries
-    var entries = document.querySelectorAll('[data-testid="messageEntry"]');
-    if(entries.length === 0) {
-      // Try looking for message bubbles or other containers
-      entries = document.querySelectorAll('[data-testid*="message"]');
+    var tweetTexts = document.querySelectorAll('[data-testid="tweetText"]');
+    for(var i = 0; i < tweetTexts.length; i++) {
+      var text = tweetTexts[i].innerText.trim();
+      if(text && text.length > 0 && text.length < 2000) {
+        messages.push({ text: text, isOutbound: false });
+      }
     }
-    
-    // Also try the DM scroller container
-    var container = document.querySelector('[data-testid="DmScrollerContainer"]');
-    if(container) {
-      var divs = container.querySelectorAll('div[dir="auto"]');
-      for(var i = 0; i < divs.length; i++) {
-        var text = divs[i].innerText.trim();
-        if(text && text.length > 0 && text.length < 1000) {
-          messages.push({
-            text: text,
-            isOutbound: false // Would need more logic to determine
-          });
+    if(messages.length === 0) {
+      var cells = document.querySelectorAll('[data-testid="cellInnerDiv"]');
+      for(var i = 0; i < cells.length; i++) {
+        var text = cells[i].innerText.trim();
+        if(text && text.length > 10 && text.length < 500) {
+          messages.push({ text: text.substring(0, 300), isOutbound: false });
         }
       }
     }
-    
     return JSON.stringify(messages);
   })()`);
   
@@ -248,18 +241,19 @@ async function extractMessages(): Promise<TwitterMessage[]> {
 
 /**
  * Send a DM to the current conversation
+ * Uses execCommand for reliable text input in Draft.js editor
  */
 async function sendMessage(message: string): Promise<boolean> {
   console.log(`💬 Sending message: "${message.substring(0, 50)}..."`);
   
-  // Find textbox
+  // Find and focus textbox
   const textboxFound = await exec(`(function(){
-    var tb = document.querySelector('[data-testid="dmComposerTextInput"]');
-    if(!tb) tb = document.querySelector('[role="textbox"]');
+    var tb = document.querySelector('[role="textbox"]');
+    if(!tb) tb = document.querySelector('[data-testid="dmComposerTextInput"]');
     if(!tb) tb = document.querySelector('[contenteditable="true"]');
     if(tb) {
       tb.focus();
-      return 'found';
+      return 'found: ' + tb.className.substring(0, 30);
     }
     return 'not found';
   })()`);
@@ -269,19 +263,17 @@ async function sendMessage(message: string): Promise<boolean> {
     return false;
   }
   
-  await wait(500);
+  await wait(300);
   
-  // Type message
+  // Type message using execCommand (works with Draft.js)
   const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   const typeResult = await exec(`(function(){
-    var tb = document.querySelector('[data-testid="dmComposerTextInput"]');
-    if(!tb) tb = document.querySelector('[role="textbox"]');
-    if(!tb) tb = document.querySelector('[contenteditable="true"]');
+    var tb = document.querySelector('[role="textbox"]');
     if(!tb) return 'no textbox';
     
     tb.focus();
-    tb.innerText = "${escapedMessage}";
-    tb.dispatchEvent(new InputEvent('input', {bubbles: true}));
+    // Use execCommand for Draft.js compatibility
+    document.execCommand('insertText', false, "${escapedMessage}");
     return 'typed';
   })()`);
   
@@ -296,19 +288,8 @@ async function sendMessage(message: string): Promise<boolean> {
   const sendResult = await exec(`(function(){
     var btn = document.querySelector('[data-testid="dmComposerSendButton"]');
     if(!btn) {
-      // Try finding by aria-label
-      var btns = document.querySelectorAll('button[aria-label*="Send"]');
+      var btns = document.querySelectorAll('[aria-label="Send"]');
       if(btns.length > 0) btn = btns[0];
-    }
-    if(!btn) {
-      // Try finding by role
-      var allBtns = document.querySelectorAll('[role="button"]');
-      for(var i = 0; i < allBtns.length; i++) {
-        if(allBtns[i].getAttribute('aria-label')?.includes('Send')) {
-          btn = allBtns[i];
-          break;
-        }
-      }
     }
     if(btn) {
       btn.click();
