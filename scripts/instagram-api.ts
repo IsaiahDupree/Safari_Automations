@@ -384,17 +384,17 @@ async function extractConversationByUsername(username: string): Promise<Conversa
     return null;
   }
   
-  // Small wait to ensure page is loaded
-  await wait(1000);
+  // Wait for conversation to fully load
+  await wait(2000);
   
-  // Scroll up to load older messages
+  // Scroll up to load older messages (proven pattern from extract-tab-dms.ts)
   console.log('   Loading message history...');
   for (let i = 0; i < 3; i++) {
     await exec(`(function(){
-      var divs = document.querySelectorAll("div");
-      for(var i=0; i<divs.length; i++){
-        if(divs[i].scrollHeight>1500 && divs[i].clientHeight>400){
-          divs[i].scrollBy(0, -5000);
+      var c = document.querySelectorAll("div");
+      for(var i = 0; i < c.length; i++){
+        if(c[i].scrollHeight > 1500 && c[i].clientHeight > 400){
+          c[i].scrollBy(0, -5000);
           return "scrolled";
         }
       }
@@ -403,71 +403,60 @@ async function extractConversationByUsername(username: string): Promise<Conversa
     await wait(800);
   }
   
-  // Find handle in conversation - use known handle if available
-  let handle = cleanUsername;
-  const foundHandle = await exec(`(function(){
+  // Find handle in conversation (proven pattern)
+  const handle = await exec(`(function(){
     var t = document.body.innerText;
     var lines = t.split(String.fromCharCode(10));
-    for(var i=0; i<lines.length; i++){
+    for(var i = 0; i < lines.length; i++){
       var l = lines[i].trim();
-      if(l.match(/^[a-z0-9._]+$/) && l.length>5 && l.length<25 && l!=="the_isaiah_dupree"){
+      if(l.match(/^[a-z0-9._]+$/) && l.length > 5 && l.length < 25 && l !== "the_isaiah_dupree"){
         return l;
       }
     }
     return "";
   })()`);
   
-  if (foundHandle) {
-    handle = foundHandle;
-  }
-  
   if (!handle) {
-    console.log('   Could not identify handle');
-    return null;
+    console.log('   Could not identify handle, using username');
   }
   
-  // Extract messages - improved pattern matching
+  const actualHandle = handle || cleanUsername;
+  console.log(`   Handle: @${actualHandle}`);
+  
+  // Extract messages using proven pattern from extract-tab-dms.ts
   const messagesJson = await exec(`(function(){
     var t = document.body.innerText;
-    var idx = t.indexOf("${handle}");
+    var idx = t.indexOf("${actualHandle}");
     if(idx === -1) return JSON.stringify([]);
     var endIdx = t.indexOf("Message...", idx);
-    if(endIdx === -1) endIdx = idx + 5000;
-    var content = t.substring(idx, endIdx);
+    if(endIdx === -1) endIdx = idx + 3000;
+    var content = t.substring(idx + ${actualHandle.length}, endIdx);
     var lines = content.split(String.fromCharCode(10));
     var messages = [];
     var seen = {};
-    var skipHandles = ["${handle}", "the_isaiah_dupree"];
-    for(var i=0; i<lines.length; i++){
+    for(var i = 0; i < lines.length; i++){
       var l = lines[i].trim();
-      if(!l || l.length<2) continue;
-      // Skip username handles
-      if(/^[a-z0-9._]+$/.test(l) && l.length<30) continue;
-      // Skip date/time patterns
+      if(!l || l.length < 5) continue;
+      if(/^[a-z0-9._]+$/.test(l) && l.length < 25) continue;
       if(/^\\d{1,2}\\/\\d{1,2}\\/\\d{2}/.test(l)) continue;
-      if(/^[A-Z][a-z]{2} \\d{1,2}, \\d{4}/.test(l)) continue;
-      if(/^\\d{1,2}:\\d{2} [AP]M$/.test(l)) continue;
-      // Skip UI elements
       if(l.includes("messaged you about")) continue;
       if(l.includes("sent an attachment")) continue;
       if(l.includes("sent a voice")) continue;
-      if(l.includes("View profile")) continue;
-      if(l.includes("Instagram")) continue;
-      if(l === "·" || l.includes(" · ")) continue;
-      // Skip single emojis or very short
-      if(l.length === 1 || l.length === 2) continue;
-      // Keep actual messages
-      if(l.length>=3 && l.length<1000 && !seen[l]){
+      if(l.includes("sent a video")) continue;
+      if(l.includes(" · ")) continue;
+      if(l === "·") continue;
+      if(["Active", "Unread", "View profile", "See Post", "Instagram", "Loading...", "Accept", "Delete", "Block"].indexOf(l) !== -1) continue;
+      if(l.length > 5 && l.length < 1000 && !seen[l]){
         seen[l] = true;
-        var isOut = l.indexOf("I ")==0 || l.indexOf("Hey ")==0 || l.indexOf("Hi ")==0 || l.indexOf("Thanks")==0;
+        var isOut = l.indexOf("Test") !== -1 || l.indexOf("I ") === 0 || l.indexOf("Hey ") === 0;
         messages.push({ text: l, isOutbound: isOut });
       }
     }
     return JSON.stringify(messages);
   })()`);
   
-  // Get display name
-  const displayName = await exec(`(function(){
+  // Get display name from aria-label or known mappings
+  let displayName = await exec(`(function(){
     var label = document.querySelector("[aria-label*='Conversation with']");
     if(label){
       return label.getAttribute("aria-label").replace("Conversation with ", "");
@@ -475,16 +464,28 @@ async function extractConversationByUsername(username: string): Promise<Conversa
     return "";
   })()`);
   
+  // Use known mapping if available
+  if (!displayName && KNOWN_HANDLES[actualHandle]) {
+    displayName = KNOWN_HANDLES[actualHandle];
+  }
+  
   try {
-    const messages = JSON.parse(messagesJson);
+    const messages = JSON.parse(messagesJson || '[]');
+    console.log(`   Found ${messages.length} messages`);
     return {
-      username: cleanUsername,
+      username: actualHandle,
       displayName: displayName || null,
       messages,
       messageCount: messages.length
     };
-  } catch {
-    return null;
+  } catch (e) {
+    console.log('   Error parsing messages');
+    return {
+      username: actualHandle,
+      displayName: displayName || null,
+      messages: [],
+      messageCount: 0
+    };
   }
 }
 
@@ -655,23 +656,24 @@ async function main() {
     console.log('Commands:');
     console.log('  profile <username>           - Extract profile data');
     console.log('  messages <username>          - Extract conversation history');
+    console.log('  messages <username> --save   - Extract and save to database');
     console.log('  dm <username> <message>      - Send a DM');
     console.log('  full <username>              - Full analysis (profile + conversation)');
     console.log('  full <username> --save       - Full analysis + save to database');
     console.log('  known                        - List all known handle mappings');
     console.log('  lookup <query>               - Lookup handle or display name');
+    console.log('  stats                        - Show database statistics');
     console.log('\nExamples:');
     console.log('  npx tsx scripts/instagram-api.ts profile saraheashley');
-    console.log('  npx tsx scripts/instagram-api.ts messages owentheaiguy');
+    console.log('  npx tsx scripts/instagram-api.ts messages owentheaiguy --save');
     console.log('  npx tsx scripts/instagram-api.ts dm tonygaskins "Hey, checking in!"');
     console.log('  npx tsx scripts/instagram-api.ts full chase.h.ai --save');
-    console.log('  npx tsx scripts/instagram-api.ts known');
-    console.log('  npx tsx scripts/instagram-api.ts lookup "Sarah Ashley"');
+    console.log('  npx tsx scripts/instagram-api.ts stats');
     return;
   }
   
   // Commands that don't require username
-  if (command === 'known' || command === 'lookup') {
+  if (command === 'known' || command === 'lookup' || command === 'stats') {
     // Handle below
   } else if (!username) {
     console.log('Error: Username required');
@@ -706,6 +708,7 @@ async function main() {
     }
     
     case 'messages': {
+      const saveMessages = args.includes('--save');
       const conversation = await extractConversationByUsername(username);
       if (conversation) {
         console.log(`\n💬 Conversation with @${conversation.username}:\n`);
@@ -717,6 +720,17 @@ async function main() {
         });
         if (conversation.messageCount > 10) {
           console.log(`\n  ... and ${conversation.messageCount - 10} more messages`);
+        }
+        
+        // Save to database if --save flag
+        if (saveMessages && conversation.messageCount > 0) {
+          console.log('\n   💾 Saving to database...');
+          const { saved } = await saveConversationToDatabase(
+            conversation.username,
+            conversation.displayName,
+            conversation.messages
+          );
+          console.log(`   ✅ Saved ${saved} new messages`);
         }
       } else {
         console.log('❌ No conversation found');
@@ -791,9 +805,115 @@ async function main() {
       }
       break;
       
+    case 'stats':
+      const stats = await getDatabaseStats();
+      console.log('\n📊 Database Stats:\n');
+      console.log(`  Contacts:      ${stats.contacts}`);
+      console.log(`  Conversations: ${stats.conversations}`);
+      console.log(`  Messages:      ${stats.messages}`);
+      break;
+      
     default:
       console.log(`Unknown command: ${command}`);
   }
+}
+
+// ============== Database Save Functions ==============
+
+/**
+ * Save conversation messages to database (proven pattern from extract-tab-dms.ts)
+ */
+async function saveConversationToDatabase(
+  username: string,
+  displayName: string | null,
+  messages: { text: string; isOutbound: boolean }[]
+): Promise<{ contactId: string | null; saved: number }> {
+  const handle = username.replace('@', '').toLowerCase();
+  
+  // Upsert contact
+  let { data: contact } = await supabase
+    .from('instagram_contacts')
+    .select('id')
+    .eq('instagram_username', handle)
+    .single();
+  
+  if (!contact) {
+    const { data: newContact } = await supabase
+      .from('instagram_contacts')
+      .insert({
+        instagram_username: handle,
+        display_name: displayName,
+        relationship_score: 50,
+        pipeline_stage: 'first_touch',
+        tags: ['dm_extracted', 'api_saved', `handle:${handle}`],
+      })
+      .select('id')
+      .single();
+    contact = newContact;
+  }
+  
+  if (!contact) return { contactId: null, saved: 0 };
+  
+  // Upsert conversation
+  let { data: conv } = await supabase
+    .from('instagram_conversations')
+    .select('id')
+    .eq('contact_id', contact.id)
+    .single();
+  
+  if (!conv) {
+    const { data: newConv } = await supabase
+      .from('instagram_conversations')
+      .insert({
+        contact_id: contact.id,
+        last_message_preview: messages[0]?.text?.substring(0, 100),
+      })
+      .select('id')
+      .single();
+    conv = newConv;
+  }
+  
+  if (!conv) return { contactId: contact.id, saved: 0 };
+  
+  // Save messages (avoid duplicates)
+  let saved = 0;
+  for (const msg of messages) {
+    const { data: existing } = await supabase
+      .from('instagram_messages')
+      .select('id')
+      .eq('conversation_id', conv.id)
+      .eq('message_text', msg.text.substring(0, 200))
+      .limit(1);
+    
+    if (!existing || existing.length === 0) {
+      await supabase.from('instagram_messages').insert({
+        conversation_id: conv.id,
+        contact_id: contact.id,
+        message_text: msg.text,
+        message_type: 'text',
+        is_outbound: msg.isOutbound,
+        sent_by_automation: false,
+      });
+      saved++;
+    }
+  }
+  
+  return { contactId: contact.id, saved };
+}
+
+/**
+ * Get database stats
+ */
+async function getDatabaseStats(): Promise<{ contacts: number; conversations: number; messages: number }> {
+  const { count: contacts } = await supabase.from('instagram_contacts').select('*', { count: 'exact', head: true });
+  const { count: conversations } = await supabase.from('instagram_conversations').select('*', { count: 'exact', head: true });
+  const { count: messages } = await supabase.from('instagram_messages').select('*', { count: 'exact', head: true });
+  
+  return {
+    contacts: contacts || 0,
+    conversations: conversations || 0,
+    messages: messages || 0
+  };
 }
 
 // ============== Utility Functions ==============
@@ -839,6 +959,10 @@ export {
   getFullUserData,
   findConversationByUsername,
   navigateToProfile,
+  
+  // Database functions
+  saveConversationToDatabase,
+  getDatabaseStats,
   
   // Utility functions
   getDisplayName,
