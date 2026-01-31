@@ -33,3 +33,15 @@ export {
   type DbEvent,
   type DbSession,
 } from './supabase-client';
+
+// Video Pipeline
+export {
+  VideoPipeline,
+  getPipeline,
+  processVideo,
+  processBatch,
+  processDirectory,
+  type PipelineOptions,
+  type PipelineResult,
+  type BatchResult,
+} from './video-pipeline';
