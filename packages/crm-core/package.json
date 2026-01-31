@@ -1,0 +1,42 @@
+{
+  "name": "@safari-automation/crm-core",
+  "version": "1.0.0",
+  "description": "Modular CRM core library for relationship-first sales",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client/index.js",
+    "./models": "./dist/models/index.js",
+    "./engines": "./dist/engines/index.js",
+    "./utils": "./dist/utils/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/**/*.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@supabase/supabase-js": "^2.0.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "crm",
+    "relationship",
+    "instagram",
+    "dm",
+    "automation"
+  ]
+}

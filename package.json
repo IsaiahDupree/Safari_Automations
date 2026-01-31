@@ -1,0 +1,50 @@
+{
+  "name": "local-everreach-crm",
+  "version": "1.0.0",
+  "description": "Local EverReach CRM - Relationship-first sales automation with Instagram DM integration",
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:core && npm run build:dm",
+    "build:core": "cd packages/crm-core && npm run build",
+    "build:dm": "cd packages/instagram-dm && npm run build",
+    "test": "npm run test:core && npm run test:dm",
+    "test:core": "cd packages/crm-core && npm test",
+    "test:dm": "cd packages/instagram-dm && npm test",
+    "start:dm-server": "cd packages/instagram-dm && npm run start:server",
+    "scoring": "npx tsx scripts/relationship-scoring-engine.ts",
+    "coaching": "npx tsx scripts/dm-coaching-engine.ts",
+    "copilot": "npx tsx scripts/ai-copilot-replies.ts",
+    "analytics": "npx tsx scripts/pipeline-analytics.ts",
+    "outreach": "npx tsx scripts/automated-outreach.ts",
+    "sync": "npx tsx scripts/sync-instagram-dm-to-crm.ts",
+    "dm": "npx tsx scripts/instagram-dm-cli.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "tsx": "^4.7.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IsaiahDupree/local-everreach-crm"
+  },
+  "keywords": [
+    "crm",
+    "instagram",
+    "dm",
+    "automation",
+    "relationship",
+    "sales",
+    "safari"
+  ],
+  "author": "Isaiah Dupree",
+  "license": "MIT"
+}
