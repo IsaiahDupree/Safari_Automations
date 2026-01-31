@@ -260,6 +260,14 @@ export class SoraFullAutomation {
         console.log('[SORA] No spinner, no video - refreshing...');
       }
 
+      // At poll 30, do a full Safari restart to recover from stuck state
+      if (attempt === 30) {
+        console.log('[SORA] ⚠️ Poll 30 reached - performing Safari recovery...');
+        await this.recoverSafari();
+        await this.wait(5000);
+        continue; // Skip the normal refresh, go straight to next poll
+      }
+
       // Wait before next poll
       if (attempt < this.config.maxPollAttempts) {
         console.log(`[SORA] Waiting ${this.config.pollIntervalMs / 1000}s...`);
@@ -359,6 +367,51 @@ export class SoraFullAutomation {
       download: downloadResult,
       totalTimeMs,
     };
+  }
+
+  // ==========================================================================
+  // SAFARI RECOVERY - Close/reopen Safari and navigate to drafts
+  // ==========================================================================
+
+  async recoverSafari(): Promise<void> {
+    console.log('[SORA] 🔄 Closing Safari...');
+    
+    try {
+      // Close Safari
+      await execAsync(`osascript -e 'tell application "Safari" to quit'`);
+      await this.wait(3000);
+      
+      // Reopen Safari
+      console.log('[SORA] 🔄 Reopening Safari...');
+      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      await this.wait(2000);
+      
+      // Bring Safari to front and make sure it's selected
+      console.log('[SORA] 🔄 Bringing Safari to front...');
+      await execAsync(`osascript -e '
+        tell application "Safari"
+          activate
+          set frontmost to true
+        end tell
+        tell application "System Events"
+          tell process "Safari"
+            set frontmost to true
+          end tell
+        end tell
+      '`);
+      await this.wait(2000);
+      
+      // Navigate to drafts URL
+      console.log('[SORA] 🔄 Navigating to drafts...');
+      await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);
+      await this.wait(3000);
+      
+      console.log('[SORA] ✅ Safari recovery complete');
+    } catch (error) {
+      console.error('[SORA] ❌ Safari recovery failed:', error);
+      // Try to at least navigate to drafts
+      await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);
+    }
   }
 
   // ==========================================================================
