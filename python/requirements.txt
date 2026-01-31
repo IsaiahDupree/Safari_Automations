@@ -1,0 +1,20 @@
+# Safari Automation Python Dependencies
+
+# Logging
+loguru>=0.7.0
+
+# HTTP requests
+httpx>=0.25.0
+requests>=2.31.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# AI/LLM for comment generation
+openai>=1.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Type hints
+typing-extensions>=4.8.0

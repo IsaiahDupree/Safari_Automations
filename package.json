@@ -1,0 +1,83 @@
+{
+  "name": "safari-automation",
+  "version": "0.1.0",
+  "description": "Safari-driven UI automation harness for social media platforms with selector contract tests and audit logging",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "safari-auto": "./dist/apps/runner/src/cli.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist node_modules/.cache",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:selectors": "vitest run tests/selectors",
+    "test:flows": "vitest run tests/flows",
+    "test:coverage": "vitest run --coverage",
+    "selectors:test": "tsx scripts/test-selectors.ts",
+    "selectors:health": "tsx scripts/selector-health.ts",
+    "session:verify": "tsx scripts/verify-session.ts",
+    "session:create": "tsx scripts/create-session.ts",
+    "health:check": "tsx scripts/health-check.ts",
+    "automation:start": "tsx apps/runner/src/index.ts",
+    "automation:stop": "tsx scripts/stop-automation.ts",
+    "db:migrate": "tsx packages/db/src/migrate.ts",
+    "db:seed": "tsx packages/db/src/seed.ts",
+    "prepare": "husky install"
+  },
+  "dependencies": {
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "openai": "^6.17.0",
+    "pino": "^8.17.2",
+    "pino-pretty": "^10.3.1",
+    "playwright": "^1.58.1",
+    "puppeteer": "^24.36.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "selenium-webdriver": "^4.16.0",
+    "sql.js": "^1.9.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/selenium-webdriver": "^4.1.21",
+    "@typescript-eslint/eslint-plugin": "^6.17.0",
+    "@typescript-eslint/parser": "^6.17.0",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.1.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
+  },
+  "keywords": [
+    "safari",
+    "automation",
+    "webdriver",
+    "testing",
+    "selectors"
+  ],
+  "author": "",
+  "license": "MIT"
+}
