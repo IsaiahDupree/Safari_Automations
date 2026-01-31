@@ -890,6 +890,81 @@ async function main() {
       });
       break;
       
+    case 'health': {
+      if (!username) {
+        console.log('Usage: health <username>');
+        break;
+      }
+      console.log(`\n💚 Relationship Health Score for @${username}:\n`);
+      const health = await calculateRelationshipScore(username);
+      if (health) {
+        console.log(`  Total Score:     ${health.total}/100`);
+        console.log(`  ├─ Recency:      ${health.recency}/20`);
+        console.log(`  ├─ Resonance:    ${health.resonance}/20`);
+        console.log(`  ├─ Need Clarity: ${health.needClarity}/15`);
+        console.log(`  ├─ Value Given:  ${health.valueDelivered}/20`);
+        console.log(`  ├─ Reliability:  ${health.reliability}/15`);
+        console.log(`  └─ Consent:      ${health.consent}/10`);
+        console.log(`\n  Stage: ${health.stage}`);
+        if (health.nextAction) {
+          console.log(`  Next Action: ${health.nextAction}`);
+        }
+      } else {
+        console.log('  Contact not found');
+      }
+      break;
+    }
+    
+    case 'nextaction': {
+      if (!username) {
+        console.log('Usage: nextaction <username>');
+        break;
+      }
+      console.log(`\n🎯 Next Best Action for @${username}:\n`);
+      const nba = await getNextBestAction(username);
+      if (nba) {
+        console.log(`  Score: ${nba.score.total}/100 | Stage: ${nba.score.stage}`);
+        console.log(`  Lane:  ${nba.lane}`);
+        console.log(`\n  💬 Suggested message:`);
+        console.log(`  "${nba.action.action_text}"`);
+      } else {
+        console.log('  Contact not found');
+      }
+      break;
+    }
+    
+    case 'attention':
+      console.log('\n⚠️ Contacts Needing Attention:\n');
+      const needAttention = await getContactsNeedingAttention(10);
+      if (needAttention.length === 0) {
+        console.log('  All contacts are healthy!');
+      } else {
+        needAttention.forEach((c, i) => {
+          const lastTouch = c.last_meaningful_touch ? new Date(c.last_meaningful_touch).toLocaleDateString() : 'never';
+          console.log(`  ${i + 1}. @${c.instagram_username?.padEnd(25)} Last: ${lastTouch}`);
+        });
+      }
+      break;
+      
+    case 'detect': {
+      const text = args.slice(1).join(' ');
+      if (!text) {
+        console.log('Usage: detect <message text>');
+        break;
+      }
+      console.log(`\n🔍 Detecting fit signals in: "${text.substring(0, 50)}..."\n`);
+      const fits = await detectFitSignals(text);
+      if (fits.length === 0) {
+        console.log('  No fit signals detected');
+      } else {
+        fits.forEach((f, i) => {
+          console.log(`  ${i + 1}. [${f.product}] ${f.signal}`);
+          console.log(`     Offer: "${f.offer}"`);
+        });
+      }
+      break;
+    }
+      
     case 'batch': {
       console.log('\n📬 Batch Extraction from Known Contacts\n');
       const handles = Object.keys(KNOWN_HANDLES);
@@ -1125,6 +1200,188 @@ async function getRecentConversations(limit = 10): Promise<any[]> {
       instagram_contacts(instagram_username, display_name)
     `)
     .order('updated_at', { ascending: false })
+    .limit(limit);
+  
+  return data || [];
+}
+
+// ============== Relationship Health Score (Revio Framework) ==============
+
+interface RelationshipScore {
+  total: number;
+  recency: number;
+  resonance: number;
+  needClarity: number;
+  valueDelivered: number;
+  reliability: number;
+  consent: number;
+  stage: string;
+  nextAction: string | null;
+}
+
+/**
+ * Calculate relationship health score (0-100) based on Revio framework
+ * Weights: Recency 20, Resonance 20, Need Clarity 15, Value Delivered 20, Reliability 15, Consent 10
+ */
+async function calculateRelationshipScore(username: string): Promise<RelationshipScore | null> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  const { data: contact } = await supabase
+    .from('instagram_contacts')
+    .select('*')
+    .eq('instagram_username', clean)
+    .single();
+  
+  if (!contact) return null;
+  
+  // Calculate recency score (20 points max)
+  const lastTouch = contact.last_meaningful_touch ? new Date(contact.last_meaningful_touch) : null;
+  const daysSinceTouch = lastTouch ? (Date.now() - lastTouch.getTime()) / (1000 * 60 * 60 * 24) : 999;
+  const recency = daysSinceTouch <= 7 ? 20 : daysSinceTouch <= 14 ? 15 : daysSinceTouch <= 30 ? 10 : daysSinceTouch <= 60 ? 5 : 0;
+  
+  // Get stored scores or defaults
+  const resonance = Math.min(20, contact.resonance_score || 0);
+  const needClarity = Math.min(15, contact.need_clarity_score || 0);
+  const valueDelivered = Math.min(20, contact.value_delivered_score || 0);
+  const reliability = Math.min(15, contact.reliability_score || 0);
+  const consent = Math.min(10, contact.consent_level || 0);
+  
+  const total = recency + resonance + needClarity + valueDelivered + reliability + consent;
+  const stage = contact.relationship_stage || 'first_touch';
+  
+  // Determine next action based on score and stage
+  let nextAction = null;
+  if (total < 40) {
+    nextAction = 'rewarm: low_friction';
+  } else if (total < 60) {
+    nextAction = 'service: permission_to_help';
+  } else if (total < 80) {
+    nextAction = 'friendship: check_in';
+  } else if (stage === 'fit_repeats') {
+    nextAction = 'offer: permissioned_offer';
+  }
+  
+  return { total, recency, resonance, needClarity, valueDelivered, reliability, consent, stage, nextAction };
+}
+
+/**
+ * Update relationship score components after interaction
+ */
+async function recordInteraction(
+  username: string,
+  interactionType: 'reply_received' | 'value_delivered' | 'promise_kept' | 'consent_given' | 'trust_signal'
+): Promise<boolean> {
+  const clean = username.replace('@', '').toLowerCase();
+  
+  const { data: contact } = await supabase
+    .from('instagram_contacts')
+    .select('id, resonance_score, value_delivered_score, reliability_score, consent_level, trust_signals')
+    .eq('instagram_username', clean)
+    .single();
+  
+  if (!contact) return false;
+  
+  const updates: any = { 
+    last_meaningful_touch: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  
+  switch (interactionType) {
+    case 'reply_received':
+      updates.resonance_score = Math.min(20, (contact.resonance_score || 0) + 2);
+      break;
+    case 'value_delivered':
+      updates.value_delivered_score = Math.min(20, (contact.value_delivered_score || 0) + 5);
+      break;
+    case 'promise_kept':
+      updates.reliability_score = Math.min(15, (contact.reliability_score || 0) + 3);
+      break;
+    case 'consent_given':
+      updates.consent_level = Math.min(10, (contact.consent_level || 0) + 2);
+      break;
+    case 'trust_signal':
+      const signals = contact.trust_signals || [];
+      signals.push({ type: 'trust_signal', at: new Date().toISOString() });
+      updates.trust_signals = signals;
+      break;
+  }
+  
+  const { error } = await supabase
+    .from('instagram_contacts')
+    .update(updates)
+    .eq('id', contact.id);
+  
+  return !error;
+}
+
+/**
+ * Get next-best-action for a contact based on their stage and score
+ */
+async function getNextBestAction(username: string): Promise<any> {
+  const score = await calculateRelationshipScore(username);
+  if (!score) return null;
+  
+  // Determine which lane to use
+  let lane = 'friendship';
+  if (score.total < 40) lane = 'rewarm';
+  else if (score.total < 60) lane = 'service';
+  else if (score.stage === 'fit_repeats') lane = 'offer';
+  else if (score.stage === 'post_win') lane = 'retention';
+  
+  const { data: actions } = await supabase
+    .from('next_best_actions')
+    .select('*')
+    .eq('lane', lane)
+    .eq('is_active', true);
+  
+  if (!actions || actions.length === 0) return null;
+  
+  // Return a random action from the lane
+  const action = actions[Math.floor(Math.random() * actions.length)];
+  return { score, lane, action };
+}
+
+/**
+ * Detect fit signals from message text
+ */
+async function detectFitSignals(messageText: string): Promise<any[]> {
+  const { data: signals } = await supabase
+    .from('fit_signals')
+    .select('*')
+    .eq('is_active', true);
+  
+  if (!signals) return [];
+  
+  const detected: any[] = [];
+  const lowerText = messageText.toLowerCase();
+  
+  for (const signal of signals) {
+    const keywords = signal.signal_description.toLowerCase().split(' ');
+    const matches = keywords.filter((k: string) => k.length > 3 && lowerText.includes(k));
+    if (matches.length >= 2) {
+      detected.push({
+        product: signal.product,
+        signal: signal.signal_key,
+        description: signal.signal_description,
+        offer: signal.offer_template
+      });
+    }
+  }
+  
+  return detected;
+}
+
+/**
+ * Get contacts needing attention (low scores or stale)
+ */
+async function getContactsNeedingAttention(limit = 10): Promise<any[]> {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  
+  const { data } = await supabase
+    .from('instagram_contacts')
+    .select('instagram_username, display_name, relationship_score, last_meaningful_touch, relationship_stage')
+    .or(`last_meaningful_touch.lt.${thirtyDaysAgo},last_meaningful_touch.is.null`)
+    .order('relationship_score', { ascending: false })
     .limit(limit);
   
   return data || [];
