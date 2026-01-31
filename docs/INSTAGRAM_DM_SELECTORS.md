@@ -399,3 +399,98 @@ npx tsx scripts/extract-all-dms.ts
 - **128 messages found**
 - **119 new messages saved**
 - **139 total in database**
+
+---
+
+## Complete Automation Toolkit (NEW)
+
+### Script: `scripts/instagram-dm-automation.ts`
+
+Full-featured CLI for Instagram DM automation:
+
+```bash
+# Show DM tabs info
+npx tsx scripts/instagram-dm-automation.ts tabs
+
+# Switch tabs
+npx tsx scripts/instagram-dm-automation.ts switch General
+npx tsx scripts/instagram-dm-automation.ts switch Requests
+
+# Open Hidden Requests
+npx tsx scripts/instagram-dm-automation.ts hidden
+
+# List contacts in a tab
+npx tsx scripts/instagram-dm-automation.ts contacts Primary
+npx tsx scripts/instagram-dm-automation.ts contacts Requests
+
+# Open conversation
+npx tsx scripts/instagram-dm-automation.ts open "Sarah Ashley"
+
+# Extract messages
+npx tsx scripts/instagram-dm-automation.ts extract "Evan Dawson"
+
+# Send message (use with caution)
+npx tsx scripts/instagram-dm-automation.ts send "Contact Name" "Your message here"
+```
+
+### Conversation Actions Available
+| aria-label | Action |
+|------------|--------|
+| `Audio call` | Start voice call |
+| `Video call` | Start video call |
+| `Conversation information` | Open conversation details |
+| `Add Photo or Video` | Attach media |
+| `Voice Clip` | Record voice message |
+| `Choose a GIF or sticker` | Send GIF/sticker |
+| `Choose an emoji` | Open emoji picker |
+| `Send` | Send message (appears after typing) |
+
+### Send Message Pattern
+```javascript
+// 1. Focus textbox and insert text
+var textbox = document.querySelector("[role=textbox]");
+textbox.focus();
+document.execCommand("insertText", false, "Your message");
+
+// 2. Find and click Send button
+var parent = textbox.parentElement.parentElement.parentElement;
+var btns = parent.querySelectorAll("[aria-label]");
+for(var i=0; i<btns.length; i++){
+  if(btns[i].getAttribute("aria-label") === "Send"){
+    btns[i].click();
+  }
+}
+```
+
+### Tab Navigation Pattern
+```javascript
+// Switch to tab by name
+var tabs = document.querySelectorAll("[role=tab]");
+for(var i=0; i<tabs.length; i++){
+  if(tabs[i].innerText.includes("General")){
+    tabs[i].click();
+  }
+}
+
+// Get tab info
+tabs.forEach(t => ({
+  name: t.innerText.replace(/\s*\(\d+\)/, "").trim(),
+  selected: t.getAttribute("aria-selected") === "true",
+  count: t.innerText.match(/\((\d+)\)/)?.[1]
+}));
+```
+
+### Requests Tab Patterns
+| Element | Pattern |
+|---------|---------|
+| Request count | `Requests (N)` in tab text |
+| Hidden Requests link | Text containing "Hidden Requests" |
+| Delete all button | `Delete all N` text |
+| Accept/Decline | Buttons in conversation view |
+
+### Message Request Info Text
+```
+Message requests
+Open a chat to get more info about who's messaging you. 
+They won't know you've seen it until you accept.
+```
