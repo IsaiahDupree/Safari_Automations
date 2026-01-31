@@ -1,8 +1,17 @@
 # Revio-Style CRM Features Implementation
 
+> **Based on**: [getrevio.com](https://www.getrevio.com) - AI-powered social sales CRM
+
 ## Overview
 
-This document outlines the Revio-style relationship-first CRM features implemented in the Instagram API, based on the getrevio.com framework for AI-powered social sales.
+This document outlines the Revio-style relationship-first CRM features implemented in the Instagram API. The framework prioritizes **relationship health over sales pressure**, using AI to suggest the right action at the right time.
+
+### Philosophy
+
+- **Consent > Conversion**: Ask before advising, pitching, or booking
+- **Micro-wins > Big promises**: Tiny help delivered fast beats "let's hop on a call"
+- **Reliability is the product**: Follow-ups, sending resources, remembering details
+- **The 3:1 Rule**: For every 1 offer touch, do 3 relationship/value touches first
 
 ## Implemented Features
 
@@ -163,17 +172,51 @@ const action = await getNextBestAction('saraheashley');
 await recordInteraction('saraheashley', 'value_delivered');
 ```
 
-## Future Features (Not Yet Implemented)
+## Future Features (Roadmap)
 
-1. **AI Copilot** - Reply suggestions using LLM
-2. **Conversation Scoring** - Grade chat quality (0-100)
-3. **Automated Cadences** - Weekly touch automation
-4. **Pipeline Analytics** - Visual funnel + bottleneck detection
-5. **Audio/Video Follow-ups** - Media message support
-6. **Calendar Integration** - Booking/appointment setting
+| Feature | Status | Description |
+|---------|--------|-------------|
+| AI Copilot | ✅ Implemented | Reply suggestions using templates + fit detection |
+| Conversation Scoring | ✅ Implemented | Grade chat quality (0-100) |
+| Weekly Cadence | ✅ Implemented | Weekly task list by category |
+| Pipeline Analytics | 🔜 Planned | Visual funnel + bottleneck detection |
+| Audio/Video Follow-ups | 🔜 Planned | Media message support |
+| Calendar Integration | 🔜 Planned | Booking/appointment setting |
+| LLM Integration | 🔜 Planned | GPT-powered reply generation |
+
+## Metrics That Predict Long Relationships
+
+Track these to measure relationship health:
+
+| Metric | Why It Matters |
+|--------|----------------|
+| Meaningful replies per week | Shows engagement quality |
+| % of contacts with context filled | Shows you understand them |
+| Micro-wins delivered per month | Shows value given |
+| Time-to-follow-up | Shows reliability |
+| Permissioned offers accepted | Shows trust level |
+| Referrals / introductions | Ultimate trust indicator |
+
+## How Score Maps to Action
+
+| Score Range | Recommended Lane | Priority Action |
+|-------------|------------------|-----------------|
+| 80-100 | Friendship | Nurture, light collaboration |
+| 60-79 | Service | Deliver micro-win, capture context |
+| 40-59 | Service | Re-warm gently, ask questions |
+| 0-39 | Rewarm | Leave kind open loop, re-engage later |
+
+## Golden Trigger to Offer
+
+Only make an offer when ALL of these are true:
+
+1. **Fit Repeats** - Same pain shows up 2-3 times
+2. **Help Accepted** - They've accepted help before
+3. **Trust Signal** - They ask "what would you do?"
 
 ## Sources
 
-- Revio (getrevio.com) - AI Sales CRM framework
-- Gainsight - Customer success platform research
-- Relationship selling best practices
+- [Revio (getrevio.com)](https://www.getrevio.com) - AI Sales CRM framework
+- [Gainsight](https://www.gainsight.com) - Customer success platform research
+- [EveryoneSocial](https://everyonesocial.com) - Relationship selling stats
+- [Automateed Revio Review](https://www.automateed.com/revio-review) - Feature overview
