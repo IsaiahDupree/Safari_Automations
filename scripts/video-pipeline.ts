@@ -8,9 +8,172 @@
  *   npx tsx scripts/video-pipeline.ts --dir ~/sora-videos/badass-marathon/ --character isaiahdupree
  */
 
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { VideoPipeline } from '../packages/protocol/src/video-pipeline';
+
+const execAsync = promisify(exec);
+
+const DEFAULT_CLEANED_DIR = path.join(process.env.HOME || '~', 'sora-videos', 'cleaned');
+const WATERMARK_CLEANER_PATH = '/Users/isaiahdupree/Documents/Software/MediaPoster/Backend/SoraWatermarkCleaner';
+const DEFAULT_MEDIAPOSTER_URL = 'http://localhost:5555/api/webhooks/video-ready';
+
+interface PipelineOptions {
+  prompt: string;
+  character: string;
+  removeWatermark?: boolean;
+  alertMediaPoster?: boolean;
+  mediaPosterUrl?: string;
+  platforms?: string[];
+  autoPublish?: boolean;
+  cleanedDir?: string;
+}
+
+interface PipelineResult {
+  success: boolean;
+  videoPath: string;
+  cleanedPath?: string;
+  error?: string;
+  stages: {
+    watermarkRemoval?: { success: boolean; durationMs?: number; error?: string };
+    mediaPosterAlert?: { success: boolean; jobId?: string; error?: string };
+  };
+}
+
+class VideoPipeline {
+  private cleanedDir: string;
+  private mediaPosterUrl: string;
+
+  constructor() {
+    this.cleanedDir = DEFAULT_CLEANED_DIR;
+    this.mediaPosterUrl = DEFAULT_MEDIAPOSTER_URL;
+    if (!fs.existsSync(this.cleanedDir)) {
+      fs.mkdirSync(this.cleanedDir, { recursive: true });
+    }
+  }
+
+  async processVideo(videoPath: string, options: PipelineOptions): Promise<PipelineResult> {
+    const result: PipelineResult = { success: false, videoPath, stages: {} };
+
+    if (!fs.existsSync(videoPath)) {
+      result.error = `Video not found: ${videoPath}`;
+      return result;
+    }
+
+    // Stage 1: Watermark Removal
+    if (options.removeWatermark !== false) {
+      const cleanResult = await this.removeWatermark(videoPath, options);
+      result.stages.watermarkRemoval = cleanResult;
+      if (cleanResult.success) {
+        result.cleanedPath = cleanResult.cleanedPath;
+      }
+    } else {
+      result.cleanedPath = videoPath;
+    }
+
+    // Stage 2: Alert MediaPoster
+    if (options.alertMediaPoster !== false) {
+      const alertResult = await this.alertMediaPoster(result.cleanedPath || videoPath, videoPath, options);
+      result.stages.mediaPosterAlert = alertResult;
+    }
+
+    result.success = !!(result.cleanedPath || !options.removeWatermark);
+    return result;
+  }
+
+  async processDirectory(dirPath: string, options: Omit<PipelineOptions, 'prompt'>): Promise<{ total: number; succeeded: number; failed: number; results: PipelineResult[] }> {
+    const files = fs.readdirSync(dirPath)
+      .filter(f => f.endsWith('.mp4') && !f.startsWith('cleaned_'))
+      .map(f => path.join(dirPath, f));
+
+    const results: PipelineResult[] = [];
+    let succeeded = 0, failed = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      console.log(`\n[${i + 1}/${files.length}] Processing ${path.basename(files[i])}...`);
+      const result = await this.processVideo(files[i], { ...options, prompt: `Video ${i + 1}` });
+      results.push(result);
+      result.success ? succeeded++ : failed++;
+      if (i < files.length - 1) await this.delay(1000);
+    }
+
+    return { total: files.length, succeeded, failed, results };
+  }
+
+  private async removeWatermark(videoPath: string, options: PipelineOptions): Promise<{ success: boolean; cleanedPath?: string; durationMs?: number; error?: string }> {
+    const filename = path.basename(videoPath, '.mp4');
+    const outputDir = options.cleanedDir || this.cleanedDir;
+    const cleanedPath = path.join(outputDir, `cleaned_${filename}.mp4`);
+
+    if (fs.existsSync(cleanedPath)) {
+      console.log(`[Pipeline] Skipping (already cleaned)`);
+      return { success: true, cleanedPath, durationMs: 0 };
+    }
+
+    console.log(`[Pipeline] Removing watermark...`);
+    const startTime = Date.now();
+
+    try {
+      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+      // Create temp input dir with single video
+      const tempInputDir = path.join(outputDir, '.temp_input');
+      if (!fs.existsSync(tempInputDir)) fs.mkdirSync(tempInputDir, { recursive: true });
+      const tempInput = path.join(tempInputDir, path.basename(videoPath));
+      fs.copyFileSync(videoPath, tempInput);
+      
+      const cmd = `cd "${WATERMARK_CLEANER_PATH}" && uv run python cli.py -i "${tempInputDir}" -o "${outputDir}"`;
+      await execAsync(cmd, { timeout: 300000 });
+      
+      // Cleanup temp
+      fs.unlinkSync(tempInput);
+      fs.rmdirSync(tempInputDir);
+      const durationMs = Date.now() - startTime;
+
+      if (!fs.existsSync(cleanedPath)) throw new Error('Cleaned video not created');
+      console.log(`[Pipeline] ✅ Watermark removed in ${(durationMs / 1000).toFixed(1)}s`);
+      return { success: true, cleanedPath, durationMs };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[Pipeline] ❌ Watermark removal failed: ${errorMsg}`);
+      return { success: false, durationMs: Date.now() - startTime, error: errorMsg };
+    }
+  }
+
+  private async alertMediaPoster(videoPath: string, rawPath: string, options: PipelineOptions): Promise<{ success: boolean; jobId?: string; error?: string }> {
+    console.log(`[Pipeline] Alerting MediaPoster...`);
+    try {
+      const payload = {
+        video_path: videoPath,
+        raw_path: rawPath !== videoPath ? rawPath : undefined,
+        prompt: options.prompt,
+        character: options.character,
+        source: 'sora',
+        platforms: options.platforms || ['youtube', 'tiktok'],
+        auto_publish: options.autoPublish || false,
+      };
+
+      const response = await fetch(options.mediaPosterUrl || this.mediaPosterUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json() as { job_id?: string; id?: string };
+      console.log(`[Pipeline] ✅ MediaPoster alerted`);
+      return { success: true, jobId: result.job_id || result.id };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.warn(`[Pipeline] ⚠️ MediaPoster alert failed: ${errorMsg}`);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
