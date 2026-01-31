@@ -525,12 +525,14 @@ async function sendDMByUsername(username: string, message: string): Promise<bool
     await wait(3000);
   }
   
-  // Type and send message
+  // Type message using innerText + input event (proven pattern)
+  const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   const typeResult = await exec(`(function(){
-    var textbox = document.querySelector("[role=textbox]");
-    if(!textbox) return "no textbox";
-    textbox.focus();
-    document.execCommand("insertText", false, "${message.replace(/"/g, '\\"')}");
+    var tb = document.querySelector("[role=textbox]");
+    if(!tb) return "no textbox";
+    tb.focus();
+    tb.innerText = "${escapedMessage}";
+    tb.dispatchEvent(new InputEvent("input", {bubbles: true}));
     return "typed";
   })()`);
   
@@ -541,12 +543,11 @@ async function sendDMByUsername(username: string, message: string): Promise<bool
   
   await wait(500);
   
-  // Click send
+  // Click Send button (proven pattern)
   const sendResult = await exec(`(function(){
-    var parent = document.querySelector("[role=textbox]").parentElement.parentElement.parentElement;
-    var btns = parent.querySelectorAll("[aria-label]");
+    var btns = document.querySelectorAll("div[role=button]");
     for(var i=0; i<btns.length; i++){
-      if(btns[i].getAttribute("aria-label") === "Send"){
+      if(btns[i].innerText === "Send"){
         btns[i].click();
         return "sent";
       }
@@ -554,7 +555,13 @@ async function sendDMByUsername(username: string, message: string): Promise<bool
     return "no send";
   })()`);
   
-  return sendResult.includes('sent');
+  if (sendResult.includes('sent')) {
+    console.log('   ✅ Message sent!');
+    return true;
+  }
+  
+  console.log('   Could not find Send button');
+  return false;
 }
 
 // ============== Full User Analysis ==============
