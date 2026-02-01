@@ -211,6 +211,55 @@ app.get('/api/resources', async (req: Request, res: Response) => {
   }
 });
 
+// === COMMENT AUTOMATION ===
+
+app.post('/api/comments/threads/multi', async (req: Request, res: Response) => {
+  try {
+    const { count = 5, delayBetween = 30000, useAI = true } = req.body;
+    
+    // Forward to Threads comments API
+    const response = await fetch('http://localhost:3004/api/threads/engage/multi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count, delayBetween, useAI }),
+    });
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/comments/status', async (req: Request, res: Response) => {
+  try {
+    const platforms = [
+      { name: 'threads', port: 3004 },
+      { name: 'instagram', port: 3005 },
+      { name: 'tiktok', port: 3006 },
+      { name: 'twitter', port: 3007 },
+    ];
+    
+    const results = await Promise.all(
+      platforms.map(async (p) => {
+        try {
+          const response = await fetch(`http://localhost:${p.port}/api/${p.name}/status`, {
+            signal: AbortSignal.timeout(2000),
+          });
+          const data = await response.json();
+          return { platform: p.name, port: p.port, online: true, ...data };
+        } catch {
+          return { platform: p.name, port: p.port, online: false };
+        }
+      })
+    );
+    
+    res.json({ platforms: results });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Start server
 const PORT = parseInt(process.env.SCHEDULER_PORT || process.env.PORT || '3010');
 
@@ -222,6 +271,7 @@ export function startServer(port: number = PORT): void {
     console.log(`   Queue:     GET  /api/scheduler/queue`);
     console.log(`   Resources: GET  /api/resources`);
     console.log(`   Sora:      POST /api/sora/queue-trilogy`);
+    console.log(`   Comments:  POST /api/comments/threads/multi`);
   });
 }
 
