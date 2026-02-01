@@ -10,6 +10,7 @@ import cors from 'cors';
 import { ThreadsDriver, DEFAULT_CONFIG, type ThreadsConfig } from '../automation/threads-driver.js';
 import { ThreadsAutoCommenter } from '../automation/threads-auto-commenter.js';
 import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js';
+import { CommentLogger } from '../db/comment-logger.js';
 
 const app = express();
 app.use(cors());
@@ -222,6 +223,14 @@ function getAIGenerator(): ThreadsAICommentGenerator {
   return aiGenerator;
 }
 
+let commentLogger: CommentLogger | null = null;
+function getCommentLogger(): CommentLogger {
+  if (!commentLogger) {
+    commentLogger = new CommentLogger();
+  }
+  return commentLogger;
+}
+
 app.post('/api/threads/engage', async (req: Request, res: Response) => {
   try {
     const { postUrl } = req.body;
@@ -299,15 +308,51 @@ app.post('/api/threads/engage/multi', async (req: Request, res: Response) => {
       captureScreenshots,
     });
     
+    // Log results to database
+    const logger = getCommentLogger();
+    const dbResult = await logger.logSession(result.results, 'threads');
+    
     res.json({
       success: true,
       useAI,
       ...result.summary,
       results: result.results,
       logs: result.logs,
+      database: {
+        sessionId: logger.getSessionId(),
+        logged: dbResult.logged,
+        failed: dbResult.failed,
+      },
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// === DATABASE ENDPOINTS ===
+
+app.get('/api/threads/db/history', async (req: Request, res: Response) => {
+  try {
+    const { limit = '50', sessionId } = req.query;
+    const logger = getCommentLogger();
+    const history = await logger.getHistory({
+      platform: 'threads',
+      limit: parseInt(limit as string),
+      sessionId: sessionId as string,
+    });
+    res.json({ history, count: history.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/threads/db/stats', async (req: Request, res: Response) => {
+  try {
+    const logger = getCommentLogger();
+    const stats = await logger.getStats('threads');
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
   }
 });
 
