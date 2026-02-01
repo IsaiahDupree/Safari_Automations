@@ -97,6 +97,83 @@ const RATE_LIMITS = {
   newAccountDmsPerDay: 20,
 };
 
+// Rate limit tracking state
+interface RateLimitState {
+  dmsSentToday: number;
+  dmsSentThisHour: number;
+  lastDmTimestamp: number;
+  hourResetTime: number;
+  dayResetTime: number;
+}
+
+const rateLimitState: RateLimitState = {
+  dmsSentToday: 0,
+  dmsSentThisHour: 0,
+  lastDmTimestamp: 0,
+  hourResetTime: Date.now(),
+  dayResetTime: Date.now(),
+};
+
+/**
+ * Check and update rate limits before sending a DM
+ */
+function checkRateLimits(): { allowed: boolean; reason?: string; waitMs?: number } {
+  const now = Date.now();
+  
+  // Reset hourly counter if hour has passed
+  if (now - rateLimitState.hourResetTime > 60 * 60 * 1000) {
+    rateLimitState.dmsSentThisHour = 0;
+    rateLimitState.hourResetTime = now;
+  }
+  
+  // Reset daily counter if day has passed
+  if (now - rateLimitState.dayResetTime > 24 * 60 * 60 * 1000) {
+    rateLimitState.dmsSentToday = 0;
+    rateLimitState.dayResetTime = now;
+  }
+  
+  // Check hourly limit
+  if (rateLimitState.dmsSentThisHour >= RATE_LIMITS.maxDmsPerHour) {
+    const waitMs = 60 * 60 * 1000 - (now - rateLimitState.hourResetTime);
+    return { allowed: false, reason: 'hourly_limit', waitMs };
+  }
+  
+  // Check daily limit
+  if (rateLimitState.dmsSentToday >= RATE_LIMITS.maxDmsPerDay) {
+    return { allowed: false, reason: 'daily_limit' };
+  }
+  
+  // Check minimum delay between DMs
+  const timeSinceLastDm = now - rateLimitState.lastDmTimestamp;
+  if (timeSinceLastDm < RATE_LIMITS.minDelayBetweenDms && rateLimitState.lastDmTimestamp > 0) {
+    return { allowed: false, reason: 'too_fast', waitMs: RATE_LIMITS.minDelayBetweenDms - timeSinceLastDm };
+  }
+  
+  return { allowed: true };
+}
+
+/**
+ * Record a sent DM for rate limiting
+ */
+function recordDmSent(): void {
+  rateLimitState.dmsSentToday++;
+  rateLimitState.dmsSentThisHour++;
+  rateLimitState.lastDmTimestamp = Date.now();
+}
+
+/**
+ * Get current rate limit status
+ */
+function getRateLimitStatus(): { hourly: number; daily: number; lastDm: number; canSend: boolean } {
+  const check = checkRateLimits();
+  return {
+    hourly: rateLimitState.dmsSentThisHour,
+    daily: rateLimitState.dmsSentToday,
+    lastDm: rateLimitState.lastDmTimestamp,
+    canSend: check.allowed,
+  };
+}
+
 // ============== Helper Functions ==============
 
 function wait(ms: number): Promise<void> {
@@ -529,9 +606,20 @@ async function sendMessage(message: string): Promise<boolean> {
 
 /**
  * Send a DM to a user by username (profile-to-DM flow)
+ * Includes rate limiting and robust error handling
  */
-async function sendDMByUsername(username: string, message: string): Promise<boolean> {
+async function sendDMByUsername(username: string, message: string, skipRateLimit = false): Promise<boolean> {
   console.log(`\n📤 Sending DM to @${username}`);
+  
+  // Check rate limits first
+  if (!skipRateLimit) {
+    const rateCheck = checkRateLimits();
+    if (!rateCheck.allowed) {
+      const waitSec = rateCheck.waitMs ? Math.ceil(rateCheck.waitMs / 1000) : 0;
+      console.log(`   ⚠️ Rate limited: ${rateCheck.reason}${waitSec ? ` (wait ${waitSec}s)` : ''}`);
+      return false;
+    }
+  }
   
   // Navigate to user's profile
   console.log(`   📍 Navigating to profile...`);
@@ -622,12 +710,212 @@ async function sendDMByUsername(username: string, message: string): Promise<bool
   })()`);
   
   if (sendResult.includes('sent')) {
+    recordDmSent();
     console.log('   ✅ Message sent!');
+    const status = getRateLimitStatus();
+    console.log(`   📊 Rate: ${status.hourly}/${RATE_LIMITS.maxDmsPerHour} this hour, ${status.daily}/${RATE_LIMITS.maxDmsPerDay} today`);
     return true;
   }
   
   console.log('   ❌ Could not find Send button');
   return false;
+}
+
+/**
+ * Send DM from a profile URL (robust version with full error handling)
+ */
+async function sendDMFromProfileUrl(profileUrl: string, message: string): Promise<{ success: boolean; error?: string }> {
+  console.log(`\n📤 Sending DM from profile URL`);
+  
+  // Check rate limits
+  const rateCheck = checkRateLimits();
+  if (!rateCheck.allowed) {
+    return { success: false, error: `Rate limited: ${rateCheck.reason}` };
+  }
+  
+  // Extract username from URL
+  const urlMatch = profileUrl.match(/(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)/);
+  if (!urlMatch) {
+    return { success: false, error: 'Invalid profile URL' };
+  }
+  const username = urlMatch[1];
+  console.log(`   👤 Username: @${username}`);
+  
+  // Navigate to profile
+  console.log(`   📍 Navigating to profile...`);
+  await exec(`window.location.href = "${profileUrl}"`);
+  await wait(2000);
+  
+  // Wait for profile with extended retry
+  let profileStatus = 'loading';
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const check = await exec(`(function(){
+      var primary = document.querySelector('[data-testid="primaryColumn"]');
+      if(!primary) return 'loading';
+      if(primary.innerText.includes('This account doesn')) return 'not_found';
+      if(primary.innerText.includes('Account suspended')) return 'suspended';
+      if(primary.innerText.includes("These posts are protected")) return 'protected';
+      var dmBtn = document.querySelector('[data-testid="sendDMFromProfile"]');
+      if(dmBtn) return 'ready';
+      var followBtn = document.querySelector('[data-testid*="follow"]');
+      if(followBtn && !dmBtn) return 'no_dm_button';
+      return 'loading';
+    })()`);
+    
+    profileStatus = check;
+    if (['ready', 'not_found', 'suspended', 'protected', 'no_dm_button'].includes(check)) {
+      break;
+    }
+    await wait(1000);
+  }
+  
+  if (profileStatus === 'not_found') {
+    return { success: false, error: 'User not found' };
+  }
+  if (profileStatus === 'suspended') {
+    return { success: false, error: 'Account suspended' };
+  }
+  if (profileStatus === 'protected') {
+    return { success: false, error: 'Account is protected' };
+  }
+  if (profileStatus === 'no_dm_button') {
+    return { success: false, error: 'DMs not available for this user' };
+  }
+  if (profileStatus === 'loading') {
+    return { success: false, error: 'Profile failed to load' };
+  }
+  
+  // Click Message button
+  console.log(`   💬 Opening DM composer...`);
+  const clickResult = await exec(`(function(){
+    var btn = document.querySelector('[data-testid="sendDMFromProfile"]');
+    if(btn) { btn.click(); return 'clicked'; }
+    var msgBtn = document.querySelector('[aria-label="Message"]');
+    if(msgBtn) { msgBtn.click(); return 'clicked'; }
+    return 'not_found';
+  })()`);
+  
+  if (!clickResult.includes('clicked')) {
+    return { success: false, error: 'Could not click Message button' };
+  }
+  
+  // Wait for composer to open
+  await wait(2000);
+  
+  // Verify composer is ready
+  let composerReady = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const check = await exec(`(function(){
+      var tb = document.querySelector('[data-testid="dm-composer-textarea"]');
+      if(!tb) tb = document.querySelector('[role="textbox"]');
+      return tb ? 'ready' : 'loading';
+    })()`);
+    
+    if (check === 'ready') {
+      composerReady = true;
+      break;
+    }
+    await wait(800);
+  }
+  
+  if (!composerReady) {
+    return { success: false, error: 'DM composer did not open' };
+  }
+  
+  // Type message
+  console.log(`   ⌨️ Typing message...`);
+  const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  await exec(`(function(){
+    var tb = document.querySelector('[data-testid="dm-composer-textarea"]');
+    if(!tb) tb = document.querySelector('[role="textbox"]');
+    if(tb) {
+      tb.focus();
+      document.execCommand('insertText', false, "${escapedMessage}");
+    }
+  })()`);
+  
+  await wait(500);
+  
+  // Send message
+  const sendResult = await exec(`(function(){
+    var btn = document.querySelector('[data-testid="dm-composer-send-button"]');
+    if(!btn) btn = document.querySelector('[aria-label="Send"]');
+    if(btn) { btn.click(); return 'sent'; }
+    return 'no_button';
+  })()`);
+  
+  if (sendResult.includes('sent')) {
+    recordDmSent();
+    console.log('   ✅ Message sent!');
+    const status = getRateLimitStatus();
+    console.log(`   📊 Rate: ${status.hourly}/${RATE_LIMITS.maxDmsPerHour} this hour`);
+    return { success: true };
+  }
+  
+  return { success: false, error: 'Could not send message' };
+}
+
+/**
+ * Get list of unread conversations
+ */
+async function getUnreadConversations(): Promise<TwitterConversation[]> {
+  const onDMs = await isOnTwitterDMs();
+  if (!onDMs) {
+    await navigateToDMs();
+    await wait(2000);
+  }
+  
+  const result = await exec(`(function(){
+    var list = [];
+    var convos = document.querySelectorAll('[data-testid^="dm-conversation-item"]');
+    for(var i = 0; i < convos.length; i++) {
+      var c = convos[i];
+      var unread = c.querySelector('[data-testid="unread-badge"]') !== null;
+      if(!unread) continue;
+      var testid = c.getAttribute('data-testid') || '';
+      var id = testid.replace('dm-conversation-item-', '');
+      var text = c.innerText;
+      var lines = text.split('\\n').filter(function(l) { return l.trim(); });
+      list.push({
+        id: id,
+        displayName: lines[0] || '',
+        username: '',
+        lastMessage: (lines[2] || lines[1] || '').substring(0, 100),
+        timestamp: lines[1] || '',
+        unread: true
+      });
+    }
+    return JSON.stringify(list);
+  })()`);
+  
+  try {
+    return JSON.parse(result);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Scroll conversation to load older messages
+ */
+async function scrollConversation(scrollCount: number = 3): Promise<number> {
+  let totalMessages = 0;
+  
+  for (let i = 0; i < scrollCount; i++) {
+    await exec(`(function(){
+      var container = document.querySelector('[data-testid="dm-message-list"]');
+      if(!container) container = document.querySelector('[data-testid="dm-conversation-content"]');
+      if(container) {
+        container.scrollTop = 0;
+      }
+    })()`);
+    await wait(1500);
+    
+    const count = await exec(`document.querySelectorAll('[data-testid^="message-"]').length`);
+    totalMessages = parseInt(count) || 0;
+  }
+  
+  return totalMessages;
 }
 
 // ============== Profile Operations ==============
@@ -1007,6 +1295,8 @@ async function main() {
     console.log('  messages                     - Extract messages');
     console.log('  send <message>               - Send message');
     console.log('  dm <username> <message>      - Send DM to user');
+    console.log('  dmurl <url> <message>        - Send DM from profile URL');
+    console.log('  unread                       - List unread conversations');
     console.log('  profile <username>           - Extract profile data');
     console.log('  stats                        - Database statistics');
     console.log('  health <username>            - Relationship health score');
@@ -1018,8 +1308,8 @@ async function main() {
     console.log('  explore                      - Explore DOM');
     console.log('\nExamples:');
     console.log('  npx tsx scripts/twitter-api.ts status');
-    console.log('  npx tsx scripts/twitter-api.ts conversations');
-    console.log('  npx tsx scripts/twitter-api.ts dm elonmusk "Hello!"');
+    console.log('  npx tsx scripts/twitter-api.ts dm saraheashley "Hello!"');
+    console.log('  npx tsx scripts/twitter-api.ts dmurl https://x.com/saraheashley "Hello!"');
     return;
   }
   
@@ -1055,13 +1345,32 @@ async function main() {
     
     case 'ratelimit': {
       const rateLimit = await detectRateLimiting();
-      console.log('⚠️ Rate Limit Check:\n');
+      const internal = getRateLimitStatus();
+      const check = checkRateLimits();
+      
+      console.log('⚠️ Rate Limit Status:\n');
+      
+      // Twitter-side detection
       if (rateLimit.limited) {
-        console.log(`  ❌ Rate limited: ${rateLimit.reason}`);
+        console.log(`  ❌ Twitter Rate Limited: ${rateLimit.reason}`);
       } else {
-        console.log(`  ✅ No rate limiting detected`);
+        console.log(`  ✅ No Twitter rate limiting detected`);
       }
-      console.log('\n  Recommended limits:');
+      
+      // Internal tracking
+      console.log('\n  📊 Session Tracking:');
+      console.log(`    DMs this hour: ${internal.hourly}/${RATE_LIMITS.maxDmsPerHour}`);
+      console.log(`    DMs today: ${internal.daily}/${RATE_LIMITS.maxDmsPerDay}`);
+      if (internal.lastDm > 0) {
+        const secAgo = Math.floor((Date.now() - internal.lastDm) / 1000);
+        console.log(`    Last DM: ${secAgo}s ago`);
+      }
+      console.log(`    Can send now: ${check.allowed ? '✅ Yes' : '❌ No'}`);
+      if (!check.allowed && check.waitMs) {
+        console.log(`    Wait: ${Math.ceil(check.waitMs / 1000)}s`);
+      }
+      
+      console.log('\n  📋 Limits:');
       console.log(`    Max DMs/hour: ${RATE_LIMITS.maxDmsPerHour}`);
       console.log(`    Max DMs/day: ${RATE_LIMITS.maxDmsPerDay}`);
       console.log(`    Min delay: ${RATE_LIMITS.minDelayBetweenDms / 1000}s`);
@@ -1133,6 +1442,36 @@ async function main() {
         break;
       }
       await sendDMByUsername(username, message);
+      break;
+    }
+    
+    case 'dmurl': {
+      const profileUrl = args[1];
+      const message = args.slice(2).join(' ');
+      if (!profileUrl || !message) {
+        console.log('Usage: dmurl <url> <message>');
+        console.log('Example: dmurl https://x.com/saraheashley "Hello!"');
+        break;
+      }
+      const result = await sendDMFromProfileUrl(profileUrl, message);
+      if (!result.success) {
+        console.log(`   ❌ Failed: ${result.error}`);
+      }
+      break;
+    }
+    
+    case 'unread': {
+      console.log('📬 Unread Conversations:\n');
+      const unread = await getUnreadConversations();
+      if (unread.length === 0) {
+        console.log('  No unread conversations');
+      } else {
+        unread.forEach((c, i) => {
+          console.log(`  ${i + 1}. ${c.displayName}`);
+          console.log(`     Last: ${c.lastMessage}`);
+        });
+      }
+      console.log(`\n  Total: ${unread.length} unread`);
       break;
     }
     
@@ -1312,11 +1651,16 @@ export {
   extractMessages,
   sendMessage,
   sendDMByUsername,
+  sendDMFromProfileUrl,
   extractProfileData,
+  getUnreadConversations,
+  scrollConversation,
   
   // Login & Safety
   checkLoginStatus,
   detectRateLimiting,
+  checkRateLimits,
+  getRateLimitStatus,
   
   // Database
   saveConversationToDatabase,
