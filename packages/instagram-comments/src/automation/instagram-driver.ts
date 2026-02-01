@@ -227,7 +227,8 @@ export class InstagramDriver {
    */
   private async typeViaClipboard(text: string): Promise<boolean> {
     const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    await execAsync(`echo -n "${escaped}" | pbcopy`).catch(() => null);
+    // Use printf instead of echo -n to avoid -n appearing in output on some shells
+    await execAsync(`printf '%s' "${escaped}" | pbcopy`).catch(() => null);
     await this.wait(200);
     
     const script = `
@@ -489,5 +490,157 @@ end tell`;
   async scroll(): Promise<void> {
     await this.executeJS(`window.scrollBy(0, 800);`);
     await this.wait(1000);
+  }
+
+  /**
+   * Like the current post
+   */
+  async likePost(): Promise<boolean> {
+    const result = await this.executeJS(`
+      (function() {
+        // Try heart icon with "Like" aria-label (not already liked)
+        var likeBtn = document.querySelector('svg[aria-label="Like"]');
+        if (likeBtn) {
+          var btn = likeBtn.closest('button') || likeBtn.parentElement;
+          if (btn) { btn.click(); return 'liked'; }
+        }
+        // Check if already liked
+        var unlikeBtn = document.querySelector('svg[aria-label="Unlike"]');
+        if (unlikeBtn) {
+          return 'already_liked';
+        }
+        return 'not_found';
+      })();
+    `);
+    console.log(`[Instagram] Like result: ${result}`);
+    return result === 'liked' || result === 'already_liked';
+  }
+
+  /**
+   * Search Instagram by keyword/hashtag
+   */
+  async searchByKeyword(keyword: string): Promise<Array<{ username: string; url?: string }>> {
+    // Navigate to explore/search
+    const searchUrl = keyword.startsWith('#') 
+      ? `https://www.instagram.com/explore/tags/${keyword.replace('#', '')}/`
+      : `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(keyword)}`;
+    
+    console.log(`[Instagram] Searching: ${searchUrl}`);
+    await this.navigate(searchUrl);
+    await this.wait(3000);
+    
+    // Collect posts from search results
+    return this.findPosts(20);
+  }
+
+  /**
+   * Get comments with better selectors
+   */
+  async getCommentsDetailed(limit: number = 20): Promise<Array<{ username: string; text: string; timestamp?: string }>> {
+    const result = await this.executeJS(`
+      (function() {
+        var comments = [];
+        
+        // Try multiple selectors for Instagram comments
+        var selectors = [
+          'ul ul li',                           // Nested comment list
+          'div[role="button"] + ul li',         // Comments under expand button
+          'article ul li',                      // Article comment list
+          'ul[class*="Comment"] li',            // Class-based
+          'div[class*="comment" i] li'          // Case-insensitive class
+        ];
+        
+        for (var selector of selectors) {
+          var items = document.querySelectorAll(selector);
+          for (var i = 0; i < Math.min(items.length, ${limit}); i++) {
+            var item = items[i];
+            
+            // Find username
+            var userLink = item.querySelector('a[href^="/"]:not([href*="/p/"])');
+            var username = userLink ? userLink.textContent.trim() : '';
+            
+            // Find comment text - try multiple approaches
+            var textEl = item.querySelector('span:not(:has(a))');
+            if (!textEl) textEl = item.querySelector('span > span');
+            if (!textEl) textEl = item.querySelector('div > span');
+            var text = textEl ? textEl.textContent.trim() : '';
+            
+            // Find timestamp
+            var timeEl = item.querySelector('time');
+            var timestamp = timeEl ? timeEl.getAttribute('datetime') : '';
+            
+            if (username && text && text.length > 2) {
+              // Avoid duplicates
+              var isDupe = comments.some(c => c.username === username && c.text === text);
+              if (!isDupe) {
+                comments.push({ username: username, text: text.substring(0, 300), timestamp: timestamp });
+              }
+            }
+          }
+          
+          if (comments.length > 0) break; // Found comments with this selector
+        }
+        
+        return JSON.stringify(comments);
+      })();
+    `);
+
+    try {
+      return JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get post caption with better extraction
+   */
+  async getCaptionDetailed(): Promise<{ caption: string; hashtags: string[]; mentions: string[] }> {
+    const result = await this.executeJS(`
+      (function() {
+        var caption = '';
+        var hashtags = [];
+        var mentions = [];
+        
+        // Try multiple selectors for caption
+        var captionSelectors = [
+          'article h1',
+          'article span[class*="Caption"]',
+          'article div[class*="Caption"] span',
+          'div[role="button"] + span',
+          'article ul li:first-child span'
+        ];
+        
+        for (var selector of captionSelectors) {
+          var el = document.querySelector(selector);
+          if (el && el.textContent.trim().length > 10) {
+            caption = el.textContent.trim();
+            break;
+          }
+        }
+        
+        // Extract hashtags
+        var hashtagLinks = document.querySelectorAll('a[href*="/explore/tags/"]');
+        hashtagLinks.forEach(function(link) {
+          var tag = link.textContent.trim();
+          if (tag.startsWith('#')) hashtags.push(tag);
+        });
+        
+        // Extract mentions
+        var mentionLinks = document.querySelectorAll('a[href^="/"]:not([href*="/p/"]):not([href*="/explore/"])');
+        mentionLinks.forEach(function(link) {
+          var mention = link.textContent.trim();
+          if (mention.startsWith('@')) mentions.push(mention);
+        });
+        
+        return JSON.stringify({ caption: caption.substring(0, 1000), hashtags: hashtags, mentions: mentions });
+      })();
+    `);
+
+    try {
+      return JSON.parse(result);
+    } catch {
+      return { caption: '', hashtags: [], mentions: [] };
+    }
   }
 }

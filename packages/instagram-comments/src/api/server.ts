@@ -169,15 +169,35 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
     await d.navigateToPost('https://www.instagram.com');
     await new Promise(r => setTimeout(r, 3000));
     
-    // Step 1: Collect all post URLs first
-    log(`[Instagram] � Collecting ${count} post URLs from feed...`);
+    // Step 1: Collect all post URLs first (and like while scrolling)
+    log(`[Instagram] 📋 Collecting ${count} post URLs from feed...`);
     let allPosts: Array<{ username: string; url?: string }> = [];
     let scrollAttempts = 0;
+    let likesGiven = 0;
+    
     while (allPosts.length < count && scrollAttempts < 5) {
       const posts = await d.findPosts(count * 2);
       for (const post of posts) {
         if (post.url && !allPosts.find(p => p.url === post.url)) {
           allPosts.push(post);
+          
+          // Like posts while collecting (optional engagement)
+          if (likesGiven < 3) { // Limit likes to avoid spam
+            try {
+              // Quick navigation to like
+              await d.navigateToPost(post.url);
+              await new Promise(r => setTimeout(r, 1500));
+              const liked = await d.likePost();
+              if (liked) {
+                likesGiven++;
+                log(`[Instagram] ❤️ Liked post by @${post.username || 'unknown'}`);
+              }
+              await d.clickBack();
+              await new Promise(r => setTimeout(r, 1000));
+            } catch {
+              // Continue if like fails
+            }
+          }
         }
       }
       if (allPosts.length < count) {
@@ -188,7 +208,7 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
     }
     
     const targetPosts = allPosts.slice(0, count);
-    log(`[Instagram] ✅ Found ${targetPosts.length} unique posts`);
+    log(`[Instagram] ✅ Found ${targetPosts.length} unique posts, liked ${likesGiven}`);
     for (let i = 0; i < targetPosts.length; i++) {
       log(`[Instagram]   ${i + 1}. @${targetPosts[i].username || 'unknown'}: ${targetPosts[i].url}`);
     }
@@ -217,10 +237,15 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
         log(`[Instagram] 👤 Author: @${details.username}`);
         log(`[Instagram] 📄 Caption: "${(details.caption || '').substring(0, 50)}..."`);
         
-        // Get existing comments for context
+        // Get existing comments for context (using detailed extractor)
         log(`[Instagram] 💬 Getting existing comments...`);
-        const existingComments = await d.getComments(10);
+        const existingComments = await d.getCommentsDetailed(10);
         log(`[Instagram]   Found ${existingComments.length} comments`);
+        if (existingComments.length > 0) {
+          for (const c of existingComments.slice(0, 3)) {
+            log(`[Instagram]   💭 @${c.username}: "${c.text.substring(0, 40)}..."`);
+          }
+        }
         
         // Check if we already commented (duplicate detection)
         const ourUsername = 'isaiahdupree'; // TODO: Get from config
@@ -379,6 +404,132 @@ app.get('/api/instagram/db/stats', async (req: Request, res: Response) => {
     const logger = getCommentLogger();
     const stats = await logger.getStats('instagram');
     res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === KEYWORD SEARCH ===
+
+app.post('/api/instagram/search/keyword', async (req: Request, res: Response) => {
+  try {
+    const { keyword, count = 5, comment = true, delayBetween = 8000 } = req.body;
+    if (!keyword) {
+      res.status(400).json({ error: 'keyword is required' });
+      return;
+    }
+    
+    const d = getDriver();
+    const ai = getAIGenerator();
+    const logger = getCommentLogger();
+    
+    const results: Array<{ success: boolean; username: string; comment: string; postUrl?: string; error?: string }> = [];
+    const logs: string[] = [];
+    const startTime = Date.now();
+    
+    const log = (msg: string) => {
+      const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+      const formatted = `[${timestamp}] ${msg}`;
+      console.log(formatted);
+      logs.push(formatted);
+    };
+    
+    log(`[Instagram] 🔍 Keyword search: "${keyword}"`);
+    
+    // Search by keyword/hashtag
+    const posts = await d.searchByKeyword(keyword);
+    log(`[Instagram] ✅ Found ${posts.length} posts for "${keyword}"`);
+    
+    const targetPosts = posts.slice(0, count);
+    
+    if (!comment) {
+      // Just return the URLs without commenting
+      res.json({
+        success: true,
+        keyword,
+        posts: targetPosts,
+        count: targetPosts.length,
+      });
+      return;
+    }
+    
+    // Comment on each post with keyword-relevant context
+    for (let i = 0; i < targetPosts.length; i++) {
+      const post = targetPosts[i];
+      log(`\n[Instagram] 📝 Post ${i + 1}/${targetPosts.length}: ${post.url}`);
+      
+      try {
+        await d.navigateToPost(post.url!);
+        await new Promise(r => setTimeout(r, 3000));
+        
+        // Get detailed caption and comments
+        const captionData = await d.getCaptionDetailed();
+        const existingComments = await d.getCommentsDetailed(10);
+        
+        log(`[Instagram] 📄 Caption: "${captionData.caption.substring(0, 50)}..."`);
+        log(`[Instagram] #️⃣ Hashtags: ${captionData.hashtags.join(', ') || 'none'}`);
+        log(`[Instagram] 💬 Comments: ${existingComments.length}`);
+        
+        // AI analysis with keyword context
+        const analysis = ai.analyzePost({
+          mainPost: `[Keyword: ${keyword}] ${captionData.caption}`,
+          username: post.username || 'unknown',
+          replies: existingComments.map(c => `@${c.username}: ${c.text}`),
+        });
+        
+        if (analysis.isInappropriate) {
+          log(`[Instagram] ⚠️ SKIPPED - ${analysis.skipReason}`);
+          results.push({ success: false, username: post.username, comment: '', postUrl: post.url, error: `Skipped: ${analysis.skipReason}` });
+          continue;
+        }
+        
+        // Generate keyword-relevant comment
+        const generatedComment = await ai.generateComment(analysis);
+        log(`[Instagram] ✏️ Generated: "${generatedComment}"`);
+        
+        // Post the comment
+        const result = await d.postComment(generatedComment);
+        
+        if (result.success) {
+          log(`[Instagram] ✅ Comment posted!`);
+          results.push({ success: true, username: post.username, comment: generatedComment, postUrl: post.url });
+        } else {
+          log(`[Instagram] ❌ Failed: ${result.error}`);
+          results.push({ success: false, username: post.username, comment: generatedComment, postUrl: post.url, error: result.error });
+        }
+        
+        if (i < targetPosts.length - 1) {
+          log(`[Instagram] ⏳ Waiting ${delayBetween / 1000}s...`);
+          await new Promise(r => setTimeout(r, delayBetween));
+        }
+        
+      } catch (error) {
+        log(`[Instagram] ❌ Error: ${error}`);
+        results.push({ success: false, username: post.username, comment: '', postUrl: post.url, error: String(error) });
+      }
+    }
+    
+    const duration = Date.now() - startTime;
+    const successful = results.filter(r => r.success).length;
+    
+    // Log to database
+    const dbResult = await logger.logSession(results, 'instagram');
+    
+    res.json({
+      success: true,
+      keyword,
+      total: targetPosts.length,
+      successful,
+      failed: targetPosts.length - successful,
+      duration,
+      results,
+      logs,
+      database: {
+        sessionId: logger.getSessionId(),
+        logged: dbResult.logged,
+        failed: dbResult.failed,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
