@@ -302,6 +302,112 @@ async function openConversation(conversationId: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Switch to DM tab (All or Requests)
+ */
+async function switchTab(tab: 'all' | 'requests'): Promise<boolean> {
+  const selector = tab === 'all' 
+    ? '[data-testid="dm-inbox-tab-all"]'
+    : '[data-testid="dm-inbox-tab-requests"], [href="/messages/requests"]';
+  
+  const result = await exec(`(function(){
+    var tabEl = document.querySelector('${selector}');
+    if(tabEl) {
+      tabEl.click();
+      return 'clicked';
+    }
+    return 'not found';
+  })()`);
+  
+  if (result === 'clicked') {
+    await wait(1500);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Start a new conversation with a user
+ */
+async function startNewConversation(username: string): Promise<boolean> {
+  console.log(`📝 Starting new conversation with @${username}`);
+  
+  // Click new chat button
+  const newChatResult = await exec(`(function(){
+    var btn = document.querySelector('[data-testid="dm-new-chat-button"]');
+    if(!btn) btn = document.querySelector('[data-testid="NewDM_Button"]');
+    if(btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  })()`);
+  
+  if (!newChatResult.includes('clicked')) {
+    console.log('   ❌ Could not find new chat button');
+    return false;
+  }
+  
+  await wait(1500);
+  
+  // Type username in search
+  const escapedUsername = username.replace(/"/g, '\\"');
+  const searchResult = await exec(`(function(){
+    var input = document.querySelector('[data-testid="dm-search-bar"]');
+    if(!input) input = document.querySelector('[data-testid="SearchBox_Search_Input"]');
+    if(!input) input = document.querySelector('input[placeholder*="Search"]');
+    if(input) {
+      input.focus();
+      input.value = "${escapedUsername}";
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'typed';
+    }
+    return 'not found';
+  })()`);
+  
+  if (!searchResult.includes('typed')) {
+    console.log('   ❌ Could not find search input');
+    return false;
+  }
+  
+  await wait(2000);
+  
+  // Click on user result
+  const selectResult = await exec(`(function(){
+    var results = document.querySelectorAll('[data-testid="TypeaheadUser"], [data-testid="UserCell"]');
+    for(var i = 0; i < results.length; i++) {
+      if(results[i].innerText.toLowerCase().includes('${escapedUsername.toLowerCase()}')) {
+        results[i].click();
+        return 'selected';
+      }
+    }
+    return 'not found';
+  })()`);
+  
+  if (!selectResult.includes('selected')) {
+    console.log('   ❌ Could not find user in search results');
+    return false;
+  }
+  
+  await wait(1000);
+  
+  // Click Next button to open chat
+  await exec(`(function(){
+    var btns = document.querySelectorAll('button, [role="button"]');
+    for(var i = 0; i < btns.length; i++) {
+      if(btns[i].innerText.toLowerCase() === 'next') {
+        btns[i].click();
+        return 'clicked';
+      }
+    }
+    return 'not found';
+  })()`);
+  
+  await wait(1500);
+  console.log('   ✅ New conversation ready');
+  return true;
+}
+
 // ============== Message Operations ==============
 
 interface TwitterMessage {
@@ -312,18 +418,28 @@ interface TwitterMessage {
 
 /**
  * Extract messages from current conversation
- * Uses tweetText selector which captures actual message content
+ * Uses message testids and detects inbound/outbound by position
  */
 async function extractMessages(): Promise<TwitterMessage[]> {
   const result = await exec(`(function(){
     var messages = [];
-    var tweetTexts = document.querySelectorAll('[data-testid="tweetText"]');
-    for(var i = 0; i < tweetTexts.length; i++) {
-      var text = tweetTexts[i].innerText.trim();
+    var windowWidth = window.innerWidth;
+    
+    // Try dm-message-list first
+    var msgEls = document.querySelectorAll('[data-testid^="message-"]');
+    if(msgEls.length === 0) msgEls = document.querySelectorAll('[data-testid="tweetText"]');
+    
+    for(var i = 0; i < msgEls.length; i++) {
+      var el = msgEls[i];
+      var text = el.innerText.trim();
       if(text && text.length > 0 && text.length < 2000) {
-        messages.push({ text: text, isOutbound: false });
+        // Detect outbound by position (right side = sent by user)
+        var rect = el.getBoundingClientRect();
+        var isOutbound = rect.left > (windowWidth / 2);
+        messages.push({ text: text, isOutbound: isOutbound });
       }
     }
+    
     if(messages.length === 0) {
       var cells = document.querySelectorAll('[data-testid="cellInnerDiv"]');
       for(var i = 0; i < cells.length; i++) {
@@ -412,21 +528,56 @@ async function sendMessage(message: string): Promise<boolean> {
 }
 
 /**
- * Send a DM to a user by username
+ * Send a DM to a user by username (profile-to-DM flow)
  */
 async function sendDMByUsername(username: string, message: string): Promise<boolean> {
   console.log(`\n📤 Sending DM to @${username}`);
   
   // Navigate to user's profile
+  console.log(`   📍 Navigating to profile...`);
   await exec(`window.location.href = "https://x.com/${username}"`);
-  await wait(3000);
+  await wait(2000);
+  
+  // Wait for profile to load with retry
+  let profileReady = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const profileCheck = await exec(`(function(){
+      var primary = document.querySelector('[data-testid="primaryColumn"]');
+      if(primary && primary.innerText.includes('This account doesn')) return 'not_found';
+      var dmBtn = document.querySelector('[data-testid="sendDMFromProfile"]');
+      return dmBtn ? 'profile_ready' : 'loading';
+    })()`);
+    
+    if (profileCheck.includes('not_found')) {
+      console.log(`   ❌ User @${username} not found`);
+      return false;
+    }
+    
+    if (profileCheck.includes('profile_ready')) {
+      profileReady = true;
+      break;
+    }
+    
+    await wait(1000);
+  }
+  
+  if (!profileReady) {
+    console.log(`   ⏳ Profile loading slowly, continuing anyway...`);
+  }
   
   // Click the Message button
+  console.log(`   💬 Clicking Message button...`);
   const clickResult = await exec(`(function(){
     var btn = document.querySelector('[data-testid="sendDMFromProfile"]');
     if(btn) {
       btn.click();
       return 'clicked';
+    }
+    // Fallback: aria-label
+    var msgBtn = document.querySelector('[aria-label="Message"]');
+    if(msgBtn) {
+      msgBtn.click();
+      return 'clicked_aria';
     }
     return 'not found';
   })()`);
@@ -438,8 +589,45 @@ async function sendDMByUsername(username: string, message: string): Promise<bool
   
   await wait(2000);
   
-  // Now send the message
-  return await sendMessage(message);
+  // Type message using the new DM composer textarea
+  console.log(`   ⌨️ Typing message...`);
+  const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  const typeResult = await exec(`(function(){
+    var tb = document.querySelector('[data-testid="dm-composer-textarea"]');
+    if(!tb) tb = document.querySelector('[role="textbox"]');
+    if(!tb) tb = document.querySelector('[contenteditable="true"]');
+    if(!tb) return 'no textbox';
+    tb.focus();
+    document.execCommand('insertText', false, "${escapedMessage}");
+    return 'typed';
+  })()`);
+  
+  if (!typeResult.includes('typed')) {
+    console.log('   ❌ Could not type message');
+    return false;
+  }
+  
+  await wait(500);
+  
+  // Click send button
+  const sendResult = await exec(`(function(){
+    var btn = document.querySelector('[data-testid="dm-composer-send-button"]');
+    if(!btn) btn = document.querySelector('[data-testid="dmComposerSendButton"]');
+    if(!btn) btn = document.querySelector('[aria-label="Send"]');
+    if(btn) {
+      btn.click();
+      return 'sent';
+    }
+    return 'no send button';
+  })()`);
+  
+  if (sendResult.includes('sent')) {
+    console.log('   ✅ Message sent!');
+    return true;
+  }
+  
+  console.log('   ❌ Could not find Send button');
+  return false;
 }
 
 // ============== Profile Operations ==============
@@ -1119,10 +1307,16 @@ export {
   // Conversations
   listConversations,
   openConversation,
+  switchTab,
+  startNewConversation,
   extractMessages,
   sendMessage,
   sendDMByUsername,
   extractProfileData,
+  
+  // Login & Safety
+  checkLoginStatus,
+  detectRateLimiting,
   
   // Database
   saveConversationToDatabase,
@@ -1137,7 +1331,8 @@ export {
   getTopContacts,
   searchMessages,
   
-  // Status
+  // Status & Config
   getStatus,
+  RATE_LIMITS,
   SELECTORS
 };
