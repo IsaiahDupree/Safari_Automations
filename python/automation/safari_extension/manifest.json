@@ -1,0 +1,32 @@
+{
+    "manifest_version": 2,
+    "name": "TikTok Comment Automation",
+    "version": "1.0.0",
+    "description": "Enables automated comment posting on TikTok by injecting keyboard events into Draft.js editor",
+    "permissions": [
+        "activeTab",
+        "nativeMessaging",
+        "tabs",
+        "*://*.tiktok.com/*"
+    ],
+    "background": {
+        "scripts": ["background.js"],
+        "persistent": false
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.tiktok.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "browser_action": {
+        "default_title": "TikTok Comment Automation",
+        "default_popup": "popup.html"
+    },
+    "web_accessible_resources": []
+}
