@@ -169,45 +169,85 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
     await d.navigateToPost('https://www.instagram.com');
     await new Promise(r => setTimeout(r, 3000));
     
-    for (let i = 0; i < count; i++) {
+    // Step 1: Collect all post URLs first
+    log(`[Instagram] � Collecting ${count} post URLs from feed...`);
+    let allPosts: Array<{ username: string; url?: string }> = [];
+    let scrollAttempts = 0;
+    while (allPosts.length < count && scrollAttempts < 5) {
+      const posts = await d.findPosts(count * 2);
+      for (const post of posts) {
+        if (post.url && !allPosts.find(p => p.url === post.url)) {
+          allPosts.push(post);
+        }
+      }
+      if (allPosts.length < count) {
+        await d.scroll();
+        await new Promise(r => setTimeout(r, 1500));
+        scrollAttempts++;
+      }
+    }
+    
+    const targetPosts = allPosts.slice(0, count);
+    log(`[Instagram] ✅ Found ${targetPosts.length} unique posts`);
+    for (let i = 0; i < targetPosts.length; i++) {
+      log(`[Instagram]   ${i + 1}. @${targetPosts[i].username || 'unknown'}: ${targetPosts[i].url}`);
+    }
+    
+    // Step 2: Visit each post individually
+    for (let i = 0; i < targetPosts.length; i++) {
+      const targetPost = targetPosts[i];
       log(`\n[Instagram] ═══════════════════════════════════════`);
-      log(`[Instagram] 📝 Post ${i + 1}/${count}`);
+      log(`[Instagram] 📝 Post ${i + 1}/${targetPosts.length}`);
       log(`[Instagram] ═══════════════════════════════════════`);
       
       try {
-        // Find posts on feed
-        const posts = await d.findPosts(10);
-        if (posts.length === 0) {
-          log(`[Instagram] ⏬ No posts found, scrolling...`);
-          await d.scroll();
-          await new Promise(r => setTimeout(r, 2000));
-        }
-        
-        // Click into post
-        const clickedIndex = i % Math.max(posts.length, 1);
-        const targetPost = posts[clickedIndex];
-        log(`[Instagram] 👆 Clicking post ${clickedIndex}: @${targetPost?.username || 'unknown'}`);
-        
-        const clicked = await d.clickPost(clickedIndex);
-        if (!clicked) {
-          log(`[Instagram] ❌ Failed to click post`);
-          results.push({ success: false, username: '', comment: '', error: 'Failed to click post' });
+        if (!targetPost.url) {
+          log(`[Instagram] ❌ No URL for post`);
+          results.push({ success: false, username: '', comment: '', error: 'No post URL' });
           continue;
         }
         
-        await new Promise(r => setTimeout(r, 2000));
+        // Navigate directly to post URL
+        log(`[Instagram] 🔗 Navigating to: ${targetPost.url}`);
+        await d.navigateToPost(targetPost.url);
+        await new Promise(r => setTimeout(r, 3000));
         
         // Get post details
         const details = await d.getPostDetails();
         log(`[Instagram] 👤 Author: @${details.username}`);
         log(`[Instagram] 📄 Caption: "${(details.caption || '').substring(0, 50)}..."`);
         
-        // Analyze with AI
+        // Get existing comments for context
+        log(`[Instagram] 💬 Getting existing comments...`);
+        const existingComments = await d.getComments(10);
+        log(`[Instagram]   Found ${existingComments.length} comments`);
+        
+        // Check if we already commented (duplicate detection)
+        const ourUsername = 'isaiahdupree'; // TODO: Get from config
+        const alreadyCommented = existingComments.some(c => 
+          c.username?.toLowerCase() === ourUsername.toLowerCase()
+        );
+        
+        if (alreadyCommented) {
+          log(`[Instagram] ⚠️ SKIPPED - Already commented on this post`);
+          results.push({
+            success: false,
+            username: details.username || '',
+            comment: '',
+            postUrl: targetPost?.url,
+            error: 'Already commented',
+          });
+          continue;
+        }
+        
+        // Analyze with AI using post + existing comments context
         const analysis = ai.analyzePost({
           mainPost: details.caption || '',
           username: details.username || 'unknown',
-          replies: [],
+          replies: existingComments.map(c => `@${c.username}: ${c.text}`),
         });
+        
+        log(`[Instagram] 🧠 Analysis: sentiment=${analysis.sentiment}, topics=${analysis.topics.join(',')}`);
         
         // Check for inappropriate content
         if (analysis.isInappropriate) {
@@ -219,11 +259,10 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
             postUrl: targetPost?.url,
             error: `Skipped: ${analysis.skipReason}`,
           });
-          await d.clickBack();
           continue;
         }
         
-        // Generate comment
+        // Generate comment with context
         let comment: string;
         if (useAI) {
           comment = await ai.generateComment(analysis);
@@ -239,6 +278,22 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
         
         if (result.success) {
           log(`[Instagram] ✅ Comment posted!`);
+          
+          // Verify comment was posted
+          log(`[Instagram] 🔍 Verifying comment...`);
+          await new Promise(r => setTimeout(r, 2000));
+          const newComments = await d.getComments(5);
+          const verified = newComments.some(c => 
+            c.text?.includes(comment.substring(0, 20)) || 
+            c.username?.toLowerCase() === ourUsername.toLowerCase()
+          );
+          
+          if (verified) {
+            log(`[Instagram] ✅ Comment verified!`);
+          } else {
+            log(`[Instagram] ⚠️ Comment not found in verification (may still be posted)`);
+          }
+          
           results.push({
             success: true,
             username: details.username || '',
@@ -256,16 +311,8 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
           });
         }
         
-        // Close post and return to feed
-        log(`[Instagram] ⬅️ Returning to feed...`);
-        await d.clickBack();
-        await new Promise(r => setTimeout(r, 1500));
-        
-        // Scroll for fresh posts
-        await d.scroll();
-        
         // Delay between posts
-        if (i < count - 1) {
+        if (i < targetPosts.length - 1) {
           log(`[Instagram] ⏳ Waiting ${delayBetween / 1000}s...`);
           await new Promise(r => setTimeout(r, delayBetween));
         }
