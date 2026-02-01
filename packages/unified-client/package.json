@@ -1,0 +1,37 @@
+{
+  "name": "@safari-automation/unified-client",
+  "version": "1.0.0",
+  "description": "Unified social automation client - multi-platform DM management",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@safari-automation/instagram-dm": "file:../instagram-dm",
+    "@safari-automation/twitter-dm": "file:../twitter-dm",
+    "@safari-automation/tiktok-dm": "file:../tiktok-dm"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "social",
+    "automation",
+    "instagram",
+    "twitter",
+    "dm",
+    "unified"
+  ]
+}

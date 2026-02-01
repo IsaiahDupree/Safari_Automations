@@ -260,6 +260,12 @@ export class SoraFullAutomation {
         console.log('[SORA] No spinner, no video - refreshing...');
       }
 
+      // After 15 polls with no video, do subtle mouse movement to trigger video loading
+      if (attempt >= 15 && !state.isReady) {
+        console.log('[SORA] 🖱️ Poll 15+ - performing mouse wiggle to trigger video load...');
+        await this.mouseWiggle();
+      }
+
       // At poll 30, do a full Safari restart to recover from stuck state
       if (attempt === 30) {
         console.log('[SORA] ⚠️ Poll 30 reached - performing Safari recovery...');
@@ -556,6 +562,39 @@ export class SoraFullAutomation {
 
   private wait(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Subtle mouse movement to trigger video loading on page
+   * Sometimes Sora videos won't load until there's mouse activity
+   */
+  private async mouseWiggle(): Promise<void> {
+    try {
+      // Use cliclick for reliable mouse movement on macOS
+      await execAsync(`cliclick m:+10,+0 w:50 m:+0,+10 w:50 m:-10,+0 w:50 m:+0,-10`);
+      
+      // Also trigger scroll event in browser to help load videos
+      await this.safari.executeJS(`
+        (function() {
+          // Scroll down slightly then back up to trigger lazy loading
+          window.scrollBy(0, 50);
+          setTimeout(() => window.scrollBy(0, -50), 200);
+          
+          // Also hover over video elements to trigger loading
+          const videos = document.querySelectorAll('video');
+          videos.forEach(v => {
+            v.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
+            v.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+          });
+          
+          return JSON.stringify({triggered: true, videoCount: videos.length});
+        })();
+      `);
+      
+      console.log('[SORA] ✅ Mouse wiggle complete');
+    } catch (error) {
+      console.log('[SORA] ⚠️ Mouse wiggle failed (non-fatal):', error instanceof Error ? error.message : 'Unknown');
+    }
   }
 
   getConfig(): SoraFullConfig {

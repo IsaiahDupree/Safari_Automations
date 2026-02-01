@@ -1,0 +1,36 @@
+{
+  "name": "@safari-automation/social-cli",
+  "version": "1.0.0",
+  "description": "Unified CLI for social automation - multi-platform DM management",
+  "main": "dist/index.js",
+  "bin": {
+    "social-auto": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "npx tsx src/cli.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@safari-automation/unified-client": "file:../unified-client",
+    "commander": "^11.1.0",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "tsx": "^4.7.0",
+    "vitest": "^1.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "cli",
+    "social",
+    "automation",
+    "instagram",
+    "twitter",
+    "dm"
+  ]
+}

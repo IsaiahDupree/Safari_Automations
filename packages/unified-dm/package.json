@@ -1,0 +1,20 @@
+{
+  "name": "@safari-automation/unified-dm",
+  "version": "1.0.0",
+  "description": "Unified DM client for TikTok, Instagram, and Twitter",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "keywords": ["dm", "tiktok", "instagram", "twitter", "unified"]
+}

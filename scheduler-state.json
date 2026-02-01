@@ -1,0 +1,27 @@
+{
+  "queue": [
+    {
+      "id": "task_1769978724591_m7el43md3",
+      "type": "sora",
+      "name": "Sora Trilogy: First Contact",
+      "platform": "sora",
+      "priority": 2,
+      "scheduledFor": "2026-02-01T20:45:24.591Z",
+      "createdAt": "2026-02-01T20:45:24.592Z",
+      "resourceRequirements": {
+        "soraCredits": 3,
+        "safariExclusive": true
+      },
+      "status": "pending",
+      "retryCount": 0,
+      "maxRetries": 3,
+      "payload": {
+        "trilogyId": "first_contact",
+        "trilogyName": "First Contact",
+        "command": "npx tsx scripts/sora-trilogy-runner.ts --story first_contact"
+      }
+    }
+  ],
+  "completed": [],
+  "savedAt": "2026-02-01T20:45:24.592Z"
+}
