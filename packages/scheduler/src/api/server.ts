@@ -162,6 +162,125 @@ app.post('/api/sora/queue-trilogy', (req: Request, res: Response) => {
   }
 });
 
+// === THREADS COMMENTING ===
+
+app.post('/api/threads/schedule', async (req: Request, res: Response) => {
+  try {
+    const { count, interval, startTime, priority } = req.body;
+    
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'comment',
+      name: `Threads commenting session (${count || 5} comments)`,
+      platform: 'threads' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      payload: {
+        count: count || 5,
+        intervalMs: (interval || 30) * 1000, // Default 30 seconds between comments
+        useAI: true,
+      },
+    });
+    
+    res.json({ success: true, taskId, message: `Scheduled ${count || 5} Threads comments` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === INSTAGRAM COMMENTING ===
+
+app.post('/api/instagram/schedule', async (req: Request, res: Response) => {
+  try {
+    const { count, interval, keyword, startTime, priority } = req.body;
+    
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'comment',
+      name: `Instagram commenting${keyword ? ` (#${keyword})` : ''} (${count || 5} comments)`,
+      platform: 'instagram' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      payload: {
+        count: count || 5,
+        intervalMs: (interval || 30) * 1000,
+        keyword,
+        useAI: true,
+      },
+    });
+    
+    res.json({ success: true, taskId, message: `Scheduled ${count || 5} Instagram comments` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === SORA AUTO-GENERATION ===
+
+app.post('/api/sora/auto-generate', async (req: Request, res: Response) => {
+  try {
+    const { theme, creditsRequired, priority } = req.body;
+    
+    if (!theme) {
+      res.status(400).json({ error: 'theme is required' });
+      return;
+    }
+    
+    // Check current credits
+    const credits = await soraMonitor.checkCredits();
+    const needed = creditsRequired || 3;
+    
+    if (credits && credits.totalCredits >= needed) {
+      // Have credits - schedule immediately
+      const s = getScheduler();
+      const taskId = s.schedule({
+        type: 'sora',
+        name: `Sora trilogy: ${theme}`,
+        platform: 'sora' as Platform,
+        priority: (priority || 1) as TaskPriority,
+        scheduledFor: new Date(),
+        payload: { theme, useAI: true, creditsRequired: needed },
+      });
+      
+      res.json({ 
+        success: true, 
+        taskId, 
+        immediate: true,
+        credits: credits.totalCredits,
+        message: `Scheduled immediately - ${credits.totalCredits} credits available` 
+      });
+    } else {
+      // No credits - register callback for when credits are available
+      const s = getScheduler();
+      const taskId = s.schedule({
+        type: 'sora',
+        name: `Sora trilogy (waiting for credits): ${theme}`,
+        platform: 'sora' as Platform,
+        priority: (priority || 1) as TaskPriority,
+        scheduledFor: new Date(Date.now() + 24 * 60 * 60 * 1000), // Schedule for tomorrow
+        payload: { theme, useAI: true, creditsRequired: needed, waitingForCredits: true },
+      });
+      
+      // Register callback
+      soraMonitor.onCreditsAvailable(needed, () => {
+        console.log(`[SORA] Credits available! Auto-generating: ${theme}`);
+      });
+      
+      res.json({ 
+        success: true, 
+        taskId, 
+        immediate: false,
+        currentCredits: credits?.totalCredits || 0,
+        waitingFor: needed,
+        timeUntilRefresh: soraMonitor.getTimeUntilRefresh(),
+        message: `Queued - waiting for ${needed} credits (currently ${credits?.totalCredits || 0})` 
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // === DM SESSIONS ===
 
 app.post('/api/dm/schedule', (req: Request, res: Response) => {
