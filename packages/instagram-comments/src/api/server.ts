@@ -169,6 +169,11 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
     await d.navigateToPost('https://www.instagram.com');
     await new Promise(r => setTimeout(r, 3000));
     
+    // Step 0: Load previously commented post IDs (STRICT DUPLICATE PREVENTION)
+    log(`[Instagram] 🔒 Loading previously commented posts from database...`);
+    const commentedPostIds = await logger.getCommentedPostUrls('instagram');
+    log(`[Instagram]   Found ${commentedPostIds.size} posts we've already commented on`);
+    
     // Step 1: Collect all post URLs first (and like while scrolling)
     log(`[Instagram] 📋 Collecting ${count} post URLs from feed...`);
     let allPosts: Array<{ username: string; url?: string }> = [];
@@ -179,6 +184,12 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
       const posts = await d.findPosts(count * 2);
       for (const post of posts) {
         if (post.url && !allPosts.find(p => p.url === post.url)) {
+          // STRICT DUPLICATE CHECK: Skip posts we've already commented on
+          const postId = post.url.match(/\/p\/([^\/\?]+)/)?.[1];
+          if (postId && commentedPostIds.has(postId)) {
+            log(`[Instagram] ⏭️ Skipping already-commented post: ${post.url}`);
+            continue;
+          }
           allPosts.push(post);
           
           // Like posts while collecting (optional engagement)
@@ -436,11 +447,27 @@ app.post('/api/instagram/search/keyword', async (req: Request, res: Response) =>
     
     log(`[Instagram] 🔍 Keyword search: "${keyword}"`);
     
+    // Load previously commented post IDs (STRICT DUPLICATE PREVENTION)
+    log(`[Instagram] 🔒 Loading previously commented posts...`);
+    const commentedPostIds = await logger.getCommentedPostUrls('instagram');
+    log(`[Instagram]   Found ${commentedPostIds.size} already-commented posts`);
+    
     // Search by keyword/hashtag
     const posts = await d.searchByKeyword(keyword);
     log(`[Instagram] ✅ Found ${posts.length} posts for "${keyword}"`);
     
-    const targetPosts = posts.slice(0, count);
+    // Filter out already-commented posts
+    const freshPosts = posts.filter(p => {
+      const postId = p.url?.match(/\/p\/([^\/\?]+)/)?.[1];
+      if (postId && commentedPostIds.has(postId)) {
+        log(`[Instagram] ⏭️ Skipping already-commented: ${p.url}`);
+        return false;
+      }
+      return true;
+    });
+    log(`[Instagram]   ${freshPosts.length} new posts (filtered ${posts.length - freshPosts.length} duplicates)`);
+    
+    const targetPosts = freshPosts.slice(0, count);
     
     if (!comment) {
       // Just return the URLs without commenting

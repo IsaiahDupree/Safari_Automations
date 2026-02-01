@@ -183,6 +183,83 @@ export class CommentLogger {
   }
 
   /**
+   * Check if we have already commented on a specific post URL
+   * STRICT RULE: Prevents double-commenting on posts
+   */
+  async hasCommented(postUrl: string, platform: string = 'instagram'): Promise<boolean> {
+    try {
+      // Normalize the URL (remove trailing slashes, query params)
+      const normalizedUrl = postUrl.split('?')[0].replace(/\/+$/, '');
+      
+      const url = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&post_url=like.*${encodeURIComponent(normalizedUrl.split('/p/')[1] || '')}*&success=eq.true&select=id,post_url`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'apikey': this.supabaseKey,
+          'Authorization': `Bearer ${this.supabaseKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.error('[DB] Failed to check for existing comment');
+        return false; // Fail safe: allow commenting if check fails
+      }
+
+      const data = await response.json() as Array<{ id: string; post_url: string }>;
+      
+      if (data.length > 0) {
+        console.log(`[DB] ⚠️ Already commented on: ${postUrl}`);
+        console.log(`[DB]   Found ${data.length} existing comment(s)`);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('[DB] Error checking for existing comment:', error);
+      return false; // Fail safe
+    }
+  }
+
+  /**
+   * Get all post URLs we have successfully commented on
+   */
+  async getCommentedPostUrls(platform: string = 'instagram'): Promise<Set<string>> {
+    try {
+      const url = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&success=eq.true&select=post_url`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'apikey': this.supabaseKey,
+          'Authorization': `Bearer ${this.supabaseKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        return new Set();
+      }
+
+      const data = await response.json() as Array<{ post_url: string }>;
+      const urls = new Set<string>();
+      
+      for (const row of data) {
+        if (row.post_url) {
+          // Normalize: extract post ID
+          const match = row.post_url.match(/\/p\/([^\/\?]+)/);
+          if (match) {
+            urls.add(match[1]);
+          }
+        }
+      }
+      
+      console.log(`[DB] Loaded ${urls.size} previously commented post IDs`);
+      return urls;
+    } catch (error) {
+      console.error('[DB] Error loading commented URLs:', error);
+      return new Set();
+    }
+  }
+
+  /**
    * Get stats for a platform
    */
   async getStats(platform: string = 'threads'): Promise<{
