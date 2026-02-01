@@ -299,14 +299,8 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
           continue;
         }
         
-        // Generate comment with context
-        let comment: string;
-        if (useAI) {
-          comment = await ai.generateComment(analysis);
-        } else {
-          const templates = ["This is amazing! 🔥", "Love this! 👏", "So good! ✨"];
-          comment = templates[Math.floor(Math.random() * templates.length)];
-        }
+        // Generate comment with AI (always use AI, no templates)
+        const comment = await ai.generateComment(analysis);
         
         log(`[Instagram] ✏️ Generated: "${comment}"`);
         

@@ -72,12 +72,29 @@ app.get('/api/tiktok/comments', async (req: Request, res: Response) => {
 
 app.post('/api/tiktok/comments/post', async (req: Request, res: Response) => {
   try {
-    const { text, postUrl } = req.body;
-    if (!text) { res.status(400).json({ error: 'text required' }); return; }
+    const { text, postUrl, useAI, postContent, username } = req.body;
     const d = getDriver();
     if (postUrl) { await d.navigateToPost(postUrl); await new Promise(r => setTimeout(r, 3000)); }
-    const result = await d.postComment(text);
-    res.json(result);
+    
+    // Use AI to generate comment if requested or if no text provided
+    let commentText = text;
+    if (useAI || !text) {
+      commentText = await generateAIComment(postContent || 'TikTok video', username || 'creator');
+      console.log(`[AI] Generated: "${commentText}"`);
+    }
+    
+    if (!commentText) { res.status(400).json({ error: 'text required or useAI must be true' }); return; }
+    const result = await d.postComment(commentText);
+    res.json({ ...result, generatedComment: commentText, usedAI: useAI || !text });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// AI-only comment generation endpoint
+app.post('/api/tiktok/comments/generate', async (req: Request, res: Response) => {
+  try {
+    const { postContent, username } = req.body;
+    const comment = await generateAIComment(postContent || 'TikTok video', username || 'creator');
+    res.json({ success: true, comment, usedAI: !!OPENAI_API_KEY });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
