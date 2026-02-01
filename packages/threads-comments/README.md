@@ -1,8 +1,38 @@
 # Threads Comments API
 
-Safari automation API for posting comments on Threads.
+Threads comment automation via Safari with AI-powered engagement.
 
-**Tested: ✅ 7 tests passing | Verified: ✅ Live automation working**
+**Status**
+
+✅ **Live automation working** | ✅ **Database logging** | ✅ **Content filtering**
+
+## Features
+
+### Core
+- Multi-post commenting (5+ posts with back button navigation)
+- AI-powered contextual comment generation
+- Post analysis (sentiment, topics, tone)
+- Rate limiting (configurable per hour/day)
+
+### Enhancements
+- **Structured logging** with timestamps
+- **Retry logic** (configurable max retries)
+- **Screenshot capture** on success
+- **Error recovery** with consecutive failure detection
+- **Performance stats** (duration, rate)
+
+### Content Filtering
+Automatically skips inappropriate content:
+- Thirst traps (suggestive content, OnlyFans links)
+- Spam/scam posts (crypto, giveaways, "DM me")
+- Posts with multiple suggestive emojis
+
+### Database Logging
+All comments logged to Supabase:
+- Platform, username, post URL
+- Comment text, success status
+- AI analysis, session tracking
+- Screenshot paths
 
 ## Port: 3004
 
