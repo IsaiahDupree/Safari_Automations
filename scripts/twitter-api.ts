@@ -25,41 +25,76 @@ const SUPABASE_KEY = process.env.CRM_SUPABASE_KEY || '';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ============== Twitter/X Selectors ==============
+// ============== Twitter/X Selectors (from Safari Automation docs) ==============
 
 const SELECTORS = {
   // Navigation
   dmNavLink: '[data-testid="AppTabBar_DirectMessage_Link"]',
+  profileLink: '[data-testid="AppTabBar_Profile_Link"]',
+  newTweetButton: '[data-testid="SideNav_NewTweet_Button"]',
+  
+  // Login Detection
+  accountSwitcher: '[data-testid="SideNav_AccountSwitcher_Button"]',
+  loginButton: '[data-testid="loginButton"]',
+  userAvatar: '[data-testid="UserAvatar-Container"]',
   
   // DM Container
   dmContainer: '[data-testid="dm-container"]',
   dmInboxPanel: '[data-testid="dm-inbox-panel"]',
   dmConversationPanel: '[data-testid="dm-conversation-panel"]',
+  dmTimeline: '[data-testid="DM_timeline"]',
   
   // Inbox
   dmInboxTitle: '[data-testid="dm-inbox-title"]',
-  dmNewChatButton: '[data-testid="dm-new-chat-button"]',
-  dmSearchBar: '[data-testid="dm-search-bar"]',
+  dmNewChatButton: '[data-testid="NewDM_Button"]',
+  dmSearchBar: '[data-testid="SearchBox_Search_Input"]',
   
   // Tabs
   dmTabAll: '[data-testid="dm-inbox-tab-all"]',
-  dmTabRequests: '[data-testid="dm-inbox-tab-requests"]',
+  dmTabRequests: '[href="/messages/requests"]',
   
-  // Conversations
+  // Conversations (multiple patterns)
+  conversation: '[data-testid="conversation"]',
+  dmConversationEntry: '[data-testid="DMConversationEntry"]',
+  dmInboxItem: '[data-testid="DMInboxItem"]',
   dmConversationItem: '[data-testid^="dm-conversation-item"]',
   
-  // Message Composer
+  // Message Composer (DraftJS)
   dmComposerTextInput: '[data-testid="dmComposerTextInput"]',
+  dmComposerEditor: '[data-testid="DmComposer-Editor"]',
   dmComposerSendButton: '[data-testid="dmComposerSendButton"]',
   sendDMFromProfile: '[data-testid="sendDMFromProfile"]',
   
   // Messages
   messageEntry: '[data-testid="messageEntry"]',
-  dmScrollerContainer: '[data-testid="DmScrollerContainer"]',
+  dmMessage: '[data-testid="DM_message"]',
+  dmMessageContainer: '[data-testid="DMMessageContainer"]',
+  tweetText: '[data-testid="tweetText"]',
+  messagePreview: '[data-testid="messagePreview"]',
+  unreadBadge: '[data-testid="unread-badge"]',
+  
+  // User Info
+  userName: '[data-testid="User-Name"]',
+  userCell: '[data-testid="UserCell"]',
+  typeaheadUser: '[data-testid="TypeaheadUser"]',
   
   // Generic
   textbox: '[role="textbox"]',
   contentEditable: '[contenteditable="true"]',
+  draftEditor: '.public-DraftEditor-content',
+  
+  // Safety/Rate Limiting
+  toast: '[data-testid="toast"]',
+  alert: '[role="alert"]',
+};
+
+// Rate limits from PRD (conservative)
+const RATE_LIMITS = {
+  maxDmsPerHour: 15,
+  maxDmsPerDay: 100,
+  minDelayBetweenDms: 90000,  // 1.5 minutes
+  maxDelayBetweenDms: 240000, // 4 minutes
+  newAccountDmsPerDay: 20,
 };
 
 // ============== Helper Functions ==============
@@ -90,6 +125,69 @@ async function getCurrentUrl(): Promise<string> {
 async function isOnTwitterDMs(): Promise<boolean> {
   const url = await getCurrentUrl();
   return url.includes('x.com/messages') || url.includes('twitter.com/messages') || url.includes('x.com/i/chat');
+}
+
+/**
+ * Check if logged in to Twitter (from Safari Automation docs)
+ */
+async function checkLoginStatus(): Promise<{ loggedIn: boolean; username?: string; reason?: string }> {
+  const result = await exec(`(function() {
+    var url = window.location.href;
+    
+    // Check for login/signup page
+    if (url.includes('/login') || url.includes('/i/flow/login') || url.includes('/i/flow/signup')) {
+      return JSON.stringify({loggedIn: false, reason: 'on_login_page', url: url});
+    }
+    
+    // Check for logged-in indicators
+    var indicators = [
+      '[data-testid="AppTabBar_Profile_Link"]',
+      '[data-testid="SideNav_NewTweet_Button"]',
+      'a[href="/compose/post"]',
+      '[data-testid="tweetTextarea_0"]'
+    ];
+    
+    for (var i = 0; i < indicators.length; i++) {
+      var el = document.querySelector(indicators[i]);
+      if (el) {
+        var profileLink = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+        var username = profileLink ? profileLink.getAttribute('href').replace('/', '') : '';
+        return JSON.stringify({loggedIn: true, username: username});
+      }
+    }
+    
+    return JSON.stringify({loggedIn: false, reason: 'no_indicators_found'});
+  })()`);
+  
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { loggedIn: false, reason: 'parse_error' };
+  }
+}
+
+/**
+ * Detect rate limiting or account issues
+ */
+async function detectRateLimiting(): Promise<{ limited: boolean; reason?: string }> {
+  const result = await exec(`(function() {
+    var bodyText = document.body.innerText.toLowerCase();
+    
+    if (bodyText.includes('rate limit')) return JSON.stringify({limited: true, reason: 'rate_limit'});
+    if (bodyText.includes('try again later')) return JSON.stringify({limited: true, reason: 'try_again_later'});
+    if (bodyText.includes('too many')) return JSON.stringify({limited: true, reason: 'too_many_requests'});
+    if (bodyText.includes('locked')) return JSON.stringify({limited: true, reason: 'account_locked'});
+    if (bodyText.includes('unusual activity')) return JSON.stringify({limited: true, reason: 'unusual_activity'});
+    if (bodyText.includes('suspended')) return JSON.stringify({limited: true, reason: 'suspended'});
+    
+    return JSON.stringify({limited: false});
+  })()`);
+  
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { limited: false };
+  }
 }
 
 // ============== Navigation ==============
@@ -137,12 +235,14 @@ async function navigateToConversation(conversationId: string): Promise<boolean> 
 interface TwitterConversation {
   id: string;
   displayName: string;
+  username?: string;
   lastMessage: string;
   timestamp: string;
+  unread: boolean;
 }
 
 /**
- * List all conversations in the inbox
+ * List all conversations in the inbox (enhanced with Safari Automation patterns)
  */
 async function listConversations(): Promise<TwitterConversation[]> {
   // Make sure we're on DMs
@@ -152,20 +252,24 @@ async function listConversations(): Promise<TwitterConversation[]> {
     await wait(2000);
   }
   
+  // Simplified extraction that works with current Twitter UI
   const result = await exec(`(function(){
     var convos = document.querySelectorAll('[data-testid^="dm-conversation-item"]');
+    if (convos.length === 0) convos = document.querySelectorAll('[data-testid="conversation"]');
     var list = [];
-    for(var i = 0; i < convos.length; i++) {
+    for (var i = 0; i < convos.length; i++) {
       var c = convos[i];
-      var testid = c.getAttribute('data-testid');
+      var testid = c.getAttribute('data-testid') || '';
       var id = testid.replace('dm-conversation-item-', '');
       var text = c.innerText;
       var lines = text.split('\\n').filter(function(l) { return l.trim(); });
       list.push({
         id: id,
         displayName: lines[0] || '',
-        lastMessage: lines[2] || lines[1] || '',
-        timestamp: lines[1] || ''
+        username: '',
+        lastMessage: (lines[2] || lines[1] || '').substring(0, 100),
+        timestamp: lines[1] || '',
+        unread: false
       });
     }
     return JSON.stringify(list);
@@ -706,7 +810,9 @@ async function main() {
   
   if (!command || command === 'help') {
     console.log('Commands:');
-    console.log('  status                       - Check Twitter DM status');
+    console.log('  status                       - Full status (login, rate limit, elements)');
+    console.log('  login                        - Check login status');
+    console.log('  ratelimit                    - Check rate limiting');
     console.log('  navigate                     - Navigate to DMs inbox');
     console.log('  conversations                - List all conversations');
     console.log('  open <id>                    - Open a conversation');
@@ -723,23 +829,54 @@ async function main() {
     console.log('  search <query>               - Search messages');
     console.log('  explore                      - Explore DOM');
     console.log('\nExamples:');
+    console.log('  npx tsx scripts/twitter-api.ts status');
     console.log('  npx tsx scripts/twitter-api.ts conversations');
-    console.log('  npx tsx scripts/twitter-api.ts health elonmusk');
     console.log('  npx tsx scripts/twitter-api.ts dm elonmusk "Hello!"');
     return;
   }
   
   // Commands that don't require arguments
-  const noArgCommands = ['status', 'navigate', 'conversations', 'messages', 'stats', 'attention', 'top', 'explore'];
+  const noArgCommands = ['status', 'login', 'ratelimit', 'navigate', 'conversations', 'messages', 'stats', 'attention', 'top', 'explore'];
   
   switch (command) {
     case 'status': {
       const status = await getStatus();
+      const login = await checkLoginStatus();
+      const rateLimit = await detectRateLimiting();
+      
       console.log('📊 Twitter DM Status:\n');
       console.log(`  URL: ${status.url}`);
       console.log(`  On Twitter: ${status.onTwitter}`);
       console.log(`  On DMs: ${status.onDMs}`);
+      console.log(`  Logged In: ${login.loggedIn}${login.username ? ' (@' + login.username + ')' : ''}`);
+      console.log(`  Rate Limited: ${rateLimit.limited}${rateLimit.reason ? ' (' + rateLimit.reason + ')' : ''}`);
       console.log(`  Elements:`, status.elements);
+      break;
+    }
+    
+    case 'login': {
+      const login = await checkLoginStatus();
+      console.log('🔐 Twitter Login Status:\n');
+      if (login.loggedIn) {
+        console.log(`  ✅ Logged in as @${login.username}`);
+      } else {
+        console.log(`  ❌ Not logged in (${login.reason})`);
+      }
+      break;
+    }
+    
+    case 'ratelimit': {
+      const rateLimit = await detectRateLimiting();
+      console.log('⚠️ Rate Limit Check:\n');
+      if (rateLimit.limited) {
+        console.log(`  ❌ Rate limited: ${rateLimit.reason}`);
+      } else {
+        console.log(`  ✅ No rate limiting detected`);
+      }
+      console.log('\n  Recommended limits:');
+      console.log(`    Max DMs/hour: ${RATE_LIMITS.maxDmsPerHour}`);
+      console.log(`    Max DMs/day: ${RATE_LIMITS.maxDmsPerDay}`);
+      console.log(`    Min delay: ${RATE_LIMITS.minDelayBetweenDms / 1000}s`);
       break;
     }
     
