@@ -1,8 +1,8 @@
 # TikTok Selectors Reference
 
-**Last Updated:** January 30, 2026  
+**Last Updated:** January 31, 2026  
 **Status:** Known Working Selectors  
-**Source:** `tiktok_selectors.py`, `tiktok_engagement.py`, `tiktok_messenger.py`, `tiktok_search.py`
+**Source:** `tiktok_selectors.py`, `tiktok_engagement.py`, `tiktok_messenger.py`, `tiktok_search.py`, Safari Automation testing
 
 ---
 
@@ -252,41 +252,74 @@ TikTok uses `data-e2e` attributes for testing which are relatively stable. Class
 
 ## Direct Messages
 
-### Selectors
+### Selectors (Updated Jan 31, 2026 - Safari Automation Validated)
 | Element | Selector | Status |
 |---------|----------|--------|
-| Messages Icon | `[data-e2e="message-icon"]` | ✅ Working |
+| Messages Icon | `[data-e2e="top-dm-icon"], [data-e2e="nav-messages"]` | ✅ Validated |
 | Messages Link | `a[href*="/messages"]` | ✅ Working |
-| Conversation List | `[class*="DivConversationListContainer"]` | ✅ Working |
-| Conversation Item | `[class*="DivConversationItem"]` | ✅ Working |
-| Conversation Username | `[class*="PUsername"], [class*="SpanNickname"]` | ✅ Working |
-| Message Input | `[class*="DivInputContainer"] [contenteditable="true"]` | ✅ Working |
-| Message Input Alt | `[data-e2e="message-input"]` | ✅ Working |
-| Send Button | `[class*="DivSendButton"]` | ✅ Working |
-| Send Button Alt | `[data-e2e="send-message-btn"]` | ✅ Working |
-| Message List | `[class*="DivMessageList"]` | ✅ Working |
-| Message Item | `[class*="DivMessageItem"]` | ✅ Working |
-| New Message Button | `[class*="DivNewMessageButton"]` | ✅ Working |
-| Chat Main Area | `[class*="DivChatMain"]` | ✅ Working |
+| Conversation List | `[class*="DivConversationListContainer"]` | ✅ Validated |
+| **Conversation Item** | `[data-e2e="chat-list-item"]` | ✅ **Validated** (Primary) |
+| Conversation Item Alt | `[class*="LiInboxItemWrapper"]` | ✅ Working |
+| Message Input | `[data-e2e="message-input-area"]` | ✅ **Validated** |
+| Message Input Fallback | `[contenteditable="true"]` | ✅ Working |
+| Send Button | `[class*="DivSendButton"]` | ⚠️ Needs Enter key |
+| **Chat Messages** | `[data-e2e="chat-item"]` | ✅ **Validated** |
+| Chat Nickname | `[data-e2e="chat-nickname"]` | ✅ Validated |
+| Chat User ID | `[data-e2e="chat-uniqueid"]` | ✅ Validated |
+| Chat Avatar | `[data-e2e="chat-avatar"]` | ✅ Validated |
+| New Message Button | `[class*="SpanNewMessage"]` | ✅ Working |
+| Chat Box Container | `[class*="DivChatBox"]` | ✅ Validated |
 
-### Get Conversations
+### Profile Message Button (for profile-to-DM flow)
+| Element | Selector | Status |
+|---------|----------|--------|
+| **Message Button** | `[data-e2e="message-button"]` | ✅ **Validated** |
+| Message Icon Alt | `[data-e2e="message-icon"]` | ✅ Working |
+| Follow Button | `[data-e2e="follow-button"]` | ✅ Working |
+| User Title | `[data-e2e="user-title"]` | ✅ Working |
+| User Avatar | `[data-e2e="user-avatar"]` | ✅ Working |
+
+### Conversation List Item Structure (Validated Jan 31, 2026)
+```html
+<!-- Each chat-list-item contains: -->
+<div data-e2e="chat-list-item" class="DivItemWrapper">
+  <div class="DivItemInfo">
+    <div class="DivInfoAvatarWrapper">
+      <span class="SpanAvatarContainer">
+        <img class="ImgAvatar" src="..." />  <!-- Avatar image -->
+      </span>
+    </div>
+    <div class="DivInfoTextWrapper">
+      <p class="PInfoNickname">Display Name</p>  <!-- User's display name -->
+      <p class="PInfoExtractTime">
+        <span class="SpanInfoExtract">Last message preview</span>
+        <span class="SpanInfoTime">22:38</span>  <!-- Timestamp -->
+      </p>
+    </div>
+  </div>
+  <svg data-e2e="more-action-icon" />  <!-- More actions menu -->
+</div>
+```
+
+### Get Conversations (Updated - Validated Working)
 ```javascript
-// ✅ WORKING
+// ✅ VALIDATED Jan 31, 2026 - Found 96 conversations
 (function() {
     var conversations = [];
-    var items = document.querySelectorAll('[class*="DivConversationItem"], [class*="ConversationListItem"]');
+    var items = document.querySelectorAll('[data-e2e="chat-list-item"]');
     
     items.forEach(function(item) {
-        var username = item.querySelector('[class*="Username"], [class*="PName"]');
-        var lastMsg = item.querySelector('[class*="LastMessage"], [class*="PPreview"]');
-        var time = item.querySelector('[class*="Time"], [class*="SpanTime"]');
-        var unread = item.querySelector('[class*="Unread"], [class*="Badge"]');
+        var nickname = item.querySelector('[class*="PInfoNickname"]');
+        var extract = item.querySelector('[class*="SpanInfoExtract"]');
+        var time = item.querySelector('[class*="SpanInfoTime"]');
+        var avatar = item.querySelector('[class*="ImgAvatar"]');
         
         conversations.push({
-            username: username ? username.innerText.trim() : 'Unknown',
-            last_message: lastMsg ? lastMsg.innerText.trim() : '',
+            displayName: nickname ? nickname.innerText.trim() : 'Unknown',
+            lastMessage: extract ? extract.innerText.trim() : '',
             timestamp: time ? time.innerText.trim() : '',
-            unread: !!unread
+            avatarUrl: avatar ? avatar.src : null,
+            unread: item.querySelector('[class*="Unread"], [class*="Badge"]') !== null
         });
     });
     
@@ -294,33 +327,183 @@ TikTok uses `data-e2e` attributes for testing which are relatively stable. Class
 })();
 ```
 
-### Send Message
+### Chat Header Selectors (Validated Jan 31, 2026)
+| Element | Selector | Description |
+|---------|----------|-------------|
+| Chat Header | `[class*="DivChatHeader"]` | Header container |
+| Nickname | `[data-e2e="chat-nickname"]` | Display name |
+| Username | `[data-e2e="chat-uniqueid"]` | @username |
+| Avatar | `[data-e2e="top-chat-avatar"] img` | Profile picture |
+
+### Chat Message Selectors (Validated Jan 31, 2026)
+| Element | Selector | Description |
+|---------|----------|-------------|
+| Message Item | `[data-e2e="chat-item"]` | Individual message |
+| Message Avatar | `[data-e2e="chat-avatar"]` | Sender avatar |
+| Time Container | `[class*="DivTimeContainer"]` | Timestamp divider |
+| Text Message | `[class*="DivTextContainer"]` | Text content |
+| Video Share | `[class*="DivVideoContainer"]` | Shared video |
+| Actions | `[class*="DivActions"]` | Reaction actions |
+| DM Warning | `[data-e2e="dm-warning"]` | Message type warning |
+
+### Chat Message Structure
+```html
+<div data-e2e="chat-item" class="DivChatItemWrapper">
+  <div class="DivMessageVerticalContainer">
+    <div class="DivMessageHorizontalContainer">
+      <a href="/@username">
+        <span data-e2e="chat-avatar">
+          <img class="ImgAvatar" />
+        </span>
+      </a>
+      <div class="DivCommonContainer">
+        <!-- For text messages -->
+        <div class="DivTextContainer">Message text</div>
+        <!-- For video shares -->
+        <div class="DivVideoContainer">
+          <div class="DivAuthorOutsideContainer">
+            <div class="DivAuthorInnerContainer">Username</div>
+          </div>
+        </div>
+      </div>
+      <div class="DivActions">
+        <!-- Reaction icons -->
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+### Get Messages with Full Details
 ```javascript
-// ✅ WORKING - Focus input first
+// ✅ VALIDATED Jan 31, 2026
 (function() {
-    var input = document.querySelector('[class*="DivInputContainer"] [contenteditable="true"]');
-    if (!input) input = document.querySelector('[data-e2e="message-input"]');
-    if (!input) input = document.querySelector('[contenteditable="true"]');
+    var messages = [];
+    var items = document.querySelectorAll('[data-e2e="chat-item"]');
     
+    items.forEach(function(item) {
+        var link = item.querySelector('a[href*="@"]');
+        var sender = link ? link.href.match(/@([^/]+)/)?.[1] : null;
+        var textEl = item.querySelector('[class*="TextContainer"]');
+        var videoEl = item.querySelector('[class*="VideoContainer"]');
+        var authorEl = item.querySelector('[class*="AuthorInnerContainer"]');
+        
+        messages.push({
+            sender: sender,
+            type: textEl ? 'text' : videoEl ? 'video' : 'other',
+            content: textEl ? textEl.innerText.trim() : 
+                     authorEl ? authorEl.innerText.trim() : 
+                     item.innerText.trim().substring(0, 100),
+            isMine: sender === 'YOUR_USERNAME'
+        });
+    });
+    
+    return JSON.stringify(messages);
+})();
+```
+
+### Get Timestamps
+```javascript
+// ✅ VALIDATED - Each TimeContainer shows date/time divider
+(function() {
+    var times = [];
+    var containers = document.querySelectorAll('[class*="TimeContainer"]');
+    containers.forEach(function(c) {
+        times.push(c.innerText.trim());
+    });
+    return JSON.stringify(times);
+    // Returns: ["January 4, 2026 00:02", "January 5, 2026 17:58", "22:38"]
+})();
+```
+
+---
+
+## Message Requests (Validated Jan 31, 2026)
+
+### Message Requests List Selectors
+| Element | Selector | Description |
+|---------|----------|-------------|
+| Requests Container | `[class*="DivRequestGroup"]` | "Message requests" section |
+| Requests Info | `[class*="DivRequestInfo"]` | Request count info |
+| Request Item | `[data-e2e="chat-list-item"]` | Same as regular chats |
+| Header | `[class*="DivFullSideNavConversationRequestHeader"]` | Requests header |
+
+### Message Request Chat Selectors
+| Element | Selector | Description |
+|---------|----------|-------------|
+| Stranger Box | `[class*="DivStrangerBox"]` | Accept/Delete container |
+| Hint Text | `[class*="DivHint"]` | "X wants to send you a message" |
+| Title | `[class*="PStrangerTitle"]` | Request title |
+| Description | `[class*="PStrangerDesc"]` | Request description |
+| Operations | `[class*="DivOperation"]` | Button container |
+| Delete Button | `[class*="DivItem"]:first-child` | Delete request |
+| Accept Button | `[class*="DivItem"]:last-child` | Accept request |
+| Report Link | `[class*="SpanReportText"]` | Report user link |
+
+### Navigate to Message Requests
+```javascript
+// ✅ VALIDATED - Click into message requests section
+(function() {
+    var requestGroup = document.querySelector('[class*="RequestGroup"]');
+    if (requestGroup) {
+        requestGroup.click();
+        return 'clicked';
+    }
+    return 'not found';
+})();
+```
+
+### Extract Message Requests List
+```javascript
+// ✅ VALIDATED - Get all message requests
+(function() {
+    var text = document.body.innerText;
+    var requestsIdx = text.indexOf('Message requests');
+    if (requestsIdx === -1) return 'no requests section';
+    return text.substring(requestsIdx, requestsIdx + 1000);
+})();
+```
+
+### Accept/Delete Message Request
+```javascript
+// ✅ VALIDATED - Accept or delete a message request
+(function(action) {
+    var strangerBox = document.querySelector('[class*="StrangerBox"]');
+    if (!strangerBox) return 'no stranger box';
+    
+    var items = strangerBox.querySelectorAll('[class*="DivItem"]');
+    if (action === 'delete' && items[0]) {
+        items[0].click();
+        return 'deleted';
+    }
+    if (action === 'accept' && items[1]) {
+        items[1].click();
+        return 'accepted';
+    }
+    return 'action not found';
+})('accept'); // or 'delete'
+```
+
+---
+
+### Send Message (Updated - Use Native Keystrokes)
+```javascript
+// ⚠️ JavaScript keyboard events don't work with Draft.js
+// Use AppleScript native keystrokes instead:
+// osascript -e 'tell application "Safari" to activate'
+// osascript -e 'tell application "System Events" to keystroke "message"'
+// osascript -e 'tell application "System Events" to keystroke return'
+
+// Focus input first (JavaScript)
+(function() {
+    var input = document.querySelector('[data-e2e="message-input-area"]');
+    if (!input) input = document.querySelector('[contenteditable="true"]');
     if (input) {
         input.focus();
         input.click();
         return 'FOCUSED';
     }
     return 'NO_INPUT';
-})();
-
-// Then click send
-(function() {
-    var btn = document.querySelector('[class*="DivSendButton"]');
-    if (!btn) btn = document.querySelector('[data-e2e="send-message-btn"]');
-    if (!btn) btn = document.querySelector('[aria-label*="Send"]');
-    
-    if (btn) {
-        btn.click();
-        return 'SENT';
-    }
-    return 'NO_BUTTON';
 })();
 ```
 

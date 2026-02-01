@@ -1,0 +1,486 @@
+{
+  "timestamp": "2026-02-01T04:18:00.874Z",
+  "summary": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "passRate": "100%",
+    "duration": "14711ms"
+  },
+  "categories": {
+    "API": {
+      "passed": 4,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "Health Check",
+          "category": "API",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "status": "ok",
+            "platform": "tiktok",
+            "port": 3102
+          },
+          "duration": 2
+        },
+        {
+          "name": "TikTok Status",
+          "category": "API",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "isOnTikTok": true,
+            "isLoggedIn": true,
+            "currentUrl": "https://www.tiktok.com/messages"
+          },
+          "duration": 265
+        },
+        {
+          "name": "Error Detection",
+          "category": "API",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "hasError": false
+          },
+          "duration": 100
+        },
+        {
+          "name": "Rate Limits",
+          "category": "API",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "limits": {
+              "messagesPerHour": 10,
+              "messagesPerDay": 50,
+              "minDelayMs": 120000,
+              "maxDelayMs": 300000,
+              "activeHoursStart": 9,
+              "activeHoursEnd": 21
+            },
+            "messagesSentToday": 0,
+            "messagesSentThisHour": 0,
+            "activeHours": {
+              "start": 9,
+              "end": 21,
+              "isActive": false
+            },
+            "nextDelay": 281193
+          },
+          "duration": 0
+        }
+      ]
+    },
+    "Navigation": {
+      "passed": 1,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "Navigate to Inbox",
+          "category": "Navigation",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "success": true,
+            "currentUrl": "https://www.tiktok.com/messages"
+          },
+          "duration": 4433
+        }
+      ]
+    },
+    "Conversations": {
+      "passed": 2,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "List Conversations",
+          "category": "Conversations",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "count": 71
+          },
+          "duration": 100
+        },
+        {
+          "name": "Conversation Item Selectors",
+          "category": "Conversations",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "hasNickname": true,
+            "hasExtract": true,
+            "hasTime": true,
+            "hasAvatar": true
+          },
+          "duration": 135
+        }
+      ]
+    },
+    "Chat": {
+      "passed": 5,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "Open Conversation",
+          "category": "Chat",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "success": true,
+            "currentUrl": "https://www.tiktok.com/messages"
+          },
+          "duration": 2040
+        },
+        {
+          "name": "Chat Header Selectors",
+          "category": "Chat",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "nickname": "Sarah E Ashley | Travel & Life",
+            "username": "@saraheashley",
+            "hasAvatar": true
+          },
+          "duration": 110
+        },
+        {
+          "name": "Message Selectors",
+          "category": "Chat",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "count": 24,
+            "hasTextContainer": true,
+            "hasVideoContainer": true,
+            "hasTimeContainer": true
+          },
+          "duration": 140
+        },
+        {
+          "name": "Chat Type Detection",
+          "category": "Chat",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "type": "REGULAR_DM",
+            "hasInput": true,
+            "isRequest": false
+          },
+          "duration": 140
+        },
+        {
+          "name": "Read Messages",
+          "category": "Chat",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "count": 24
+          },
+          "duration": 195
+        }
+      ]
+    },
+    "Requests": {
+      "passed": 1,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "Request Group Selector",
+          "category": "Requests",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "found": true,
+            "text": "Message requests\nYou have 4 requests\n"
+          },
+          "duration": 5600
+        }
+      ]
+    },
+    "Discovery": {
+      "passed": 2,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "data-e2e Selectors",
+          "category": "Discovery",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "count": 42,
+            "selectors": [
+              "tiktok-logo",
+              "search-box",
+              "search-user-input",
+              "search-box-button",
+              "",
+              "upload-icon",
+              "top-dm-icon",
+              "inbox-icon",
+              "inbox-notifications",
+              "inbox-bar"
+            ]
+          },
+          "duration": 102
+        },
+        {
+          "name": "Class Pattern Selectors",
+          "category": "Discovery",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "count": 77
+          },
+          "duration": 106
+        }
+      ]
+    },
+    "Execution": {
+      "passed": 2,
+      "failed": 0,
+      "tests": [
+        {
+          "name": "Execute JavaScript",
+          "category": "Execution",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "title": "(2)Messages | TikTok"
+          },
+          "duration": 111
+        },
+        {
+          "name": "Execute Complex Script",
+          "category": "Execution",
+          "passed": true,
+          "message": "OK",
+          "data": {
+            "url": "https://www.tiktok.com/messages",
+            "time": 1769919480872
+          },
+          "duration": 110
+        }
+      ]
+    }
+  },
+  "allTests": [
+    {
+      "name": "Health Check",
+      "category": "API",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "status": "ok",
+        "platform": "tiktok",
+        "port": 3102
+      },
+      "duration": 2
+    },
+    {
+      "name": "TikTok Status",
+      "category": "API",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "isOnTikTok": true,
+        "isLoggedIn": true,
+        "currentUrl": "https://www.tiktok.com/messages"
+      },
+      "duration": 265
+    },
+    {
+      "name": "Error Detection",
+      "category": "API",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "hasError": false
+      },
+      "duration": 100
+    },
+    {
+      "name": "Rate Limits",
+      "category": "API",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "limits": {
+          "messagesPerHour": 10,
+          "messagesPerDay": 50,
+          "minDelayMs": 120000,
+          "maxDelayMs": 300000,
+          "activeHoursStart": 9,
+          "activeHoursEnd": 21
+        },
+        "messagesSentToday": 0,
+        "messagesSentThisHour": 0,
+        "activeHours": {
+          "start": 9,
+          "end": 21,
+          "isActive": false
+        },
+        "nextDelay": 281193
+      },
+      "duration": 0
+    },
+    {
+      "name": "Navigate to Inbox",
+      "category": "Navigation",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "success": true,
+        "currentUrl": "https://www.tiktok.com/messages"
+      },
+      "duration": 4433
+    },
+    {
+      "name": "List Conversations",
+      "category": "Conversations",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "count": 71
+      },
+      "duration": 100
+    },
+    {
+      "name": "Conversation Item Selectors",
+      "category": "Conversations",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "hasNickname": true,
+        "hasExtract": true,
+        "hasTime": true,
+        "hasAvatar": true
+      },
+      "duration": 135
+    },
+    {
+      "name": "Open Conversation",
+      "category": "Chat",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "success": true,
+        "currentUrl": "https://www.tiktok.com/messages"
+      },
+      "duration": 2040
+    },
+    {
+      "name": "Chat Header Selectors",
+      "category": "Chat",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "nickname": "Sarah E Ashley | Travel & Life",
+        "username": "@saraheashley",
+        "hasAvatar": true
+      },
+      "duration": 110
+    },
+    {
+      "name": "Message Selectors",
+      "category": "Chat",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "count": 24,
+        "hasTextContainer": true,
+        "hasVideoContainer": true,
+        "hasTimeContainer": true
+      },
+      "duration": 140
+    },
+    {
+      "name": "Chat Type Detection",
+      "category": "Chat",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "type": "REGULAR_DM",
+        "hasInput": true,
+        "isRequest": false
+      },
+      "duration": 140
+    },
+    {
+      "name": "Read Messages",
+      "category": "Chat",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "count": 24
+      },
+      "duration": 195
+    },
+    {
+      "name": "Request Group Selector",
+      "category": "Requests",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "found": true,
+        "text": "Message requests\nYou have 4 requests\n"
+      },
+      "duration": 5600
+    },
+    {
+      "name": "data-e2e Selectors",
+      "category": "Discovery",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "count": 42,
+        "selectors": [
+          "tiktok-logo",
+          "search-box",
+          "search-user-input",
+          "search-box-button",
+          "",
+          "upload-icon",
+          "top-dm-icon",
+          "inbox-icon",
+          "inbox-notifications",
+          "inbox-bar"
+        ]
+      },
+      "duration": 102
+    },
+    {
+      "name": "Class Pattern Selectors",
+      "category": "Discovery",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "count": 77
+      },
+      "duration": 106
+    },
+    {
+      "name": "Execute JavaScript",
+      "category": "Execution",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "title": "(2)Messages | TikTok"
+      },
+      "duration": 111
+    },
+    {
+      "name": "Execute Complex Script",
+      "category": "Execution",
+      "passed": true,
+      "message": "OK",
+      "data": {
+        "url": "https://www.tiktok.com/messages",
+        "time": 1769919480872
+      },
+      "duration": 110
+    }
+  ]
+}
