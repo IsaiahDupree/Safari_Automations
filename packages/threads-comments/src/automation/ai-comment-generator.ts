@@ -122,7 +122,20 @@ export class ThreadsAICommentGenerator {
   private config: AICommentConfig;
 
   constructor(config: Partial<AICommentConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // Load API key from environment if not provided
+    const apiKey = config.apiKey || process.env.OPENAI_API_KEY;
+    this.config = { 
+      ...DEFAULT_CONFIG, 
+      ...config,
+      apiKey,
+      provider: apiKey ? 'openai' : 'local',
+    };
+    
+    if (apiKey) {
+      console.log('[AI] ✅ OpenAI API key loaded - using GPT-4o');
+    } else {
+      console.log('[AI] ⚠️ No API key - using local templates');
+    }
   }
 
   /**

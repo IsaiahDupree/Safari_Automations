@@ -5,6 +5,7 @@
  * Port: 3004
  */
 
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { ThreadsDriver, DEFAULT_CONFIG, type ThreadsConfig } from '../automation/threads-driver.js';
