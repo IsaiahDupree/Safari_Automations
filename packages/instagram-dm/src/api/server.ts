@@ -1,9 +1,43 @@
 /**
  * Instagram DM API Server
  * REST API for DM operations - can be called from CRM server.
+ * Now with AI-powered message generation!
  */
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+
+// AI for DM generation
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (OPENAI_API_KEY) {
+  console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
+}
+
+export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    return `Hey! Wanted to connect with you about ${context.topic || 'your content'}. Let me know if you're interested!`;
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'Generate a SHORT, personalized Instagram DM (max 150 chars). Be friendly, authentic, not salesy.' },
+          { role: 'user', content: `DM to @${context.recipientUsername} for ${context.purpose}. ${context.topic ? `Topic: ${context.topic}` : ''}` }
+        ],
+        max_tokens: 80,
+        temperature: 0.85,
+      }),
+    });
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    return data.choices?.[0]?.message?.content?.trim() || `Hey! Love your content, wanted to connect! 🙌`;
+  } catch {
+    return `Hey! Love your content, wanted to connect! 🙌`;
+  }
+}
 import cors from 'cors';
 import {
   SafariDriver,

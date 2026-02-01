@@ -4,15 +4,84 @@
  * Generates N videos with @isaiahdupree as the character
  * Tracks status, removes watermarks, and concatenates into final video
  * 
+ * NOW WITH AI-POWERED PROMPT GENERATION!
+ * 
  * Usage:
  *   npx tsx scripts/sora-story-generator.ts --story badass
  *   npx tsx scripts/sora-story-generator.ts --story space
  *   npx tsx scripts/sora-story-generator.ts --prompts "prompt1" "prompt2" "prompt3"
+ *   npx tsx scripts/sora-story-generator.ts --ai-theme "underwater adventure"
  */
 
+import 'dotenv/config';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// AI-Powered Prompt Generation
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+async function generateAITrilogy(theme: string, character: string = '@isaiahdupree'): Promise<Array<{ title: string; prompt: string }>> {
+  if (!OPENAI_API_KEY) {
+    console.log('[AI] ⚠️ No API key - cannot generate AI prompts');
+    return [];
+  }
+  
+  console.log(`[AI] ✨ Generating trilogy for theme: "${theme}"`);
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { 
+            role: 'system', 
+            content: `You generate cinematic Sora video prompts. Each prompt should be 2-3 sentences, highly visual, featuring ${character} as the main character. Focus on dramatic action, lighting, and atmosphere.` 
+          },
+          { 
+            role: 'user', 
+            content: `Create a 3-part video trilogy for the theme: "${theme}"
+
+Output in this exact format:
+CHAPTER 1: [title] | [prompt featuring ${character}]
+CHAPTER 2: [title] | [prompt featuring ${character}]  
+CHAPTER 3: [title] | [prompt featuring ${character}]` 
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.9,
+      }),
+    });
+    
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    const content = data.choices?.[0]?.message?.content || '';
+    
+    // Parse the response
+    const prompts: Array<{ title: string; prompt: string }> = [];
+    const lines = content.split('\n').filter(l => l.includes('CHAPTER'));
+    
+    for (const line of lines) {
+      const match = line.match(/CHAPTER \d+:\s*(.+?)\s*\|\s*(.+)/);
+      if (match) {
+        prompts.push({ title: match[1].trim(), prompt: match[2].trim() });
+      }
+    }
+    
+    if (prompts.length === 3) {
+      console.log('[AI] ✅ Generated 3 prompts:');
+      prompts.forEach((p, i) => console.log(`   ${i + 1}. ${p.title}`));
+      return prompts;
+    }
+    
+    console.log('[AI] ⚠️ Could not parse AI response, using fallback');
+    return [];
+  } catch (error) {
+    console.error('[AI] Error generating prompts:', error);
+    return [];
+  }
+}
 
 // ============================================================================
 // STORY PRESETS - Add your own!

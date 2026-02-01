@@ -1,6 +1,8 @@
 /**
  * TikTok Comment API Server - Port 3006
+ * Now with AI-powered comment generation!
  */
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { TikTokDriver, type TikTokConfig } from '../automation/tiktok-driver.js';
@@ -9,6 +11,41 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 const PORT = parseInt(process.env.TIKTOK_COMMENTS_PORT || '3006');
+
+// AI Client for comment generation
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (OPENAI_API_KEY) {
+  console.log('[AI] ✅ OpenAI API key loaded - AI comments enabled');
+} else {
+  console.log('[AI] ⚠️ No API key - using local templates');
+}
+
+async function generateAIComment(postContent: string, username: string): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    const templates = ["This is fire! 🔥", "Obsessed with this! 💯", "No way! 😂", "This is everything! ✨"];
+    return templates[Math.floor(Math.random() * templates.length)];
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'You are a TikTok user. Generate SHORT, trendy comments (max 80 chars) with 1-2 emojis. Be casual and fun.' },
+          { role: 'user', content: `Comment on this TikTok by @${username}: "${postContent.substring(0, 200)}"` }
+        ],
+        max_tokens: 50,
+        temperature: 0.9,
+      }),
+    });
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    return data.choices?.[0]?.message?.content?.trim() || "This is fire! 🔥";
+  } catch {
+    return "This is fire! 🔥";
+  }
+}
 
 let driver: TikTokDriver | null = null;
 function getDriver(): TikTokDriver { if (!driver) driver = new TikTokDriver(); return driver; }

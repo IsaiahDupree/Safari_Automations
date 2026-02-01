@@ -1,9 +1,43 @@
 /**
  * TikTok DM API Server
  * Express REST API for TikTok DM automation
+ * Now with AI-powered message generation!
  */
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+
+// AI for DM generation
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (OPENAI_API_KEY) {
+  console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
+}
+
+export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    return `Hey! Your content is 🔥 Wanted to connect about ${context.topic || 'collab opportunities'}!`;
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'Generate a SHORT, casual TikTok DM (max 150 chars). Be trendy, friendly, use emojis.' },
+          { role: 'user', content: `DM to @${context.recipientUsername} for ${context.purpose}. ${context.topic ? `Topic: ${context.topic}` : ''}` }
+        ],
+        max_tokens: 80,
+        temperature: 0.9,
+      }),
+    });
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    return data.choices?.[0]?.message?.content?.trim() || `Hey! Your content is 🔥 Let's connect!`;
+  } catch {
+    return `Hey! Your content is 🔥 Let's connect!`;
+  }
+}
 import cors from 'cors';
 import {
   SafariDriver,
