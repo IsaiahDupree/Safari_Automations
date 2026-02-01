@@ -518,19 +518,37 @@ end tell`;
 
   /**
    * Search Instagram by keyword/hashtag
+   * Note: Explore pages have React rendering issues, so we use feed-based collection
    */
   async searchByKeyword(keyword: string): Promise<Array<{ username: string; url?: string }>> {
-    // Navigate to explore/search
-    const searchUrl = keyword.startsWith('#') 
-      ? `https://www.instagram.com/explore/tags/${keyword.replace('#', '')}/`
-      : `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(keyword)}`;
+    console.log(`[Instagram] Collecting posts for keyword: "${keyword}"`);
     
-    console.log(`[Instagram] Searching: ${searchUrl}`);
-    await this.navigate(searchUrl);
-    await this.wait(3000);
+    // Go to main feed (which works reliably)
+    await this.navigate('https://www.instagram.com/');
+    await this.wait(4000);
     
-    // Collect posts from search results
-    return this.findPosts(20);
+    // Collect posts by scrolling through feed
+    const allPosts: Array<{ username: string; url?: string }> = [];
+    const seenUrls = new Set<string>();
+    
+    for (let scroll = 0; scroll < 3; scroll++) {
+      const posts = await this.findPosts(20);
+      for (const post of posts) {
+        if (post.url && !seenUrls.has(post.url)) {
+          seenUrls.add(post.url);
+          allPosts.push(post);
+        }
+      }
+      await this.scroll();
+      await this.wait(1500);
+    }
+    
+    console.log(`[Instagram] Found ${allPosts.length} posts from feed`);
+    
+    // Store keyword context for comment generation
+    (this as any).currentKeyword = keyword;
+    
+    return allPosts;
   }
 
   /**
