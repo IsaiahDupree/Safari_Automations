@@ -170,9 +170,33 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
     await new Promise(r => setTimeout(r, 3000));
     
     for (let i = 0; i < count; i++) {
-      log(`\n[Instagram] 📝 Post ${i + 1}/${count}`);
+      log(`\n[Instagram] ═══════════════════════════════════════`);
+      log(`[Instagram] 📝 Post ${i + 1}/${count}`);
+      log(`[Instagram] ═══════════════════════════════════════`);
       
       try {
+        // Find posts on feed
+        const posts = await d.findPosts(10);
+        if (posts.length === 0) {
+          log(`[Instagram] ⏬ No posts found, scrolling...`);
+          await d.scroll();
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        
+        // Click into post
+        const clickedIndex = i % Math.max(posts.length, 1);
+        const targetPost = posts[clickedIndex];
+        log(`[Instagram] 👆 Clicking post ${clickedIndex}: @${targetPost?.username || 'unknown'}`);
+        
+        const clicked = await d.clickPost(clickedIndex);
+        if (!clicked) {
+          log(`[Instagram] ❌ Failed to click post`);
+          results.push({ success: false, username: '', comment: '', error: 'Failed to click post' });
+          continue;
+        }
+        
+        await new Promise(r => setTimeout(r, 2000));
+        
         // Get post details
         const details = await d.getPostDetails();
         log(`[Instagram] 👤 Author: @${details.username}`);
@@ -192,8 +216,10 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
             success: false,
             username: details.username || '',
             comment: '',
+            postUrl: targetPost?.url,
             error: `Skipped: ${analysis.skipReason}`,
           });
+          await d.clickBack();
           continue;
         }
         
@@ -217,6 +243,7 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
             success: true,
             username: details.username || '',
             comment,
+            postUrl: targetPost?.url,
           });
         } else {
           log(`[Instagram] ❌ Failed: ${result.error}`);
@@ -224,9 +251,18 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
             success: false,
             username: details.username || '',
             comment,
+            postUrl: targetPost?.url,
             error: result.error,
           });
         }
+        
+        // Close post and return to feed
+        log(`[Instagram] ⬅️ Returning to feed...`);
+        await d.clickBack();
+        await new Promise(r => setTimeout(r, 1500));
+        
+        // Scroll for fresh posts
+        await d.scroll();
         
         // Delay between posts
         if (i < count - 1) {
@@ -242,6 +278,8 @@ app.post('/api/instagram/engage/multi', async (req: Request, res: Response) => {
           comment: '',
           error: String(error),
         });
+        // Try to recover
+        await d.clickBack();
       }
     }
     

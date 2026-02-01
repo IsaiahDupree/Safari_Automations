@@ -221,6 +221,30 @@ export class InstagramDriver {
     }
   }
 
+  /**
+   * Type text using clipboard paste (supports emojis)
+   * Reused from packages/services/src/safari/safari-executor.ts
+   */
+  private async typeViaClipboard(text: string): Promise<boolean> {
+    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    await execAsync(`echo -n "${escaped}" | pbcopy`).catch(() => null);
+    await this.wait(200);
+    
+    const script = `
+tell application "Safari" to activate
+delay 0.2
+tell application "System Events"
+    keystroke "v" using command down
+end tell`;
+    
+    try {
+      await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async postComment(text: string): Promise<CommentResult> {
     try {
       console.log(`[Instagram] Posting comment: "${text.substring(0, 50)}..."`);
@@ -231,21 +255,43 @@ export class InstagramDriver {
         return { success: false, error: rateCheck.reason };
       }
 
-      // Find and focus comment input
-      const focusResult = await this.executeJS(`
+      // Step 1: Try clicking comment icon first to reveal input
+      console.log(`[Instagram] Step 1: Clicking comment icon...`);
+      const clickCommentIcon = await this.executeJS(`
         (function() {
-          var input = document.querySelector('textarea[aria-label="Add a comment…"]');
-          if (!input) {
-            input = document.querySelector('textarea[placeholder="Add a comment…"]');
-          }
-          if (input) {
-            input.focus();
-            input.click();
-            return 'focused';
+          var commentBtn = document.querySelector('svg[aria-label="Comment"]');
+          if (commentBtn) {
+            var btn = commentBtn.closest('button') || commentBtn.parentElement;
+            if (btn) { btn.click(); return 'clicked'; }
           }
           return 'not_found';
         })();
       `);
+      console.log(`[Instagram]   Result: ${clickCommentIcon}`);
+      await this.wait(1000);
+
+      // Step 2: Find and focus comment input
+      console.log(`[Instagram] Step 2: Focusing comment input...`);
+      const focusResult = await this.executeJS(`
+        (function() {
+          var selectors = [
+            'textarea[aria-label="Add a comment…"]',
+            'textarea[placeholder="Add a comment…"]',
+            'textarea[aria-label*="comment" i]',
+            'textarea[placeholder*="comment" i]'
+          ];
+          for (var s of selectors) {
+            var input = document.querySelector(s);
+            if (input && input.offsetParent !== null) {
+              input.focus();
+              input.click();
+              return 'focused';
+            }
+          }
+          return 'not_found';
+        })();
+      `);
+      console.log(`[Instagram]   Result: ${focusResult}`);
 
       if (focusResult !== 'focused') {
         return { success: false, error: 'Comment input not found' };
@@ -253,53 +299,46 @@ export class InstagramDriver {
 
       await this.wait(500);
 
-      // Type the comment
-      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-      const typeResult = await this.executeJS(`
-        (function() {
-          var input = document.querySelector('textarea[aria-label="Add a comment…"]');
-          if (!input) {
-            input = document.querySelector('textarea[placeholder="Add a comment…"]');
-          }
-          if (input) {
-            input.value = '${escaped}';
-            input.dispatchEvent(new InputEvent('input', { bubbles: true }));
-            return 'typed';
-          }
-          return 'input_not_found';
-        })();
-      `);
-
-      if (typeResult !== 'typed') {
+      // Step 3: Type via clipboard (supports emojis)
+      console.log(`[Instagram] Step 3: Typing via clipboard...`);
+      const typed = await this.typeViaClipboard(text);
+      console.log(`[Instagram]   Result: ${typed ? 'typed' : 'failed'}`);
+      
+      if (!typed) {
         return { success: false, error: 'Failed to type comment' };
       }
 
       await this.wait(500);
 
-      // Submit the comment
+      // Step 4: Submit the comment
+      console.log(`[Instagram] Step 4: Submitting...`);
       const submitResult = await this.executeJS(`
         (function() {
+          // Try submit button
           var postBtn = document.querySelector('button[type="submit"]');
-          if (!postBtn) {
-            var buttons = document.querySelectorAll('div[role="button"]');
-            for (var i = 0; i < buttons.length; i++) {
-              if (buttons[i].innerText.toLowerCase() === 'post') {
-                postBtn = buttons[i];
-                break;
-              }
-            }
-          }
           if (postBtn && !postBtn.disabled) {
             postBtn.click();
-            return 'clicked';
+            return 'clicked_submit';
+          }
+          // Try role="button" with Post text
+          var buttons = document.querySelectorAll('div[role="button"]');
+          for (var i = 0; i < buttons.length; i++) {
+            var text = (buttons[i].innerText || '').trim().toLowerCase();
+            if (text === 'post' && !buttons[i].hasAttribute('aria-disabled')) {
+              buttons[i].click();
+              return 'clicked_post';
+            }
           }
           return 'submit_not_found';
         })();
       `);
+      console.log(`[Instagram]   Result: ${submitResult}`);
 
-      if (submitResult !== 'clicked') {
-        return { success: false, error: 'Submit button not found' };
+      if (!submitResult.includes('clicked')) {
+        return { success: false, error: 'Submit button not found or disabled' };
       }
+
+      await this.wait(2000);
 
       // Log the comment
       this.commentLog.push({ timestamp: new Date() });
@@ -350,5 +389,105 @@ export class InstagramDriver {
 
   getConfig(): InstagramConfig {
     return { ...this.config };
+  }
+
+  /**
+   * Find posts on Instagram feed
+   */
+  async findPosts(limit: number = 10): Promise<Array<{ username: string; url?: string }>> {
+    const result = await this.executeJS(`
+      (function() {
+        var posts = [];
+        // Try multiple selectors for Instagram posts
+        var postLinks = document.querySelectorAll('a[href*="/p/"]');
+        var seen = new Set();
+        for (var i = 0; i < postLinks.length && posts.length < ${limit}; i++) {
+          var link = postLinks[i];
+          var href = link.getAttribute('href');
+          if (href && !seen.has(href)) {
+            seen.add(href);
+            var url = href.startsWith('http') ? href : 'https://www.instagram.com' + href;
+            // Try to find username from nearby elements
+            var container = link.closest('article') || link.closest('div[role="presentation"]') || link.parentElement;
+            var userLink = container ? container.querySelector('a[href^="/"]:not([href*="/p/"])') : null;
+            var username = userLink ? userLink.getAttribute('href').replace(/\\//g, '') : '';
+            posts.push({ username: username, url: url });
+          }
+        }
+        return JSON.stringify(posts);
+      })();
+    `);
+    try {
+      return JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Click on a post to open it
+   */
+  async clickPost(index: number = 0): Promise<boolean> {
+    // First try navigating directly to post URL
+    const posts = await this.findPosts(10);
+    if (posts.length > index && posts[index].url) {
+      console.log(`[Instagram] Navigating to post: ${posts[index].url}`);
+      await this.navigate(posts[index].url);
+      await this.wait(2000);
+      return true;
+    }
+    
+    // Fallback: click on post image
+    const result = await this.executeJS(`
+      (function() {
+        var postLinks = document.querySelectorAll('a[href*="/p/"]');
+        if (postLinks.length <= ${index}) return 'no_posts';
+        var link = postLinks[${index}];
+        var img = link.querySelector('img');
+        if (img) {
+          img.click();
+          return 'clicked_img';
+        }
+        link.click();
+        return 'clicked_link';
+      })();
+    `);
+    await this.wait(2000);
+    return result.includes('clicked');
+  }
+
+  /**
+   * Click back/close button to return to feed
+   */
+  async clickBack(): Promise<boolean> {
+    const result = await this.executeJS(`
+      (function() {
+        // Try close button on modal
+        var closeBtn = document.querySelector('svg[aria-label="Close"]');
+        if (closeBtn) {
+          var btn = closeBtn.closest('button') || closeBtn.parentElement;
+          if (btn) { btn.click(); return 'closed'; }
+        }
+        // Try back button
+        var backBtn = document.querySelector('svg[aria-label="Back"]');
+        if (backBtn) {
+          var btn = backBtn.closest('button') || backBtn.parentElement;
+          if (btn) { btn.click(); return 'back'; }
+        }
+        // Fallback: press Escape
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27 }));
+        return 'escape';
+      })();
+    `);
+    await this.wait(1500);
+    return result === 'closed' || result === 'back' || result === 'escape';
+  }
+
+  /**
+   * Scroll down to load more posts
+   */
+  async scroll(): Promise<void> {
+    await this.executeJS(`window.scrollBy(0, 800);`);
+    await this.wait(1000);
   }
 }
