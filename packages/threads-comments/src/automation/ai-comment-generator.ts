@@ -30,6 +30,60 @@ export interface PostAnalysis {
   topics: string[];
   tone: string;
   engagement?: string;
+  isInappropriate?: boolean;
+  skipReason?: string;
+}
+
+// Content filter for inappropriate/thirst trap posts
+const INAPPROPRIATE_KEYWORDS = [
+  // Suggestive/thirst trap indicators
+  'onlyfans', 'of link', 'link in bio', 'dm for more', 'dm me',
+  'swipe up', 'exclusive content', 'subscribe', 'spicy', 'uncensored',
+  'nsfw', '18+', 'adults only', 'mature content',
+  // Body-focused thirst trap phrases
+  'rate me', 'am i pretty', 'am i hot', 'do you like', 'what would you do',
+  'smash or pass', 'would you date', 'sliding into', 'hit me up',
+  // Spam/scam indicators
+  'crypto', 'nft drop', 'free money', 'giveaway', 'dm to win',
+  'make money fast', 'passive income', 'get rich',
+];
+
+const INAPPROPRIATE_EMOJIS = [
+  '🍑', '🍆', '🥵', '💦', '🔞', '👅', '💋', '🤤',
+];
+
+export function isInappropriateContent(text: string): { inappropriate: boolean; reason?: string } {
+  const lowerText = text.toLowerCase();
+  
+  // Check keywords
+  for (const keyword of INAPPROPRIATE_KEYWORDS) {
+    if (lowerText.includes(keyword)) {
+      return { inappropriate: true, reason: `Contains "${keyword}"` };
+    }
+  }
+  
+  // Check emojis (multiple suggestive emojis = likely thirst trap)
+  let emojiCount = 0;
+  for (const emoji of INAPPROPRIATE_EMOJIS) {
+    if (text.includes(emoji)) {
+      emojiCount++;
+    }
+  }
+  if (emojiCount >= 2) {
+    return { inappropriate: true, reason: 'Multiple suggestive emojis detected' };
+  }
+  
+  // Check for minimal text with just emojis (common thirst trap pattern)
+  const textWithoutEmojis = text.replace(/[\u{1F300}-\u{1F9FF}]/gu, '').trim();
+  if (textWithoutEmojis.length < 10 && text.length > 5) {
+    // Very short text with emojis - check if it's just attention seeking
+    const attentionPhrases = ['hey', 'hi', 'hello', 'look', 'check', 'new', 'just'];
+    if (attentionPhrases.some(p => lowerText.includes(p)) && text.includes('📸')) {
+      return { inappropriate: true, reason: 'Minimal text with photo indicator' };
+    }
+  }
+  
+  return { inappropriate: false };
 }
 
 export interface GeneratedComment {
@@ -132,6 +186,9 @@ export class ThreadsAICommentGenerator {
       }
     }
     
+    // Check for inappropriate content (thirst traps, spam, etc.)
+    const contentCheck = isInappropriateContent(mainPost);
+    
     return {
       mainPost,
       username,
@@ -141,6 +198,8 @@ export class ThreadsAICommentGenerator {
       sentiment,
       topics: topics.length > 0 ? topics : ['general'],
       tone,
+      isInappropriate: contentCheck.inappropriate,
+      skipReason: contentCheck.reason,
     };
   }
 

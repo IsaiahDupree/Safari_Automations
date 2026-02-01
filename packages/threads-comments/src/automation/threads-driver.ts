@@ -579,6 +579,27 @@ end tell`;
           
           // Generate comment
           const comment = await Promise.resolve(commentGenerator(context));
+          
+          // Check if content was flagged as inappropriate
+          if (comment.startsWith('__SKIP__:')) {
+            const skipReason = comment.replace('__SKIP__:', '');
+            log(`[Threads] ⚠️ SKIPPED - ${skipReason}`);
+            results.push({
+              success: false,
+              username: context.username,
+              comment: '',
+              postUrl: targetPost?.url,
+              timestamp: new Date().toISOString(),
+              error: `Skipped: ${skipReason}`,
+            });
+            
+            // Go back and try next post
+            await this.clickBack();
+            await this.wait(1500);
+            await this.scroll();
+            continue;
+          }
+          
           if (!comment || comment.length < 3) {
             throw new Error('Comment generation failed or too short');
           }

@@ -287,6 +287,12 @@ app.post('/api/threads/engage/multi', async (req: Request, res: Response) => {
         console.log(`[AI] Analysis: sentiment=${analysis.sentiment}, topics=${analysis.topics.join(',')}, tone=${analysis.tone}`);
         console.log(`[AI] Existing comments: ${(context.replies || []).length}`);
         
+        // Check for inappropriate content (thirst traps, spam, etc.)
+        if (analysis.isInappropriate) {
+          console.log(`[AI] ⚠️ SKIPPING - Inappropriate content: ${analysis.skipReason}`);
+          return `__SKIP__:${analysis.skipReason}`;
+        }
+        
         const comment = await ai.generateComment(analysis);
         console.log(`[AI] Generated comment: "${comment}"`);
         return comment;
