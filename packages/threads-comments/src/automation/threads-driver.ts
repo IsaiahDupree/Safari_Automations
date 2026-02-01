@@ -267,6 +267,19 @@ export const JS_TEMPLATES = {
       return 'no_expand_found';
     })();
   `,
+  // Click back button to return to feed
+  clickBack: `
+    (function() {
+      var backBtn = document.querySelector('svg[aria-label="Back"]');
+      if (backBtn) {
+        var btn = backBtn.closest('[role="button"]') || backBtn.parentElement;
+        if (btn) { btn.click(); return 'clicked_back'; }
+      }
+      // Fallback: use browser back
+      window.history.back();
+      return 'history_back';
+    })();
+  `,
 };
 
 export interface ThreadsConfig {
@@ -464,6 +477,95 @@ end tell`;
   async clickPost(index: number): Promise<boolean> {
     const result = await this.executeJS(JS_TEMPLATES.clickPost(index));
     return result === 'clicked';
+  }
+
+  async clickBack(): Promise<boolean> {
+    const result = await this.executeJS(JS_TEMPLATES.clickBack);
+    await this.wait(2000);
+    return result.includes('clicked') || result === 'history_back';
+  }
+
+  async commentOnMultiplePosts(
+    count: number = 5,
+    commentGenerator: (context: { mainPost: string; username: string; replies?: string[] }) => string | Promise<string>,
+    delayBetweenMs: number = 30000
+  ): Promise<Array<{ success: boolean; username: string; comment: string; error?: string }>> {
+    const results: Array<{ success: boolean; username: string; comment: string; error?: string }> = [];
+    
+    console.log(`[Threads] Starting multi-post commenting (${count} posts)...`);
+    
+    // Navigate to feed first
+    await this.navigateToPost('https://www.threads.com');
+    await this.wait(3000);
+    
+    for (let i = 0; i < count; i++) {
+      console.log(`\n[Threads] === Post ${i + 1}/${count} ===`);
+      
+      try {
+        // Find posts
+        const posts = await this.findPosts(10);
+        if (posts.length <= i) {
+          // Scroll to load more
+          await this.scroll();
+          await this.wait(2000);
+        }
+        
+        // Click into post
+        const clickedIndex = i % Math.max(posts.length, 1);
+        console.log(`[Threads] Clicking post ${clickedIndex}: @${posts[clickedIndex]?.username || 'unknown'}`);
+        const clicked = await this.clickPost(clickedIndex);
+        if (!clicked) {
+          results.push({ success: false, username: '', comment: '', error: 'Failed to click post' });
+          continue;
+        }
+        
+        await this.wait(3000);
+        
+        // Get context
+        const context = await this.getContext();
+        console.log(`[Threads] Post: "${context.mainPost.substring(0, 50)}..."`);
+        
+        // Generate comment (may be async)
+        const comment = await Promise.resolve(commentGenerator(context));
+        console.log(`[Threads] Comment: "${comment}"`);
+        
+        // Post comment
+        const result = await this.postComment(comment);
+        
+        results.push({
+          success: result.success,
+          username: context.username,
+          comment: comment,
+          error: result.error,
+        });
+        
+        // Click back to feed
+        console.log(`[Threads] Clicking back...`);
+        await this.clickBack();
+        await this.wait(2000);
+        
+        // Scroll down to get fresh posts
+        await this.scroll();
+        await this.wait(1000);
+        
+        // Delay between posts (except last one)
+        if (i < count - 1) {
+          console.log(`[Threads] Waiting ${delayBetweenMs / 1000}s before next post...`);
+          await this.wait(delayBetweenMs);
+        }
+        
+      } catch (error) {
+        results.push({
+          success: false,
+          username: '',
+          comment: '',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    
+    console.log(`\n[Threads] Multi-post commenting complete: ${results.filter(r => r.success).length}/${count} successful`);
+    return results;
   }
 
   async postComment(text: string): Promise<CommentResult> {

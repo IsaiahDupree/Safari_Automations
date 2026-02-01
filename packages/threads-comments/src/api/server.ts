@@ -8,6 +8,8 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { ThreadsDriver, DEFAULT_CONFIG, type ThreadsConfig } from '../automation/threads-driver.js';
+import { ThreadsAutoCommenter } from '../automation/threads-auto-commenter.js';
+import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js';
 
 const app = express();
 app.use(cors());
@@ -203,12 +205,21 @@ app.post('/api/threads/click-post', async (req: Request, res: Response) => {
 
 // === AUTO ENGAGEMENT ===
 
-import { ThreadsAutoCommenter } from '../automation/threads-auto-commenter.js';
-
 let autoCommenter: ThreadsAutoCommenter | null = null;
 function getAutoCommenter(): ThreadsAutoCommenter {
   if (!autoCommenter) { autoCommenter = new ThreadsAutoCommenter(); }
   return autoCommenter;
+}
+
+let aiGenerator: ThreadsAICommentGenerator | null = null;
+function getAIGenerator(): ThreadsAICommentGenerator {
+  if (!aiGenerator) {
+    aiGenerator = new ThreadsAICommentGenerator({
+      provider: process.env.OPENAI_API_KEY ? 'openai' : 'local',
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return aiGenerator;
 }
 
 app.post('/api/threads/engage', async (req: Request, res: Response) => {
@@ -242,6 +253,98 @@ app.delete('/api/threads/engage/history', (req: Request, res: Response) => {
   const ac = getAutoCommenter();
   ac.clearCommentedUrls();
   res.json({ success: true });
+});
+
+// === MULTI-POST COMMENTING ===
+
+app.post('/api/threads/engage/multi', async (req: Request, res: Response) => {
+  try {
+    const { count = 5, delayBetween = 30000, useAI = true } = req.body;
+    const d = getDriver();
+    const ai = getAIGenerator();
+    
+    const commentGenerator = async (context: { mainPost: string; username: string; replies?: string[] }) => {
+      if (useAI) {
+        // Use AI to analyze post and generate contextual comment
+        // Based on python/utils/ai_comment_generator.py
+        const analysis = ai.analyzePost({
+          mainPost: context.mainPost,
+          username: context.username,
+          replies: context.replies || [],
+        });
+        
+        console.log(`[AI] Post: @${context.username}`);
+        console.log(`[AI] Content: "${context.mainPost.substring(0, 50)}..."`);
+        console.log(`[AI] Analysis: sentiment=${analysis.sentiment}, topics=${analysis.topics.join(',')}, tone=${analysis.tone}`);
+        console.log(`[AI] Existing comments: ${(context.replies || []).length}`);
+        
+        const comment = await ai.generateComment(analysis);
+        console.log(`[AI] Generated comment: "${comment}"`);
+        return comment;
+      } else {
+        // Fallback to simple templates
+        const templates = [
+          "This is amazing! 🔥",
+          "Love this! 👏",
+          "So good! ✨",
+          "Incredible work! 🎨",
+        ];
+        return templates[Math.floor(Math.random() * templates.length)];
+      }
+    };
+    
+    const results = await d.commentOnMultiplePosts(count, commentGenerator, delayBetween);
+    
+    res.json({
+      success: true,
+      total: count,
+      successful: results.filter(r => r.success).length,
+      useAI,
+      results,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// AI Analysis endpoint
+app.post('/api/threads/analyze', async (req: Request, res: Response) => {
+  try {
+    const d = getDriver();
+    const ai = getAIGenerator();
+    
+    // Get current post context
+    const context = await d.getContext();
+    const comments = await d.getComments(10);
+    
+    // Analyze
+    const analysis = ai.analyzePost({
+      mainPost: context.mainPost,
+      username: context.username,
+      replies: comments.map(c => c.text),
+    });
+    
+    // Generate suggested comment
+    const suggestedComment = await ai.generateComment(analysis);
+    
+    res.json({
+      analysis,
+      suggestedComment,
+      context,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/threads/back', async (req: Request, res: Response) => {
+  try {
+    const d = getDriver();
+    const result = await d.clickBack();
+    res.json({ success: result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // === CONFIG ===
