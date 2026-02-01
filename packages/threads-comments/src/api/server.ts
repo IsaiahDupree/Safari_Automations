@@ -293,14 +293,18 @@ app.post('/api/threads/engage/multi', async (req: Request, res: Response) => {
       }
     };
     
-    const results = await d.commentOnMultiplePosts(count, commentGenerator, delayBetween);
+    const { maxRetries = 2, captureScreenshots = false } = req.body;
+    const result = await d.commentOnMultiplePosts(count, commentGenerator, delayBetween, {
+      maxRetries,
+      captureScreenshots,
+    });
     
     res.json({
       success: true,
-      total: count,
-      successful: results.filter(r => r.success).length,
       useAI,
-      results,
+      ...result.summary,
+      results: result.results,
+      logs: result.logs,
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });

@@ -488,84 +488,199 @@ end tell`;
   async commentOnMultiplePosts(
     count: number = 5,
     commentGenerator: (context: { mainPost: string; username: string; replies?: string[] }) => string | Promise<string>,
-    delayBetweenMs: number = 30000
-  ): Promise<Array<{ success: boolean; username: string; comment: string; error?: string }>> {
-    const results: Array<{ success: boolean; username: string; comment: string; error?: string }> = [];
+    delayBetweenMs: number = 30000,
+    options: { 
+      maxRetries?: number;
+      captureScreenshots?: boolean;
+      screenshotDir?: string;
+    } = {}
+  ): Promise<{
+    results: Array<{ success: boolean; username: string; comment: string; postUrl?: string; timestamp: string; error?: string }>;
+    summary: { total: number; successful: number; failed: number; duration: number };
+    logs: string[];
+  }> {
+    const { maxRetries = 2, captureScreenshots = false, screenshotDir = '/tmp' } = options;
+    const results: Array<{ success: boolean; username: string; comment: string; postUrl?: string; timestamp: string; error?: string }> = [];
+    const logs: string[] = [];
+    const startTime = Date.now();
     
-    console.log(`[Threads] Starting multi-post commenting (${count} posts)...`);
+    const log = (msg: string) => {
+      const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+      const formatted = `[${timestamp}] ${msg}`;
+      console.log(formatted);
+      logs.push(formatted);
+    };
+    
+    log(`[Threads] 🚀 Starting multi-post commenting (${count} posts)`);
+    log(`[Threads] Config: retries=${maxRetries}, delay=${delayBetweenMs}ms, screenshots=${captureScreenshots}`);
     
     // Navigate to feed first
     await this.navigateToPost('https://www.threads.com');
     await this.wait(3000);
     
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3;
+    
     for (let i = 0; i < count; i++) {
-      console.log(`\n[Threads] === Post ${i + 1}/${count} ===`);
+      // Check for too many consecutive failures
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log(`[Threads] ⚠️ Too many consecutive failures (${consecutiveFailures}), stopping early`);
+        break;
+      }
       
-      try {
-        // Find posts
-        const posts = await this.findPosts(10);
-        if (posts.length <= i) {
-          // Scroll to load more
-          await this.scroll();
+      log(`\n[Threads] ═══════════════════════════════════════`);
+      log(`[Threads] 📝 Post ${i + 1}/${count}`);
+      log(`[Threads] ═══════════════════════════════════════`);
+      
+      let retryCount = 0;
+      let postSuccess = false;
+      
+      while (retryCount <= maxRetries && !postSuccess) {
+        if (retryCount > 0) {
+          log(`[Threads] 🔄 Retry ${retryCount}/${maxRetries}...`);
           await this.wait(2000);
         }
         
-        // Click into post
-        const clickedIndex = i % Math.max(posts.length, 1);
-        console.log(`[Threads] Clicking post ${clickedIndex}: @${posts[clickedIndex]?.username || 'unknown'}`);
-        const clicked = await this.clickPost(clickedIndex);
-        if (!clicked) {
-          results.push({ success: false, username: '', comment: '', error: 'Failed to click post' });
-          continue;
+        try {
+          // Find posts with retry
+          let posts = await this.findPosts(10);
+          if (posts.length === 0) {
+            log(`[Threads] ⏬ No posts found, scrolling...`);
+            await this.scroll();
+            await this.wait(2000);
+            posts = await this.findPosts(10);
+          }
+          
+          if (posts.length === 0) {
+            throw new Error('No posts found after scroll');
+          }
+          
+          // Click into post with smart index
+          const clickedIndex = (i + retryCount) % Math.max(posts.length, 1);
+          const targetPost = posts[clickedIndex];
+          log(`[Threads] 👆 Clicking post ${clickedIndex}: @${targetPost?.username || 'unknown'}`);
+          
+          const clicked = await this.clickPost(clickedIndex);
+          if (!clicked) {
+            throw new Error('Failed to click post');
+          }
+          
+          await this.wait(3000);
+          
+          // Get context with validation
+          const context = await this.getContext();
+          if (!context.mainPost || context.mainPost.length < 5) {
+            throw new Error('Invalid post context - may not have loaded');
+          }
+          
+          log(`[Threads] 📄 Post content: "${context.mainPost.substring(0, 60)}..."`);
+          log(`[Threads] 👤 Author: @${context.username}`);
+          log(`[Threads] 💬 Existing replies: ${context.replies?.length || 0}`);
+          
+          // Generate comment
+          const comment = await Promise.resolve(commentGenerator(context));
+          if (!comment || comment.length < 3) {
+            throw new Error('Comment generation failed or too short');
+          }
+          log(`[Threads] ✏️ Generated: "${comment}"`);
+          
+          // Post comment
+          const result = await this.postComment(comment);
+          
+          if (!result.success) {
+            throw new Error(result.error || 'Comment posting failed');
+          }
+          
+          // Capture screenshot on success
+          if (captureScreenshots) {
+            const screenshotPath = `${screenshotDir}/threads_comment_${Date.now()}.png`;
+            try {
+              const { exec } = await import('child_process');
+              const { promisify } = await import('util');
+              await promisify(exec)(`screencapture -x "${screenshotPath}"`);
+              log(`[Threads] 📸 Screenshot: ${screenshotPath}`);
+            } catch {
+              log(`[Threads] ⚠️ Screenshot failed`);
+            }
+          }
+          
+          log(`[Threads] ✅ Comment posted successfully!`);
+          
+          results.push({
+            success: true,
+            username: context.username,
+            comment,
+            postUrl: targetPost?.url,
+            timestamp: new Date().toISOString(),
+          });
+          
+          postSuccess = true;
+          consecutiveFailures = 0;
+          
+          // Click back to feed
+          log(`[Threads] ⬅️ Returning to feed...`);
+          await this.clickBack();
+          await this.wait(2000);
+          
+          // Scroll for fresh posts
+          await this.scroll();
+          await this.wait(1000);
+          
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log(`[Threads] ❌ Error: ${errorMsg}`);
+          
+          retryCount++;
+          
+          if (retryCount > maxRetries) {
+            log(`[Threads] ⛔ Max retries exceeded for post ${i + 1}`);
+            results.push({
+              success: false,
+              username: '',
+              comment: '',
+              timestamp: new Date().toISOString(),
+              error: errorMsg,
+            });
+            consecutiveFailures++;
+            
+            // Try to recover by going back to feed
+            try {
+              await this.clickBack();
+              await this.wait(2000);
+              await this.scroll();
+            } catch {
+              log(`[Threads] ⚠️ Recovery failed, navigating to feed...`);
+              await this.navigateToPost('https://www.threads.com');
+              await this.wait(3000);
+            }
+          }
         }
-        
-        await this.wait(3000);
-        
-        // Get context
-        const context = await this.getContext();
-        console.log(`[Threads] Post: "${context.mainPost.substring(0, 50)}..."`);
-        
-        // Generate comment (may be async)
-        const comment = await Promise.resolve(commentGenerator(context));
-        console.log(`[Threads] Comment: "${comment}"`);
-        
-        // Post comment
-        const result = await this.postComment(comment);
-        
-        results.push({
-          success: result.success,
-          username: context.username,
-          comment: comment,
-          error: result.error,
-        });
-        
-        // Click back to feed
-        console.log(`[Threads] Clicking back...`);
-        await this.clickBack();
-        await this.wait(2000);
-        
-        // Scroll down to get fresh posts
-        await this.scroll();
-        await this.wait(1000);
-        
-        // Delay between posts (except last one)
-        if (i < count - 1) {
-          console.log(`[Threads] Waiting ${delayBetweenMs / 1000}s before next post...`);
-          await this.wait(delayBetweenMs);
-        }
-        
-      } catch (error) {
-        results.push({
-          success: false,
-          username: '',
-          comment: '',
-          error: error instanceof Error ? error.message : String(error),
-        });
+      }
+      
+      // Delay between posts (except last one)
+      if (i < count - 1 && postSuccess) {
+        log(`[Threads] ⏳ Waiting ${delayBetweenMs / 1000}s before next post...`);
+        await this.wait(delayBetweenMs);
       }
     }
     
-    console.log(`\n[Threads] Multi-post commenting complete: ${results.filter(r => r.success).length}/${count} successful`);
-    return results;
+    const duration = Date.now() - startTime;
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+    
+    log(`\n[Threads] ═══════════════════════════════════════`);
+    log(`[Threads] 🏁 MULTI-POST COMMENTING COMPLETE`);
+    log(`[Threads] ═══════════════════════════════════════`);
+    log(`[Threads] ✅ Successful: ${successful}/${count}`);
+    log(`[Threads] ❌ Failed: ${failed}/${count}`);
+    log(`[Threads] ⏱️ Duration: ${(duration / 1000).toFixed(1)}s`);
+    log(`[Threads] 📊 Rate: ${(successful / (duration / 60000)).toFixed(2)} comments/min`);
+    
+    return {
+      results,
+      summary: { total: count, successful, failed, duration },
+      logs,
+    };
   }
 
   async postComment(text: string): Promise<CommentResult> {
