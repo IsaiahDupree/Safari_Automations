@@ -103,6 +103,10 @@ async function printPlatforms(): Promise<void> {
     { name: 'Instagram DM', port: 3001 },
     { name: 'TikTok DM', port: 3002 },
     { name: 'Twitter DM', port: 3003 },
+    { name: 'Threads Comments', port: 3004 },
+    { name: 'Instagram Comments', port: 3005 },
+    { name: 'TikTok Comments', port: 3006 },
+    { name: 'Twitter Comments', port: 3007 },
     { name: 'Scheduler', port: 3010 },
   ];
   

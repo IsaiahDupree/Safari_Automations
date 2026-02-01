@@ -95,6 +95,6 @@ interface SchedulerConfig {
   quietHoursStart?: number;    // Quiet hours start (0-23)
   quietHoursEnd?: number;      // Quiet hours end (0-23)
   enableSoraMonitor: boolean;  // Enable credit monitoring
-  soraCheckIntervalMs: number; // Credit check interval (default: 5min)
+  soraCheckIntervalMs: number; // Credit check interval (default: 1 hour)
 }
 ```

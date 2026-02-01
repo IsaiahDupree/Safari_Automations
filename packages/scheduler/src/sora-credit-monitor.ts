@@ -23,7 +23,7 @@ export class SoraCreditMonitor {
   private callbacks: CreditRefreshCallback[] = [];
   private isMonitoring = false;
 
-  constructor(checkIntervalMs: number = 5 * 60 * 1000) {
+  constructor(checkIntervalMs: number = 60 * 60 * 1000) { // Default: 1 hour
     this.checkIntervalMs = checkIntervalMs;
   }
 

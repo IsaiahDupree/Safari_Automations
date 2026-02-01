@@ -409,6 +409,27 @@ async function main(): Promise<void> {
     return;
   }
 
+  // --schedule: Queue to scheduler (waits for credits)
+  if (args.includes('--schedule')) {
+    const idx = args.findIndex(a => a === '--schedule');
+    const trilogyKey = args[idx + 1];
+    if (!trilogyKey) {
+      console.error('Please specify a trilogy key, e.g., --schedule first_contact');
+      return;
+    }
+    const trilogy = TRILOGIES.find(t => t.key === trilogyKey);
+    if (!trilogy) {
+      console.error(`Unknown trilogy: ${trilogyKey}`);
+      return;
+    }
+    console.log(`\n📅 Scheduling ${trilogy.name} to run when 3 credits are available...\n`);
+    execSync(`npx tsx packages/scheduler/cli/scheduler-cli.ts sora ${trilogyKey} --when-credits 3`, {
+      cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+      stdio: 'inherit',
+    });
+    return;
+  }
+
   // Default: show help
   console.log(`
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -423,6 +444,7 @@ Usage:
   npx tsx scripts/sora-batch-trilogies.ts --run 3 4 5         Run specific trilogies
   npx tsx scripts/sora-batch-trilogies.ts --skip 1 2          Skip trilogies 1 and 2
   npx tsx scripts/sora-batch-trilogies.ts --from 3            Start from trilogy 3
+  npx tsx scripts/sora-batch-trilogies.ts --schedule <key>    Queue to scheduler (auto-runs when credits available)
 
 Trilogies:
   1. Volcanic Fury      5. Titan Protocol

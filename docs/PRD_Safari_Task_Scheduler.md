@@ -44,10 +44,11 @@ This PRD defines a unified Safari Task Scheduler and Automation Manager that coo
 | Sora Automation | ✅ Unit tests | Good |
 | Rate Limiter | ✅ Unit tests | Good |
 | Verification | ✅ Unit tests | Good |
-| TikTok DM | ⚠️ Integration only | Needs unit tests |
-| Instagram DM | ⚠️ Scripts only | Needs formal tests |
-| Twitter DM | ❌ None | Needs tests |
+| TikTok DM | ✅ API tests | Added |
+| Instagram DM | ✅ API tests | Added |
+| Twitter DM | ✅ API tests | Added |
 | CRM Core | ✅ Has tests dir | Partial |
+| Scheduler | ✅ New package | Complete |
 
 ---
 

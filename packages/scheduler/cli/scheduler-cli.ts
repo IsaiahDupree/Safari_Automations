@@ -207,7 +207,7 @@ async function startScheduler(): Promise<void> {
     persistPath: '/Users/isaiahdupree/sora-videos/scheduler-state.json',
     checkIntervalMs: 10000,
     enableSoraMonitor: true,
-    soraCheckIntervalMs: 5 * 60 * 1000,
+    soraCheckIntervalMs: 60 * 60 * 1000, // 1 hour
   });
   
   scheduler.on('taskStarted', (task) => {

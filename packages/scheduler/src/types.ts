@@ -89,5 +89,5 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   maxConcurrentTasks: 1,
   defaultRetries: 3,
   enableSoraMonitor: true,
-  soraCheckIntervalMs: 5 * 60 * 1000, // 5 minutes
+  soraCheckIntervalMs: 60 * 60 * 1000, // 1 hour
 };
