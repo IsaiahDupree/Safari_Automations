@@ -30,6 +30,8 @@ export interface SendMessageResult {
   error?: string;
   messageId?: string;
   username?: string;
+  verified?: boolean;
+  verifiedRecipient?: string;
 }
 
 export interface NavigationResult {
@@ -71,59 +73,62 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 };
 
 /**
- * TikTok-specific selectors
- * Based on TIKTOK_SELECTORS_REFERENCE.md
+ * TikTok-specific selectors — VALIDATED via DOM audit 2026-02-06
+ * 
+ * Key finding: TikTok messages page uses virtual rendering. Most sidebar
+ * elements report 0x0 dimensions from getBoundingClientRect(). However:
+ * - aria-label attributes are reliable identifiers (e.g. "Sarah E Ashley | Travel & Life's profile")
+ * - href attributes contain exact handles (e.g. "/@saraheashley")
+ * - Avatar <img> elements DO have real dimensions (48x48 at x≈60-130)
+ * - Class suffixes like --LiInboxItemWrapper are stable across sessions
+ * 
+ * Conversation DOM structure:
+ *   UL[--UlInboxItemListContainer]
+ *     > LI[--LiInboxItemWrapper]
+ *       > DIV[--DivItemContainer]
+ *         > DIV[--DivAvatarContainer]
+ *           > A[aria-label="[Name]'s profile", href="/@handle"]
  */
 export const TIKTOK_SELECTORS = {
-  // Navigation
-  messagesIcon: '[data-e2e="top-dm-icon"], [data-e2e="nav-messages"]',
-  messagesLink: 'a[href*="/messages"]',
-  profileIcon: '[data-e2e="profile-icon"]',
-  uploadIcon: '[data-e2e="upload-icon"]',
-  inboxIcon: '[data-e2e="inbox-icon"]',
+  // === CONVERSATION LIST (validated 2026-02-06) ===
+  // Primary: aria-label on <a> tags — most reliable identifier
+  conversationLinkByHandle: (handle: string) => `a[href="/@${handle}"]`,
+  conversationLinkByName: (name: string) => `a[aria-label*="${name}"]`,
+  // Structural selectors (class suffixes stable across sessions)
+  conversationList: 'ul[class*="InboxItemListContainer"]',
+  conversationItem: 'li[class*="InboxItemWrapper"]',
+  conversationItemContainer: 'div[class*="DivItemContainer"]',
+  conversationAvatarContainer: 'div[class*="DivAvatarContainer"]',
+  // Avatar images — the ONLY sidebar elements with real dimensions
+  conversationAvatarImg: 'img',  // Filter: 36-60px wide, x 50-140, y > 50
   
-  // Conversation List (VALIDATED 2026-01-31)
-  conversationList: '[class*="DivConversationListContainer"]',
-  conversationItem: '[data-e2e="chat-list-item"]',  // Primary - validated working
-  conversationItemAlt: '[class*="LiInboxItemWrapper"]',
-  conversationUsername: '[class*="Username"], [class*="PName"]',
-  conversationLastMessage: '[class*="LastMessage"], [class*="PPreview"]',
-  conversationTime: '[class*="Time"], [class*="SpanTime"]',
-  conversationUnread: '[class*="Unread"], [class*="Badge"]',
-  newMessageButton: '[class*="SpanNewMessage"], [class*="DivNewMessageButton"]',
+  // === SEARCH (validated 2026-02-06) ===
+  searchInput: 'input[data-e2e="search-user-input"]',
+  searchInputFallback: 'input[placeholder*="Search"]',
   
-  // Chat Area
-  chatMain: '[class*="DivChatBox"]',
-  messageList: '[class*="DivMessageList"]',
-  messageItem: '[class*="DivMessageItem"]',
+  // === CHAT HEADER (validated 2026-02-06) ===
+  // After opening conversation, header contains recipient identity
+  chatHeaderLink: (handle: string) => `a[href="/@${handle}"]`,
   
-  // Composer
-  messageInput: '[class*="DivInputContainer"] [contenteditable="true"]',
-  messageInputAlt: '[data-e2e="message-input"]',
-  messageInputFallback: '[contenteditable="true"]',
-  sendButton: '[class*="DivSendButton"]',
-  sendButtonAlt: '[data-e2e="send-message-btn"]',
-  sendButtonFallback: '[aria-label*="Send"]',
+  // === COMPOSER (validated 2026-02-06) ===
+  // TikTok uses Draft.js for the message input
+  messageInputDraft: '.public-DraftEditor-content[contenteditable="true"]',
+  messageInputCE: '[contenteditable="true"]',
+  messageInputFallback: '[data-e2e="message-input"]',
+  sendButton: '[data-e2e="message-send"]',
+  sendButtonAlt: 'svg[data-e2e="message-send"]',
+  sendButtonFallback: '[data-e2e="send-message-btn"]',
   
-  // Profile Page (for profile-to-DM flow) - VALIDATED 2026-01-31
-  profileMessageButton: '[data-e2e="message-button"]',  // Primary - validated working
+  // === NAVIGATION (validated 2026-02-06) ===
+  navMessages: '[aria-label="Messages"]',
+  navMessagesAlt: 'a[href*="/messages"]',
+  
+  // === PROFILE PAGE ===
+  profileMessageButton: '[data-e2e="message-button"]',
   profileMessageButtonAlt: '[data-e2e="message-icon"]',
   profileFollowButton: '[data-e2e="follow-button"]',
-  userTitle: '[data-e2e="user-title"], [class*="UserTitle"]',
-  userAvatar: '[data-e2e="user-avatar"]',
   
-  // Search
-  searchInput: 'input[data-e2e="search-user-input"], input[type="search"]',
-  searchUserTab: '[data-e2e="search-user-tab"]',
-  searchUserCard: '[data-e2e="search-user-card"]',
-  searchUsername: '[data-e2e="search-username"]',
-  
-  // Inbox/Notifications (distinct from DMs)
-  inboxListItem: '[data-e2e="inbox-list-item"]',
-  inboxTitle: '[data-e2e="inbox-title"]',
-  inboxContent: '[data-e2e="inbox-content"]',
-  
-  // Login Detection
+  // === LOGIN DETECTION ===
   loginButton: '[data-e2e="login-button"]',
 };
 

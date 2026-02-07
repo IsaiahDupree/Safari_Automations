@@ -1,9 +1,43 @@
 /**
  * Twitter/X DM API Server
  * REST API for DM operations - can be called from CRM server.
+ * Now with AI-powered message generation!
  */
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+
+// AI for DM generation
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (OPENAI_API_KEY) {
+  console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
+}
+
+export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    return `Hey! Really enjoy your takes on ${context.topic || 'things'}. Would love to connect and chat more about it.`;
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'Generate a SHORT, personalized Twitter/X DM (max 150 chars). Be professional yet witty, direct, and genuine. Match the conversational tone of Twitter.' },
+          { role: 'user', content: `DM to @${context.recipientUsername} for ${context.purpose}. ${context.topic ? `Topic: ${context.topic}` : ''}` }
+        ],
+        max_tokens: 80,
+        temperature: 0.85,
+      }),
+    });
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    return data.choices?.[0]?.message?.content?.trim() || `Hey! Your tweets are solid. Would love to connect.`;
+  } catch {
+    return `Hey! Your tweets are solid. Would love to connect.`;
+  }
+}
 import cors from 'cors';
 import {
   SafariDriver,
@@ -23,10 +57,18 @@ import {
 } from '../automation/index.js';
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
 import { isWithinActiveHours } from '../utils/index.js';
+import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
+import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
+import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule } from '../utils/template-engine.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Initialize CRM logging + scoring + templates
+initDMLogger();
+initScoringService();
+initTemplateEngine();
 
 // Rate limiting state
 let messagesSentToday = 0;
@@ -262,6 +304,7 @@ app.post('/api/twitter/messages/send-to', checkRateLimit, async (req: Request, r
     
     if (result.success) {
       recordMessageSent();
+      logDM({ platform: 'twitter', username, messageText: text, isOutbound: true });
     }
     
     res.json({
@@ -280,12 +323,140 @@ app.post('/api/twitter/messages/send-to-url', checkRateLimit, async (req: Reques
     
     if (result.success) {
       recordMessageSent();
+      const username = profileUrl.replace(/.*\.com\//, '').replace(/\/.*/, '');
+      logDM({ platform: 'twitter', username, messageText: text, isOutbound: true });
     }
     
     res.json({
       ...result,
       rateLimits: { messagesSentToday, messagesSentThisHour },
     });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// === CRM STATS ===
+
+app.get('/api/twitter/crm/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await getDMStats('twitter');
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/twitter/crm/score', async (req: Request, res: Response) => {
+  try {
+    const { contactId } = req.body as { contactId: string };
+    if (!contactId) { res.status(400).json({ error: 'contactId required' }); return; }
+    const result = await recalculateScore(contactId);
+    res.json({ success: !!result, score: result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/crm/score-all', async (_req: Request, res: Response) => {
+  try {
+    const result = await recalculateAllScores('twitter');
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/twitter/crm/top-contacts', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const contacts = await getTopContacts('twitter', limit);
+    res.json({ success: true, contacts });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === TEMPLATE ENGINE ===
+
+app.get('/api/twitter/templates', async (req: Request, res: Response) => {
+  try {
+    const { lane, stage } = req.query as { lane?: string; stage?: string };
+    const templates = await getTemplates({ lane, stage, platform: 'twitter' });
+    res.json({ success: true, templates, count: templates.length });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/templates/next-action', async (req: Request, res: Response) => {
+  try {
+    const context = { ...req.body, platform: 'twitter' as const };
+    if (!context.username) { res.status(400).json({ error: 'username required' }); return; }
+    const result = await getNextBestAction(context);
+    res.json({ success: true, result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/templates/fit-signals', async (req: Request, res: Response) => {
+  try {
+    const { text } = req.body as { text: string };
+    if (!text) { res.status(400).json({ error: 'text required' }); return; }
+    const result = await detectFitSignals(text);
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/twitter/templates/rule-check/:contactId', async (req: Request, res: Response) => {
+  try {
+    const result = await check31Rule(req.params.contactId);
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === OUTREACH QUEUE ===
+
+app.get('/api/twitter/outreach/pending', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const actions = await getPendingActions('twitter', limit);
+    res.json({ success: true, actions, count: actions.length });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/outreach/queue', async (req: Request, res: Response) => {
+  try {
+    const action = { ...req.body, platform: 'twitter' };
+    if (!action.contact_id || !action.message) { res.status(400).json({ error: 'contact_id and message required' }); return; }
+    const result = await queueOutreachAction(action);
+    res.json(result);
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/outreach/:actionId/sent', async (req: Request, res: Response) => {
+  try { res.json({ success: await markActionSent(req.params.actionId) }); }
+  catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/twitter/outreach/:actionId/failed', async (req: Request, res: Response) => {
+  try { res.json({ success: await markActionFailed(req.params.actionId, req.body.error || 'Unknown') }); }
+  catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/twitter/outreach/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await getOutreachStats('twitter');
+    res.json({ success: true, stats });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === AI DM GENERATION ===
+
+app.post('/api/twitter/ai/generate', async (req: Request, res: Response) => {
+  try {
+    const { username, purpose, topic } = req.body as { username: string; purpose?: string; topic?: string };
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+    const message = await generateAIDM({
+      recipientUsername: username,
+      purpose: purpose || 'networking',
+      topic,
+    });
+    res.json({ success: true, message, aiEnabled: !!OPENAI_API_KEY });
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
   }
@@ -319,6 +490,8 @@ export function startServer(port: number = PORT): void {
     console.log(`   Health: GET /health`);
     console.log(`   Status: GET /api/twitter/status`);
     console.log(`   Send DM: POST /api/twitter/messages/send-to`);
+    console.log(`   AI Generate: POST /api/twitter/ai/generate`);
+    console.log(`   AI Enabled: ${!!OPENAI_API_KEY}`);
   });
 }
 

@@ -184,6 +184,81 @@ export class SafariDriver {
   }
 
   /**
+   * Type text using OS-level keystrokes (works with React contenteditable).
+   */
+  async typeViaKeystrokes(text: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await this.activateSafari();
+      await this.wait(300);
+      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${escaped}"'`,
+        { timeout: this.config.timeout }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Press Enter key via OS-level event.
+   */
+  async pressEnter(): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke return'`,
+        { timeout: this.config.timeout }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Bring Safari to the foreground.
+   */
+  async activateSafari(): Promise<boolean> {
+    try {
+      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Click an element matched by CSS selector.
+   */
+  async clickElement(selector: string): Promise<boolean> {
+    const result = await this.executeJS(`
+      (function() {
+        var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (el) { el.click(); return 'clicked'; }
+        return 'not_found';
+      })()
+    `);
+    return result === 'clicked';
+  }
+
+  /**
+   * Focus an element matched by CSS selector.
+   */
+  async focusElement(selector: string): Promise<boolean> {
+    const result = await this.executeJS(`
+      (function() {
+        var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (el) { el.focus(); el.click(); return 'focused'; }
+        return 'not_found';
+      })()
+    `);
+    return result === 'focused';
+  }
+
+  /**
    * Take a screenshot (local only).
    */
   async takeScreenshot(outputPath: string): Promise<boolean> {

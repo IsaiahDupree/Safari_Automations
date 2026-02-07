@@ -235,89 +235,89 @@ export async function readMessages(
 }
 
 /**
- * Send a message in the current conversation
+ * Send a message in the current conversation.
+ * Uses OS-level keystrokes for React contenteditable compatibility.
  */
 export async function sendMessage(
   driver: SafariDriver,
   message: string
 ): Promise<SendMessageResult> {
   try {
-    // Focus the input using validated selectors
-    const focusResult = await driver.executeScript(`
-      (function() {
-        var input = document.querySelector('[data-e2e="message-input-area"]');
-        if (!input) input = document.querySelector('[contenteditable="true"]');
-        
-        if (input) {
-          input.focus();
-          input.click();
-          return 'focused';
-        }
-        return 'no_input';
-      })()
-    `);
-
-    if (focusResult !== 'focused') {
-      return { success: false, error: 'Could not find message input' };
+    // Focus message input — try selectors one at a time
+    const selectors = [
+      TIKTOK_SELECTORS.messageInputDraft,
+      TIKTOK_SELECTORS.messageInputFallback,
+      TIKTOK_SELECTORS.messageInputCE,
+    ];
+    let focusResult = false;
+    for (const sel of selectors) {
+      focusResult = await driver.focusElement(sel);
+      if (focusResult) break;
     }
 
-    await driver.wait(300);
-
-    // Type the message
-    const escapedMessage = message
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"')
-      .replace(/\n/g, '\\n');
-
-    const typeResult = await driver.executeScript(`
-      (function() {
-        var input = document.querySelector('[data-e2e="message-input-area"]');
-        if (!input) input = document.querySelector('[contenteditable="true"]');
-        
-        if (!input) return 'no_input';
-        
-        input.focus();
-        document.execCommand('insertText', false, "${escapedMessage}");
-        return 'typed';
-      })()
-    `);
-
-    if (typeResult !== 'typed') {
-      return { success: false, error: 'Could not type message' };
+    if (!focusResult) {
+      return { success: false, error: 'Could not find message input' };
     }
 
     await driver.wait(500);
 
-    // Click send button - look for send icon/button
+    // Type via OS-level keystrokes (works with React)
+    const typed = await driver.typeViaKeystrokes(message);
+    if (!typed) {
+      return { success: false, error: 'Failed to type message via keystrokes' };
+    }
+
+    await driver.wait(500);
+
+    // Click the send button — validated selector: data-e2e="message-send" (SVG icon)
     const sendResult = await driver.executeScript(`
       (function() {
-        // Try various send button selectors
-        var btn = document.querySelector('[data-e2e="send-message-btn"]');
-        if (!btn) btn = document.querySelector('[class*="SendButton"]');
-        if (!btn) btn = document.querySelector('[aria-label*="Send"]');
-        if (!btn) btn = document.querySelector('button[class*="send"]');
-        // Look for SVG send icon
-        if (!btn) {
-          var svgs = document.querySelectorAll('svg');
-          for (var i = 0; i < svgs.length; i++) {
-            var parent = svgs[i].closest('button, div[role="button"]');
-            if (parent && parent.className.toLowerCase().includes('send')) {
-              btn = parent;
-              break;
-            }
-          }
-        }
-        
+        // Primary: validated data-e2e="message-send" (SVG element)
+        var btn = document.querySelector('[data-e2e="message-send"]');
         if (btn) {
-          btn.click();
-          return 'sent';
+          // SVG needs click on itself or nearest clickable parent
+          var clickTarget = btn.closest('div') || btn.parentElement || btn;
+          clickTarget.click();
+          return 'sent_e2e';
+        }
+        // Fallback selectors
+        var selectors = ['[data-e2e="send-message-btn"]', '[class*="SendButton"]', '[aria-label*="Send"]'];
+        for (var i = 0; i < selectors.length; i++) {
+          var el = document.querySelector(selectors[i]);
+          if (el) { el.click(); return 'sent_fallback'; }
         }
         return 'no_button';
       })()
     `);
 
-    if (sendResult !== 'sent') {
-      return { success: false, error: 'Could not find send button' };
+    if (sendResult.includes('sent')) {
+      return { success: true };
+    }
+
+    // OS-level click on send button position as last resort
+    const sendPos = await driver.executeScript(`
+      (function() {
+        var btn = document.querySelector('[data-e2e="message-send"]');
+        if (btn) {
+          var r = btn.getBoundingClientRect();
+          if (r.width > 0) return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
+        }
+        return 'none';
+      })()
+    `);
+
+    if (sendPos !== 'none') {
+      try {
+        const pos = JSON.parse(sendPos);
+        await driver.clickAtViewportPosition(pos.x, pos.y);
+        return { success: true };
+      } catch {}
+    }
+
+    // Final fallback: press Enter via OS-level
+    const sent = await driver.pressEnter();
+    if (!sent) {
+      return { success: false, error: 'Could not send message — no send button found and Enter failed' };
     }
 
     return { success: true };
@@ -342,7 +342,7 @@ export async function startNewConversation(
     }
 
     // Click new message button
-    const newMsgClicked = await driver.clickElement(TIKTOK_SELECTORS.newMessageButton);
+    const newMsgClicked = await driver.clickElement('[class*="NewMessage"]');
     if (!newMsgClicked) {
       // Try profile-to-DM flow instead
       return sendDMByUsername(username, message, driver);
@@ -389,7 +389,16 @@ export async function startNewConversation(
 }
 
 /**
- * Send DM by navigating to user's profile first (profile-to-DM flow)
+ * Send DM via robust multi-strategy contact selection.
+ * TikTok's virtual DOM doesn't respond to JS .click() — we use Quartz mouse events.
+ *
+ * Strategy chain (tries each until one works):
+ *   A) Direct index: find target by href="/@handle" → get LI index → map to avatar → OS-click
+ *   B) Search filter: type handle in search → first filtered avatar → OS-click
+ *
+ * Safety gates:
+ *   - PRE-SEND: verify a[href="/@handle"] exists in chat panel header
+ *   - POST-SEND: verify message snippet appears in DOM
  */
 export async function sendDMByUsername(
   username: string,
@@ -397,86 +406,214 @@ export async function sendDMByUsername(
   driver: SafariDriver
 ): Promise<SendMessageResult> {
   try {
-    // Navigate to user's profile
-    const profileUrl = TIKTOK_URLS.profile(username.replace('@', ''));
-    await driver.navigate(profileUrl);
-    await driver.wait(2500);
+    const handle = username.replace('@', '').toLowerCase();
+    console.log(`[TikTok DM] 📤 Sending to @${handle}`);
 
-    // Check if profile loaded
-    const profileStatus = await driver.executeScript(`
-      (function() {
-        var notFound = document.body.innerText.includes("Couldn't find this account") ||
-                       document.body.innerText.includes("This account doesn't exist");
-        if (notFound) return 'not_found';
-        
-        var messageBtn = document.querySelector('${TIKTOK_SELECTORS.profileMessageButton}');
-        if (messageBtn) return 'ready';
-        
-        var followBtn = document.querySelector('${TIKTOK_SELECTORS.profileFollowButton}');
-        if (followBtn && !messageBtn) return 'no_message_button';
-        
-        return 'loading';
-      })()
-    `);
+    // ── Navigate to /messages ──────────────────────────────────────
+    await driver.navigate(TIKTOK_URLS.messages);
+    await driver.wait(5000);
 
-    if (profileStatus === 'not_found') {
-      return { success: false, error: 'User not found', username };
-    }
-
-    if (profileStatus === 'no_message_button') {
-      return { success: false, error: 'Cannot message this user (may need to follow first)', username };
-    }
-
-    // Wait for profile to fully load if still loading
-    if (profileStatus === 'loading') {
-      await driver.wait(2000);
-    }
-
-    // Click the message button on profile - using validated selector
-    const clickResult = await driver.executeScript(`
-      (function() {
-        var btn = document.querySelector('[data-e2e="message-button"]');
-        if (!btn) btn = document.querySelector('[data-e2e="message-icon"]');
-        if (!btn) {
-          // Try alternate selectors
-          var btns = document.querySelectorAll('button, div[role="button"]');
-          for (var i = 0; i < btns.length; i++) {
-            if (btns[i].textContent.toLowerCase().includes('message')) {
-              btn = btns[i];
-              break;
+    // ── Helpers ────────────────────────────────────────────────────
+    /** Get sidebar avatar image positions (the ONLY elements with real dimensions) */
+    const getAvatarPositions = async (): Promise<Array<{x: number; y: number}>> => {
+      const raw = await driver.executeScript(`
+        (function() {
+          var imgs = document.querySelectorAll('img');
+          var out = [];
+          for (var i = 0; i < imgs.length; i++) {
+            var r = imgs[i].getBoundingClientRect();
+            if (r.width >= 36 && r.width <= 60 && r.x >= 50 && r.x <= 140 && r.y > 50) {
+              out.push({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
             }
           }
-        }
-        
-        if (btn) {
-          btn.click();
-          return 'clicked';
-        }
-        return 'not_found';
-      })()
-    `);
+          out.sort(function(a,b){ return a.y - b.y; });
+          return JSON.stringify(out);
+        })()
+      `);
+      try { return JSON.parse(raw); } catch { return []; }
+    };
 
-    if (clickResult !== 'clicked') {
-      return { success: false, error: 'Could not find message button on profile', username };
+    /** Find target's LI index using href="/@handle" — the most reliable selector */
+    const findConversationIndex = async (): Promise<number> => {
+      const raw = await driver.executeScript(`
+        (function() {
+          var lis = document.querySelectorAll('li[class*="InboxItemWrapper"]');
+          for (var i = 0; i < lis.length; i++) {
+            var link = lis[i].querySelector('a[href="/@${handle}"]');
+            if (link) return String(i);
+            // Fallback: aria-label contains handle
+            var ariaLink = lis[i].querySelector('a[aria-label]');
+            if (ariaLink) {
+              var href = ariaLink.getAttribute('href') || '';
+              if (href.replace('/@','').toLowerCase() === '${handle}') return String(i);
+            }
+          }
+          return '-1';
+        })()
+      `);
+      return parseInt(raw, 10);
+    };
+
+    /** Verify the opened chat belongs to target user.
+     *  Gate: conversation must actually be open (composer or 'Send a message' visible).
+     *  Then verify identity via href count, aria-label, or visible header text. */
+    const verifyIdentity = async (): Promise<{verified: boolean; header: string}> => {
+      const raw = await driver.executeScript(`
+        (function() {
+          // Gate: is a conversation actually open?
+          var hasComposer = !!document.querySelector('.public-DraftEditor-content[contenteditable="true"]')
+                        || !!document.querySelector('[contenteditable="true"]');
+          var hasSendText = document.body.innerText.includes('Send a message');
+          if (!hasComposer && !hasSendText) {
+            return JSON.stringify({verified: false, header: 'no_conversation_open'});
+          }
+
+          // Strategy 1: count href="/@handle" links.
+          // 1 link = sidebar only. 2+ links = sidebar + chat header = conversation is open.
+          var links = document.querySelectorAll('a[href="/@${handle}"]');
+          if (links.length >= 2) {
+            var label = links[1].getAttribute('aria-label') || '';
+            return JSON.stringify({verified: true, header: label.replace("'s profile","").trim() || '@${handle}'});
+          }
+
+          // Strategy 2: visible header text containing handle (right panel, y < 120)
+          var spans = document.querySelectorAll('p, span, h2');
+          for (var i = 0; i < spans.length; i++) {
+            var r = spans[i].getBoundingClientRect();
+            var t = (spans[i].textContent || '').trim();
+            if (r.width > 0 && r.y < 120 && r.x > 150 && t.toLowerCase().includes('${handle}')) {
+              return JSON.stringify({verified: true, header: t.substring(0, 60)});
+            }
+          }
+
+          // Strategy 3: aria-label visible in chat panel area
+          var ariaLinks = document.querySelectorAll('a[aria-label*="${handle}"]');
+          for (var j = 0; j < ariaLinks.length; j++) {
+            var r2 = ariaLinks[j].getBoundingClientRect();
+            if (r2.x > 150 && r2.width > 0) {
+              return JSON.stringify({verified: true, header: ariaLinks[j].getAttribute('aria-label').replace("'s profile","").trim()});
+            }
+          }
+
+          // Composer is open but we can't confirm WHO — fail safe
+          return JSON.stringify({verified: false, header: 'composer_open_but_unverified'});
+        })()
+      `);
+      try { return JSON.parse(raw); } catch { return {verified: false, header: ''}; }
+    };
+
+    // ── STRATEGY A: Direct index lookup ────────────────────────────
+    console.log('[TikTok DM]   🔍 Strategy A: href index lookup...');
+    const targetIdx = await findConversationIndex();
+    const avatars = await getAvatarPositions();
+
+    if (targetIdx >= 0 && targetIdx < avatars.length) {
+      // Target is visible — click their avatar directly
+      console.log(`[TikTok DM]   📍 Found at index ${targetIdx}, clicking avatar...`);
+      const pos = avatars[targetIdx];
+      await driver.clickAtViewportPosition(pos.x + 30, pos.y);
+      await driver.wait(2500);
+
+      const idCheck = await verifyIdentity();
+      if (idCheck.verified) {
+        console.log('[TikTok DM]   ✅ Identity verified: ' + idCheck.header);
+        return await _sendAndVerify(driver, handle, message, idCheck.header);
+      }
+      console.log('[TikTok DM]   ⚠️ Strategy A: header mismatch, falling through...');
+    } else if (targetIdx >= 0) {
+      console.log(`[TikTok DM]   📍 Found at index ${targetIdx} but only ${avatars.length} avatars visible — need search`);
+    } else {
+      console.log('[TikTok DM]   ℹ️ Handle not found in conversation list');
     }
 
-    await driver.wait(2000);
+    // ── STRATEGY B: Search filter ──────────────────────────────────
+    console.log('[TikTok DM]   🔍 Strategy B: search filter...');
+    await driver.navigate(TIKTOK_URLS.messages);
+    await driver.wait(4000);
 
-    // Wait for DM composer to open
-    const composerReady = await driver.waitForElement(TIKTOK_SELECTORS.messageInput, 5000) ||
-                          await driver.waitForElement(TIKTOK_SELECTORS.messageInputAlt, 3000) ||
-                          await driver.waitForElement(TIKTOK_SELECTORS.messageInputFallback, 3000);
+    // Focus search input
+    const searchOk = await driver.focusElement('input[data-e2e="search-user-input"]')
+                  || await driver.focusElement('input[placeholder*="Search"]');
+    if (!searchOk) {
+      return { success: false, error: 'Could not find messages search input', username: handle };
+    }
+    await driver.wait(300);
 
-    if (!composerReady) {
-      return { success: false, error: 'DM composer did not open', username };
+    // Clear + type
+    await driver.activateSafari();
+    await driver.wait(200);
+    const { execSync } = await import('child_process');
+    try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`); } catch {}
+    await driver.wait(100);
+    try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to key code 51'`); } catch {}
+    await driver.wait(200);
+    await driver.typeViaKeystrokes(handle);
+    await driver.wait(3000);
+
+    // After search, TikTok visually filters but doesn't remove DOM elements.
+    // So we click the FIRST VISIBLE avatar — the filtered result.
+    const filteredAvatars = await getAvatarPositions();
+    // Only consider avatars in the visible viewport (y < 800)
+    const visibleAvatars = filteredAvatars.filter(a => a.y < 800);
+
+    if (visibleAvatars.length === 0) {
+      return { success: false, error: `No visible conversations after searching "${handle}"`, username: handle };
     }
 
-    // Send the message
-    const sendResult = await sendMessage(driver, message);
-    return { ...sendResult, username };
+    const clickPos = visibleAvatars[0]; // First visible = the search match
+    console.log(`[TikTok DM]   📍 Clicking first visible filtered avatar at y=${clickPos.y}`);
+    await driver.clickAtViewportPosition(clickPos.x + 30, clickPos.y);
+    await driver.wait(3000);
+
+    const idCheck = await verifyIdentity();
+    if (!idCheck.verified) {
+      return { success: false, error: `Identity verification failed — chat header does not match @${handle}`, username: handle };
+    }
+    console.log('[TikTok DM]   ✅ Identity verified: ' + idCheck.header);
+    return await _sendAndVerify(driver, handle, message, idCheck.header);
+
   } catch (error) {
     return { success: false, error: String(error), username };
   }
+}
+
+/** Internal: focus composer, type, send, verify */
+async function _sendAndVerify(
+  driver: SafariDriver,
+  handle: string,
+  message: string,
+  verifiedHeader: string
+): Promise<SendMessageResult> {
+  // Check composer ready
+  const composerReady = await driver.executeScript(`
+    (function() {
+      var ce = document.querySelector('${TIKTOK_SELECTORS.messageInputDraft}');
+      if (ce) return 'draft';
+      ce = document.querySelector('${TIKTOK_SELECTORS.messageInputCE}');
+      if (ce) return 'ce';
+      return document.body.innerText.includes('Send a message') ? 'placeholder' : 'not_found';
+    })()
+  `);
+  if (composerReady === 'not_found') {
+    return { success: false, error: 'Composer not found after identity verification', username: handle };
+  }
+
+  const sendResult = await sendMessage(driver, message);
+  if (!sendResult.success) return { ...sendResult, username: handle };
+
+  // Post-send verification
+  await driver.wait(2000);
+  const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+  const postCheck = await driver.executeScript(`
+    (function() { return document.body.innerText.includes('${snippet}') ? 'yes' : 'no'; })()
+  `);
+
+  return {
+    success: true,
+    username: handle,
+    verified: postCheck === 'yes',
+    verifiedRecipient: verifiedHeader,
+  };
 }
 
 /**

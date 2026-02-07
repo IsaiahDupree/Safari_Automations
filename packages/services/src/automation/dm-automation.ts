@@ -1,4 +1,10 @@
 /**
+ * @deprecated — LEGACY FILE. Use platform-specific dm-operations.ts instead:
+ *   - packages/instagram-dm/src/automation/dm-operations.ts
+ *   - packages/tiktok-dm/src/automation/dm-operations.ts
+ *   - packages/twitter-dm/src/automation/dm-operations.ts
+ * This generic DM automation predates the per-platform API servers.
+ *
  * DM Automation
  * 
  * Handles sending direct messages with delivery verification.

@@ -48,14 +48,28 @@ import {
   readMessages,
   sendMessage,
   startNewConversation,
+  sendDMFromProfile,
+  sendDMToThread,
+  smartSendDM,
+  registerThread,
+  getThreadId,
+  getAllThreads,
   getAllConversations,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
+import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
+import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
+import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule, determineLane, fillTemplate } from '../utils/template-engine.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Initialize CRM logging + scoring + templates
+initDMLogger();
+initScoringService();
+initTemplateEngine();
 
 // Rate limiting state
 let messagesSentToday = 0;
@@ -245,6 +259,9 @@ app.post('/api/messages/send', checkRateLimit, async (req, res) => {
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      if (username) {
+        logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      }
     }
     
     res.json({
@@ -302,6 +319,7 @@ app.post('/api/messages/send-to', checkRateLimit, async (req, res) => {
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
     }
     
     res.json({
@@ -314,6 +332,270 @@ app.post('/api/messages/send-to', checkRateLimit, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: String(error) });
+  }
+});
+
+// CRM stats
+app.get('/api/crm/stats', async (req, res) => {
+  try {
+    const stats = await getDMStats('instagram');
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/crm/score', async (req, res) => {
+  try {
+    const { contactId } = req.body;
+    if (!contactId) { res.status(400).json({ error: 'contactId required' }); return; }
+    const result = await recalculateScore(contactId);
+    res.json({ success: !!result, score: result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/crm/score-all', async (_req, res) => {
+  try {
+    const result = await recalculateAllScores('instagram');
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/crm/top-contacts', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const contacts = await getTopContacts('instagram', limit);
+    res.json({ success: true, contacts });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// Thread management endpoints
+app.post('/api/threads/register', (req, res) => {
+  const { username, threadId } = req.body;
+  if (!username || !threadId) {
+    res.status(400).json({ error: 'username and threadId required' });
+    return;
+  }
+  registerThread(username, threadId);
+  res.json({ success: true, username, threadId });
+});
+
+app.get('/api/threads', (_req, res) => {
+  res.json({ threads: getAllThreads() });
+});
+
+app.get('/api/threads/:username', (req, res) => {
+  const threadId = getThreadId(req.params.username);
+  if (threadId) {
+    res.json({ username: req.params.username, threadId });
+  } else {
+    res.status(404).json({ error: 'No thread ID cached for this user' });
+  }
+});
+
+// Smart send: thread URL (if cached) → profile-to-DM fallback
+app.post('/api/messages/smart-send', checkRateLimit, async (req, res) => {
+  try {
+    const { username, text } = req.body;
+    if (!username || !text) {
+      res.status(400).json({ error: 'username and text required' });
+      return;
+    }
+    
+    const result = await smartSendDM(username, text, getDriver());
+    
+    if (result.success) {
+      messagesSentToday++;
+      messagesSentThisHour++;
+      logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+    }
+    
+    res.json({
+      ...result,
+      username,
+      rateLimits: { messagesSentToday, messagesSentThisHour },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Send DM via profile-to-DM flow
+app.post('/api/messages/send-from-profile', checkRateLimit, async (req, res) => {
+  try {
+    const { username, text } = req.body;
+    if (!username || !text) {
+      res.status(400).json({ error: 'username and text required' });
+      return;
+    }
+    
+    const result = await sendDMFromProfile(username, text, getDriver());
+    
+    if (result.success) {
+      messagesSentToday++;
+      messagesSentThisHour++;
+      logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+    }
+    
+    res.json({
+      ...result,
+      username,
+      method: 'profile-to-dm',
+      rateLimits: { messagesSentToday, messagesSentThisHour },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Send DM via direct thread URL (most reliable when threadId is known)
+app.post('/api/messages/send-to-thread', checkRateLimit, async (req, res) => {
+  try {
+    const { threadId, text } = req.body;
+    if (!threadId || !text) {
+      res.status(400).json({ error: 'threadId and text required' });
+      return;
+    }
+    
+    const result = await sendDMToThread(threadId, text, getDriver());
+    
+    if (result.success) {
+      messagesSentToday++;
+      messagesSentThisHour++;
+      logDM({ platform: 'instagram', username: `thread:${threadId}`, messageText: text, isOutbound: true });
+    }
+    
+    res.json({
+      ...result,
+      threadId,
+      method: 'thread-url',
+      rateLimits: { messagesSentToday, messagesSentThisHour },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === TEMPLATE ENGINE ===
+
+// Get all templates, optionally filtered by lane/stage
+app.get('/api/templates', async (req, res) => {
+  try {
+    const { lane, stage } = req.query as { lane?: string; stage?: string };
+    const templates = await getTemplates({ lane, stage, platform: 'instagram' });
+    res.json({ success: true, templates, count: templates.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Get next-best-action for a contact
+app.post('/api/templates/next-action', async (req, res) => {
+  try {
+    const context = { ...req.body, platform: 'instagram' as const };
+    if (!context.username) { res.status(400).json({ error: 'username required' }); return; }
+    const result = await getNextBestAction(context);
+    if (!result) { res.json({ success: true, result: null, message: 'No matching template' }); return; }
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Detect fit signals in conversation text
+app.post('/api/templates/fit-signals', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) { res.status(400).json({ error: 'text required' }); return; }
+    const result = await detectFitSignals(text);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Check 3:1 rule compliance
+app.get('/api/templates/rule-check/:contactId', async (req, res) => {
+  try {
+    const result = await check31Rule(req.params.contactId);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// === OUTREACH QUEUE ===
+
+// Get pending outreach actions
+app.get('/api/outreach/pending', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const actions = await getPendingActions('instagram', limit);
+    res.json({ success: true, actions, count: actions.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Queue a new outreach action
+app.post('/api/outreach/queue', async (req, res) => {
+  try {
+    const action = { ...req.body, platform: 'instagram' };
+    if (!action.contact_id || !action.message) {
+      res.status(400).json({ error: 'contact_id and message required' }); return;
+    }
+    const result = await queueOutreachAction(action);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Mark action as sent/failed
+app.post('/api/outreach/:actionId/sent', async (req, res) => {
+  try {
+    const ok = await markActionSent(req.params.actionId);
+    res.json({ success: ok });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/outreach/:actionId/failed', async (req, res) => {
+  try {
+    const ok = await markActionFailed(req.params.actionId, req.body.error || 'Unknown error');
+    res.json({ success: ok });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Outreach stats
+app.get('/api/outreach/stats', async (req, res) => {
+  try {
+    const stats = await getOutreachStats('instagram');
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// AI DM generation
+app.post('/api/ai/generate', async (req, res) => {
+  try {
+    const { username, purpose, topic } = req.body;
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+    const message = await generateAIDM({
+      recipientUsername: username,
+      purpose: purpose || 'networking',
+      topic,
+    });
+    res.json({ success: true, message, aiEnabled: !!OPENAI_API_KEY });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
   }
 });
 

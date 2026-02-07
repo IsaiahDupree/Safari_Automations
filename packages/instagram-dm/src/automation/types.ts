@@ -4,6 +4,7 @@
 
 export interface DMConversation {
   username: string;
+  threadId?: string;
   displayName?: string;
   profilePicUrl?: string;
   lastMessage?: string;
@@ -32,6 +33,8 @@ export interface SendMessageResult {
   success: boolean;
   error?: string;
   messageId?: string;
+  verified?: boolean;
+  verifiedRecipient?: string;
 }
 
 export interface NavigationResult {

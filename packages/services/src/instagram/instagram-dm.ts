@@ -1,4 +1,8 @@
 /**
+ * @deprecated — LEGACY FILE. Use packages/instagram-dm/src/automation/dm-operations.ts instead.
+ * The canonical Instagram DM API is served by packages/instagram-dm/src/api/server.ts (port 3100).
+ * This file is kept for reference only. Do not import from here in new code.
+ *
  * Instagram DM Automation via Safari
  * 
  * Full control of Instagram Direct Messages using Safari browser automation.

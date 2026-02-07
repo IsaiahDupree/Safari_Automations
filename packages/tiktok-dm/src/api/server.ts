@@ -56,10 +56,18 @@ import {
   RateLimitConfig,
 } from '../automation/index.js';
 import { isWithinActiveHours, getRandomDelay } from '../utils/index.js';
+import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
+import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
+import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule } from '../utils/template-engine.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Initialize CRM logging + scoring + templates
+initDMLogger();
+initScoringService();
+initTemplateEngine();
 
 // Configuration
 const PORT = parseInt(process.env.PORT || process.env.TIKTOK_DM_PORT || '3102');
@@ -303,13 +311,14 @@ app.get('/api/tiktok/messages', async (req: Request, res: Response) => {
 // Send message in current conversation
 app.post('/api/tiktok/messages/send', async (req: Request, res: Response) => {
   try {
-    const { message } = req.body as { message: string };
-    if (!message) {
-      res.status(400).json({ error: 'message is required' });
+    const { text, message } = req.body as { text?: string; message?: string };
+    const msg = text || message;
+    if (!msg) {
+      res.status(400).json({ error: 'text (or message) is required' });
       return;
     }
     
-    const result = await sendMessage(driver, message);
+    const result = await sendMessage(driver, msg);
     if (result.success) {
       recordMessage();
       res.json({
@@ -330,18 +339,22 @@ app.post('/api/tiktok/messages/send', async (req: Request, res: Response) => {
 // Send message to specific user (profile-to-DM)
 app.post('/api/tiktok/messages/send-to', async (req: Request, res: Response) => {
   try {
-    const { username, message } = req.body as { username: string; message: string };
-    if (!username || !message) {
-      res.status(400).json({ error: 'username and message are required' });
+    const { username, text, message } = req.body as { username: string; text?: string; message?: string };
+    const msg = text || message;
+    if (!username || !msg) {
+      res.status(400).json({ error: 'username and text (or message) are required' });
       return;
     }
     
-    const result = await sendDMByUsername(username, message, driver);
+    const result = await sendDMByUsername(username, msg, driver);
     if (result.success) {
       recordMessage();
+      logDM({ platform: 'tiktok', username, messageText: msg, isOutbound: true });
       res.json({
         success: true,
         username: result.username,
+        verified: result.verified,
+        verifiedRecipient: result.verifiedRecipient,
         rateLimits: {
           hourly: getMessagesSentThisHour(),
           daily: getMessagesSentToday(),
@@ -367,6 +380,8 @@ app.post('/api/tiktok/messages/send-to-url', async (req: Request, res: Response)
     const result = await sendDMFromProfileUrl(profileUrl, message, driver);
     if (result.success) {
       recordMessage();
+      const extractedUsername = profileUrl.replace(/.*\.com\/@?/, '').replace(/\/.*/, '');
+      logDM({ platform: 'tiktok', username: result.username || extractedUsername, messageText: message, isOutbound: true });
       res.json({
         success: true,
         username: result.username,
@@ -378,6 +393,130 @@ app.post('/api/tiktok/messages/send-to-url', async (req: Request, res: Response)
     } else {
       res.status(400).json({ success: false, error: result.error });
     }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// CRM stats
+app.get('/api/tiktok/crm/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await getDMStats('tiktok');
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/tiktok/crm/score', async (req: Request, res: Response) => {
+  try {
+    const { contactId } = req.body as { contactId: string };
+    if (!contactId) { res.status(400).json({ error: 'contactId required' }); return; }
+    const result = await recalculateScore(contactId);
+    res.json({ success: !!result, score: result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/crm/score-all', async (_req: Request, res: Response) => {
+  try {
+    const result = await recalculateAllScores('tiktok');
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/tiktok/crm/top-contacts', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const contacts = await getTopContacts('tiktok', limit);
+    res.json({ success: true, contacts });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === TEMPLATE ENGINE ===
+
+app.get('/api/tiktok/templates', async (_req: Request, res: Response) => {
+  try {
+    const { lane, stage } = _req.query as { lane?: string; stage?: string };
+    const templates = await getTemplates({ lane, stage, platform: 'tiktok' });
+    res.json({ success: true, templates, count: templates.length });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/templates/next-action', async (req: Request, res: Response) => {
+  try {
+    const context = { ...req.body, platform: 'tiktok' as const };
+    if (!context.username) { res.status(400).json({ error: 'username required' }); return; }
+    const result = await getNextBestAction(context);
+    res.json({ success: true, result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/templates/fit-signals', async (req: Request, res: Response) => {
+  try {
+    const { text } = req.body as { text: string };
+    if (!text) { res.status(400).json({ error: 'text required' }); return; }
+    const result = await detectFitSignals(text);
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/tiktok/templates/rule-check/:contactId', async (req: Request, res: Response) => {
+  try {
+    const result = await check31Rule(req.params.contactId);
+    res.json({ success: true, ...result });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === OUTREACH QUEUE ===
+
+app.get('/api/tiktok/outreach/pending', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const actions = await getPendingActions('tiktok', limit);
+    res.json({ success: true, actions, count: actions.length });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/outreach/queue', async (req: Request, res: Response) => {
+  try {
+    const action = { ...req.body, platform: 'tiktok' };
+    if (!action.contact_id || !action.message) { res.status(400).json({ error: 'contact_id and message required' }); return; }
+    const result = await queueOutreachAction(action);
+    res.json(result);
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/outreach/:actionId/sent', async (req: Request, res: Response) => {
+  try { res.json({ success: await markActionSent(req.params.actionId) }); }
+  catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.post('/api/tiktok/outreach/:actionId/failed', async (req: Request, res: Response) => {
+  try { res.json({ success: await markActionFailed(req.params.actionId, req.body.error || 'Unknown') }); }
+  catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+app.get('/api/tiktok/outreach/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await getOutreachStats('tiktok');
+    res.json({ success: true, stats });
+  } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// AI DM generation
+app.post('/api/tiktok/ai/generate', async (req: Request, res: Response) => {
+  try {
+    const { username, purpose, topic } = req.body as { username: string; purpose?: string; topic?: string };
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+    const message = await generateAIDM({
+      recipientUsername: username,
+      purpose: purpose || 'networking',
+      topic,
+    });
+    res.json({ success: true, message, aiEnabled: !!OPENAI_API_KEY });
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
   }

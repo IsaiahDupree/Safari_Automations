@@ -1,0 +1,183 @@
+{
+  "generatedAt": "2026-02-02T00:47:00.000Z",
+  "character": "@isaiahdupree",
+  "totalVideos": 24,
+  "trilogies": [
+    {
+      "id": 1,
+      "name": "Shadow Assassin",
+      "theme": "Elite ninja stealth mission",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Infiltration",
+          "prompt": "@isaiahdupree drops silently from a helicopter onto a fortress rooftop at midnight, dressed in all-black tactical ninja gear with glowing red optics. Guards patrol below unaware. They move like smoke through shadows, scaling walls and sliding under laser tripwires, leaving no trace of their presence."
+        },
+        {
+          "part": 2,
+          "title": "The Extraction",
+          "prompt": "@isaiahdupree fights through an army of elite guards in a torch-lit ancient temple, wielding dual katanas that gleam in the firelight. They deflect bullets with their blades, perform impossible acrobatic kills, running on walls and ceilings. Bodies fall in slow motion as they reach the vault containing the sacred scroll."
+        },
+        {
+          "part": 3,
+          "title": "The Vanishing",
+          "prompt": "@isaiahdupree escapes across rooftops as the fortress explodes behind them in a massive fireball. Helicopters searchlights scan the chaos. They leap between buildings, throw smoke bombs, and disappear into the night. Final shot shows them standing on a distant mountain peak at dawn, mission accomplished, the scroll in hand."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Quantum Breach",
+      "theme": "Breaking into a quantum supercomputer facility",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Approach",
+          "prompt": "@isaiahdupree approaches a massive underground facility entrance hidden in a mountain, wearing a sleek tech suit that bends light around them. Holographic security barriers shimmer. They hack a terminal with fingers moving impossibly fast, the door iris opens revealing a corridor of pure white light leading deep underground."
+        },
+        {
+          "part": 2,
+          "title": "The Core",
+          "prompt": "@isaiahdupree stands before a room-sized quantum computer, crystalline structures floating in zero gravity, pulsing with otherworldly blue energy. Data streams visualize around them like a digital ocean. They plug in directly, eyes glowing as they merge consciousness with the machine, reality itself warping and fragmenting around them."
+        },
+        {
+          "part": 3,
+          "title": "The Upload",
+          "prompt": "@isaiahdupree rips free from the quantum core as the facility goes into meltdown, reality glitching and pixelating around them. They run through collapsing digital and physical space, jumping through portals that open and close. Bursting out of the mountain as it implodes into a singularity behind them, they hold up a glowing drive containing the secrets of the universe."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Wild West Legend",
+      "theme": "Epic western gunslinger showdown",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Arrival",
+          "prompt": "@isaiahdupree rides into a dusty frontier town on a black stallion at high noon, wearing a weathered duster coat and wide-brimmed hat. Townspeople scatter and hide. A tumbleweed rolls past. They dismount slowly, spurs jingling, and push through saloon doors as the piano stops. Every eye turns to watch the legendary gunslinger."
+        },
+        {
+          "part": 2,
+          "title": "The Standoff",
+          "prompt": "@isaiahdupree faces a gang of twelve outlaws in the main street, sun blazing overhead casting sharp shadows. Wind whips dust between them. Time slows as hands hover over holsters. @isaiahdupree draws with lightning speed, fanning the hammer, spinning and firing. Outlaws fall one by one in a dance of gunsmoke and thunder."
+        },
+        {
+          "part": 3,
+          "title": "The Sunset",
+          "prompt": "@isaiahdupree walks away from the smoking battlefield as grateful townspeople emerge. They tip their hat to a beautiful stranger, mount their horse, and ride toward the horizon. The sun sets in brilliant orange and red as they become a silhouette against the western sky, a legend riding into tomorrow."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Jungle Apex",
+      "theme": "Surviving the deadliest jungle",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Drop",
+          "prompt": "@isaiahdupree parachutes into the Amazon rainforest canopy at dusk, crashing through massive leaves and vines. They land in waist-deep swamp water, crocodiles sliding nearby. Armed with only a machete, they begin cutting through impossible vegetation as howler monkeys scream and exotic birds scatter. Eyes glow in the darkness ahead."
+        },
+        {
+          "part": 2,
+          "title": "The Hunt",
+          "prompt": "@isaiahdupree faces a massive black jaguar on a fallen temple covered in vines, rain pouring down. They lock eyes with the predator, neither backing down. The jaguar pounces, they roll aside and the two circle each other. Finally, @isaiahdupree stands tall, and the jaguar bows its head in respect, recognizing an equal apex predator."
+        },
+        {
+          "part": 3,
+          "title": "The Temple",
+          "prompt": "@isaiahdupree discovers a lost golden city hidden beneath the jungle, waterfalls cascading around ancient pyramids covered in jewels. They walk through streets of gold as the jaguar follows loyally. Reaching the central altar, they raise the ancient Sun Disc as light beams illuminate the entire city, revealing treasures beyond imagination."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Hurricane Hunter",
+      "theme": "Flying into the heart of a superstorm",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Mission",
+          "prompt": "@isaiahdupree boards a heavily modified hurricane hunter aircraft on a flooded runway as the outer bands of a Category 6 hurricane approach. Rain flies horizontal, ground crew struggles against the wind. They strap into the pilot seat, instruments going haywire, and throttle up into the chaos, the plane shaking violently as they penetrate the storm wall."
+        },
+        {
+          "part": 2,
+          "title": "The Eye",
+          "prompt": "@isaiahdupree pilots through the violent eyewall, lightning illuminating the cockpit every second, hail pounding the aircraft. Suddenly they burst into the eye, an impossible calm surrounded by a stadium of clouds. The sun shines through from above. They release a probe and capture data on the most powerful storm ever recorded, hovering in the serene center of destruction."
+        },
+        {
+          "part": 3,
+          "title": "The Escape",
+          "prompt": "@isaiahdupree punches back through the eyewall as the hurricane makes landfall, buildings and debris swirling in the vortex below. An engine catches fire, they're losing altitude. At the last second, they eject, parachuting through the chaos as the plane spirals into the storm. Landing on a rooftop, they watch the hurricane pass, having saved thousands with their data."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Casino Royale",
+      "theme": "High-stakes heist in Monte Carlo",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Player",
+          "prompt": "@isaiahdupree walks through a glamorous Monte Carlo casino in a perfectly tailored tuxedo, champagne in hand. Crystal chandeliers sparkle overhead, wealthy elite gamble millions. They sit at a high-stakes poker table, cool and confident, stacking chips as they win hand after hand. But their eyes keep drifting to the vault elevator behind the guards."
+        },
+        {
+          "part": 2,
+          "title": "The Vault",
+          "prompt": "@isaiahdupree descends through an elevator shaft on a thin cable, dropping into a vault filled with gold bars and diamonds. Laser grids crisscross the room. They move with impossible precision, contorting through gaps, mirrors deflecting beams, finally reaching the centerpiece: a legendary pink diamond worth $500 million. They palm it with a smile."
+        },
+        {
+          "part": 3,
+          "title": "The Getaway",
+          "prompt": "@isaiahdupree races a white Aston Martin through Monaco's midnight streets as security SUVs give chase. They drift around the famous hairpin turn, sparks flying. Jumping onto a waiting speedboat, they blast across the Mediterranean as fireworks explode over the casino they just robbed. They hold up the diamond, its facets catching the light of a thousand colors."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Zero Gravity",
+      "theme": "Space station parkour and rescue",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Breach",
+          "prompt": "@isaiahdupree floats through a damaged space station, emergency lights flashing red. Debris drifts in zero gravity, sparks shower from damaged systems. They push off walls and spin through corridors with perfect control, racing against time as hull breaches vent atmosphere. Earth spins magnificently in the windows behind them."
+        },
+        {
+          "part": 2,
+          "title": "The Rescue",
+          "prompt": "@isaiahdupree performs a zero-G rescue of trapped astronauts, pulling them through twisted wreckage as the station groans and breaks apart. They use fire extinguishers as propulsion, spinning and redirecting with incredible agility. Oxygen running low, they guide survivors through an exploding module, shielding them from shrapnel with their own body."
+        },
+        {
+          "part": 3,
+          "title": "The Return",
+          "prompt": "@isaiahdupree seals the last survivors into an escape pod and launches them to safety as the station crumbles. They spacewalk across the disintegrating structure, leaping from module to module as explosions chain behind them. Making a final desperate jump, they grab the last escape pod's handle and pull themselves in as the station becomes a fireball. Earth rises in the viewport as they descend home, a hero."
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Dragon Rider",
+      "theme": "Bonding with and riding a legendary dragon",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Encounter",
+          "prompt": "@isaiahdupree climbs a treacherous mountain peak in a fantasy realm, storm clouds swirling above. At the summit, they find a massive dragon coiled around its hoard, scales black as obsidian with veins of molten gold. The dragon roars, breathing fire. But @isaiahdupree stands firm, reaching out a hand, showing no fear. The dragon's eyes narrow with curiosity."
+        },
+        {
+          "part": 2,
+          "title": "The Bond",
+          "prompt": "@isaiahdupree and the dragon soar through the skies together for the first time, learning to move as one. They dive through cloud canyons, roll past floating islands, and race the sunrise over an endless fantasy landscape of castles and enchanted forests. The dragon breathes fire in celebration as @isaiahdupree laughs with pure joy, their bond solidified."
+        },
+        {
+          "part": 3,
+          "title": "The Battle",
+          "prompt": "@isaiahdupree leads the dragon into an epic aerial battle against an army of dark riders on wyverns, defending a magical kingdom below. They weave through enemy fire, the dragon unleashing torrents of golden flame. In the climax, they dive straight at the enemy commander, dragon and rider moving in perfect sync, and destroy the dark lord's mount in a spectacular explosion of light and fire. Victory."
+        }
+      ]
+    }
+  ]
+}

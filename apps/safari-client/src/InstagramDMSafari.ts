@@ -1,4 +1,9 @@
 /**
+ * @deprecated — LEGACY FILE. Uses Playwright (not AppleScript). The canonical approach is:
+ *   - packages/instagram-dm/src/api/server.ts (port 3100) with SafariDriver via AppleScript
+ *   - API: POST http://localhost:3100/api/messages/send-from-profile {username, text}
+ * This file is kept for reference only.
+ *
  * Instagram DM with Safari Browser
  * 
  * This script uses Safari/WebKit via Playwright for Instagram DM automation.

@@ -1,4 +1,9 @@
 /**
+ * @deprecated — LEGACY FILE. Profile-to-DM is now in:
+ *   - packages/instagram-dm/src/automation/dm-operations.ts → sendDMFromProfile()
+ *   - API: POST http://localhost:3100/api/messages/send-from-profile {username, text}
+ * This file is kept for reference only. Do not import from here in new code.
+ *
  * Safari Profile-to-DM Messaging System
  * 
  * Send messages directly from a user's Instagram profile URL.

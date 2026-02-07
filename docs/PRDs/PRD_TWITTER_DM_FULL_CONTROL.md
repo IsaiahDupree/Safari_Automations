@@ -1,8 +1,11 @@
 # PRD: Twitter/X DM Full Platform Control
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** January 28, 2026  
-**Status:** Assessment & Implementation
+**Updated:** February 6, 2026  
+**Status:** ⚠️ Core Working — Gaps Identified (No AI DM generation)  
+**Package:** `packages/twitter-dm/` (TypeScript)  
+**Port:** 3003
 
 ---
 
@@ -10,7 +13,8 @@
 
 Complete Safari automation for Twitter/X Direct Messages with full controllability of all UI elements, buttons, selectors, and features.
 
-**Target URL:** `https://x.com/messages`
+**Target URL:** `https://x.com/messages`  
+**Implementation:** `packages/twitter-dm/src/` (TypeScript + Express REST API)
 
 ---
 
@@ -18,18 +22,20 @@ Complete Safari automation for Twitter/X Direct Messages with full controllabili
 
 ### ✅ = Implemented | ⚠️ = Partial | ❌ = Not Working | 🔲 = Not Started
 
+**Last audited:** February 6, 2026 (against actual code in `packages/twitter-dm/`)
+
 ---
 
 ## 1. NAVIGATION
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Navigate to x.com | 🔲 | |
-| Navigate to /messages | 🔲 | DM inbox |
-| Navigate to specific conversation | 🔲 | /messages/{conversation_id} |
-| Navigate to user profile | 🔲 | /{username} |
-| Navigate to /home | 🔲 | Timeline |
-| Detect current page | 🔲 | |
+| Navigate to x.com | ✅ | `SafariDriver.navigateTo()` |
+| Navigate to /messages | ✅ | `navigateToInbox()` |
+| Navigate to specific conversation | ⚠️ | Via `openConversation()`, not direct URL |
+| Navigate to user profile | ✅ | Via URL navigation |
+| Navigate to /home | ✅ | Via URL navigation |
+| Detect current page | ✅ | `SafariDriver.getCurrentUrl()` + `isOnTwitter()` |
 
 ### Required Selectors
 ```javascript
@@ -51,13 +57,13 @@ document.querySelector('[aria-label="Timeline: Messages"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Detect logged in state | 🔲 | |
-| Detect login prompt | 🔲 | |
+| Detect logged in state | ✅ | `SafariDriver.isLoggedIn()` |
+| Detect login prompt | ⚠️ | Inverse of isLoggedIn |
 | Handle 2FA prompt | 🔲 | Manual (code: 7911) |
 | Handle encryption code prompt | 🔲 | Code: 7911 |
-| Handle session expiry | 🔲 | |
-| Detect rate limiting | 🔲 | |
-| Detect account suspension | 🔲 | |
+| Handle session expiry | 🔲 | No auto-detection |
+| Detect rate limiting | ⚠️ | Server-side only, no Twitter UI detection |
+| Detect account suspension | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -81,12 +87,12 @@ document.body.innerText.includes('temporarily locked')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| List all conversations | 🔲 | |
-| Get conversation count | 🔲 | |
-| Get unread count | 🔲 | |
-| Scroll to load more | 🔲 | |
-| Search conversations | 🔲 | |
-| Filter by type (All/Unread/Groups) | 🔲 | |
+| List all conversations | ✅ | `listConversations()` |
+| Get conversation count | ✅ | From `.length` |
+| Get unread count | ✅ | `getUnreadConversations()` — **unique to Twitter** |
+| Scroll to load more | 🔲 | Not in inbox, only in conversation thread |
+| Search conversations | 🔲 | Not implemented |
+| Filter by type (All/Unread/Groups) | ✅ | `switchTab()` + `getAllConversations()` |
 
 ### Required Selectors
 ```javascript
@@ -116,12 +122,12 @@ document.querySelectorAll('[role="tab"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Click on conversation | 🔲 | |
-| Get selected conversation | 🔲 | |
-| Get conversation participant(s) | 🔲 | |
-| Get last message preview | 🔲 | |
-| Get message timestamp | 🔲 | |
-| Detect conversation type (group/single) | 🔲 | |
+| Click on conversation | ✅ | `openConversation(username)` |
+| Get selected conversation | ⚠️ | Implicit from open state |
+| Get conversation participant(s) | ✅ | In conversation list data |
+| Get last message preview | ⚠️ | In conversation list data |
+| Get message timestamp | 🔲 | Not extracted |
+| Detect conversation type (group/single) | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -150,14 +156,14 @@ conversation.querySelector('[datetime]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Get all messages in thread | 🔲 | |
-| Get message text | 🔲 | |
-| Get message sender | 🔲 | |
-| Get message timestamp | 🔲 | |
-| Detect message type (text/image/video/gif/link) | 🔲 | |
-| Scroll to load older messages | 🔲 | |
-| Detect read receipts | 🔲 | |
-| Detect "seen" status | 🔲 | |
+| Get all messages in thread | ✅ | `readMessages(limit)` |
+| Get message text | ✅ | Included in message data |
+| Get message sender | ⚠️ | Basic sender detection |
+| Get message timestamp | 🔲 | Not extracted |
+| Detect message type (text/image/video/gif/link) | 🔲 | Text only |
+| Scroll to load older messages | ✅ | `scrollConversation(scrollCount)` |
+| Detect read receipts | 🔲 | Not implemented |
+| Detect "seen" status | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -192,14 +198,14 @@ document.body.innerText.includes('Seen')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Find message input | 🔲 | |
-| Clear input | 🔲 | |
-| Type message | 🔲 | |
-| Send message (Enter key) | 🔲 | |
-| Send message (Send button) | 🔲 | |
-| Verify message sent | 🔲 | |
-| Handle send failure | 🔲 | |
-| Detect "pending" state | 🔲 | |
+| Find message input | ✅ | Via DraftJS/contenteditable selector |
+| Clear input | ⚠️ | Implicit |
+| Type message | ✅ | JS injection |
+| Send message (Enter key) | ✅ | Primary send method |
+| Send message (Send button) | ⚠️ | Fallback available |
+| Verify message sent | ⚠️ | Basic result check |
+| Handle send failure | ⚠️ | Returns success/failure, no retry |
+| Detect "pending" state | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -242,12 +248,12 @@ document.querySelector('[data-testid="messageEntry"]:last-child')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Click "New Message" button | 🔲 | |
-| Search for user | 🔲 | |
-| Select user from results | 🔲 | |
-| Handle "DMs disabled" restriction | 🔲 | |
-| Select multiple users (group) | 🔲 | |
-| Start conversation | 🔲 | |
+| Click "New Message" button | ✅ | `startNewConversation()` |
+| Search for user | ✅ | Username search |
+| Select user from results | ✅ | Auto-select |
+| Handle "DMs disabled" restriction | 🔲 | Not detected |
+| Select multiple users (group) | 🔲 | Not implemented |
+| Start conversation | ✅ | Full flow works |
 
 ### Required Selectors
 ```javascript
@@ -282,13 +288,13 @@ document.body.innerText.includes("doesn't accept")
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Send image | 🔲 | |
-| Send video | 🔲 | |
-| Send GIF | 🔲 | |
-| Send emoji | 🔲 | |
-| Send link (auto-preview) | 🔲 | |
-| View received media | 🔲 | |
-| React to message | 🔲 | |
+| Send image | 🔲 | Not implemented |
+| Send video | 🔲 | Not implemented |
+| Send GIF | 🔲 | Not implemented |
+| Send emoji | ⚠️ | Emoji in text works, picker not automated |
+| Send link (auto-preview) | ⚠️ | Links work in text, no preview control |
+| View received media | 🔲 | Not implemented |
+| React to message | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -316,13 +322,13 @@ document.querySelector('[aria-label="React"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Delete conversation | 🔲 | |
-| Leave group | 🔲 | |
-| Mute conversation | 🔲 | |
-| Block user | 🔲 | |
-| Report conversation | 🔲 | |
-| Pin conversation | 🔲 | |
-| Snooze notifications | 🔲 | |
+| Delete conversation | 🔲 | Not implemented |
+| Leave group | 🔲 | Not implemented |
+| Mute conversation | 🔲 | Not implemented |
+| Block user | 🔲 | Not implemented |
+| Report conversation | 🔲 | Not implemented |
+| Pin conversation | 🔲 | Not implemented |
+| Snooze notifications | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -348,11 +354,11 @@ document.querySelector('[data-testid="report"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Navigate to requests | 🔲 | |
-| List pending requests | 🔲 | |
-| Accept request | 🔲 | |
-| Decline request | 🔲 | |
-| Get request count | 🔲 | |
+| Navigate to requests | 🔲 | Not implemented |
+| List pending requests | 🔲 | Not implemented |
+| Accept request | 🔲 | Not implemented |
+| Decline request | 🔲 | Not implemented |
+| Get request count | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -378,15 +384,15 @@ document.querySelector('button').find(b => b.textContent.includes('Delete'))
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Get username | 🔲 | |
-| Get display name | 🔲 | |
-| Get follower count | 🔲 | |
-| Get following count | 🔲 | |
-| Get bio | 🔲 | |
-| Check if verified (blue/gold) | 🔲 | |
-| Check if following | 🔲 | |
-| Check if they follow you | 🔲 | |
-| Navigate to full profile | 🔲 | |
+| Get username | ⚠️ | From conversation data |
+| Get display name | 🔲 | Not implemented |
+| Get follower count | 🔲 | Not implemented |
+| Get following count | 🔲 | Not implemented |
+| Get bio | 🔲 | Not implemented |
+| Check if verified (blue/gold) | 🔲 | Not implemented |
+| Check if following | 🔲 | Not implemented |
+| Check if they follow you | 🔲 | Not implemented |
+| Navigate to full profile | ✅ | `sendDMFromProfileUrl()` navigates to profile |
 
 ### Required Selectors
 ```javascript
@@ -415,13 +421,14 @@ document.body.innerText.includes('Follows you')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Detect rate limit warning | 🔲 | |
-| Detect action blocked | 🔲 | |
-| Detect account locked | 🔲 | |
-| Implement delay between messages | 🔲 | |
-| Implement daily limits | 🔲 | |
-| Log all actions | 🔲 | |
-| Handle verification prompts | 🔲 | |
+| Detect rate limit warning | 🔲 | No Twitter UI detection |
+| Detect action blocked | 🔲 | No Twitter UI detection |
+| Detect account locked | 🔲 | Not implemented |
+| Implement delay between messages | ✅ | Active hours enforcement |
+| Implement daily limits | ✅ | `messagesPerDay` enforced |
+| Implement hourly limits | ✅ | `messagesPerHour` enforced |
+| Log all actions | ⚠️ | Console only, no DB |
+| Handle verification prompts | 🔲 | Not implemented |
 
 ### Safety Limits
 ```python
@@ -460,14 +467,14 @@ document.querySelector('[data-testid="VerificationPrompt"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Create group | 🔲 | |
-| Add members | 🔲 | |
-| Remove members | 🔲 | |
-| Leave group | 🔲 | |
-| Rename group | 🔲 | |
-| Set group image | 🔲 | |
-| Detect group vs 1:1 | 🔲 | |
-| Admin controls | 🔲 | |
+| Create group | 🔲 | Not implemented |
+| Add members | 🔲 | Not implemented |
+| Remove members | 🔲 | Not implemented |
+| Leave group | 🔲 | Not implemented |
+| Rename group | 🔲 | Not implemented |
+| Set group image | 🔲 | Not implemented |
+| Detect group vs 1:1 | 🔲 | Not implemented |
+| Admin controls | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -493,12 +500,16 @@ document.querySelector('[data-testid="leaveGroup"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Share tweet via DM | 🔲 | |
-| Share profile via DM | 🔲 | |
+| Send DM from profile URL | ✅ | `sendDMFromProfileUrl()` |
+| Send DM by username | ✅ | `sendDMByUsername()` |
+| Get unread conversations | ✅ | `getUnreadConversations()` — unique to Twitter |
+| Scroll conversation thread | ✅ | `scrollConversation(scrollCount)` |
+| Share tweet via DM | 🔲 | Not implemented |
+| Share profile via DM | 🔲 | Not implemented |
 | Voice messages | 🔲 | Premium feature |
-| Video calls | 🔲 | |
-| Scheduled messages | 🔲 | |
-| Reply to specific message | 🔲 | |
+| Video calls | 🔲 | Not implemented |
+| Scheduled messages | 🔲 | Not implemented |
+| Reply to specific message | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -544,31 +555,86 @@ message.querySelector('[data-testid="reply"]')
 
 ---
 
-## File Structure
+## Actual File Structure (TypeScript)
 
 ```
-Backend/
-├── automation/
-│   ├── twitter_dm_automation.py     # Main DM automation
-│   └── safari_twitter_poster.py     # Existing Twitter automation
-├── services/
-│   └── twitter/
-│       ├── dm_service.py            # High-level DM service
-│       ├── dm_sender.py             # Message sending
-│       └── dm_reader.py             # Message reading
-└── scripts/
-    └── twitter_dm_test.py           # Test script
+packages/twitter-dm/
+├── src/
+│   ├── api/
+│   │   ├── server.ts        # Express REST API (port 3003)
+│   │   ├── client.ts        # Client library for other services
+│   │   └── index.ts         # API exports
+│   ├── automation/
+│   │   ├── safari-driver.ts # Safari AppleScript + JS execution
+│   │   ├── dm-operations.ts # Core DM functions
+│   │   ├── types.ts         # TypeScript interfaces
+│   │   └── index.ts         # Automation exports
+│   ├── utils/
+│   │   └── index.ts         # isWithinActiveHours
+│   └── index.ts             # Package exports
+├── package.json
+└── tsconfig.json
 ```
 
 ---
 
-## Existing Files to Check
+## API Endpoints (Implemented)
 
-| File | Purpose |
-|------|---------|
-| `automation/safari_twitter_poster.py` | Existing Twitter automation |
-| `services/twitter/dm_automation.py` | Existing DM service |
-| `automation/safari_session_manager.py` | Session management |
+```
+GET  /health                            ✅ Health check
+GET  /api/twitter/status                ✅ Login status, current URL
+GET  /api/twitter/rate-limits           ✅ Rate limit details
+PUT  /api/twitter/rate-limits           ✅ Update rate limits
+POST /api/twitter/inbox/navigate        ✅ Navigate to inbox
+POST /api/twitter/inbox/tab             ✅ Switch tab
+GET  /api/twitter/conversations         ✅ List conversations
+GET  /api/twitter/conversations/all     ✅ All tabs
+GET  /api/twitter/conversations/unread  ✅ Unread conversations
+POST /api/twitter/conversations/open    ✅ Open by username
+POST /api/twitter/conversations/new     ✅ Start new conversation
+POST /api/twitter/conversations/scroll  ✅ Scroll in conversation
+GET  /api/twitter/messages              ✅ Read messages (with limit)
+POST /api/twitter/messages/send         ✅ Send in current convo
+POST /api/twitter/messages/send-to      ✅ Send to user by username
+POST /api/twitter/messages/send-to-url  ✅ Send via profile URL
+POST /api/twitter/execute               ✅ Raw JS execution
+PUT  /api/twitter/config                ✅ Update driver config
+```
+
+---
+
+## 15. AI INTEGRATION
+
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| AI DM generation | ❌ | **NOT IMPLEMENTED** — only platform missing this |
+| Personalized by recipient | ❌ | No AI function exists |
+| Fallback message | ❌ | No fallback |
+| AI endpoint exposed | ❌ | No endpoint |
+
+**⚠️ This is the #1 gap for Twitter DM.** Instagram and TikTok both have `generateAIDM()`. Twitter needs one with a professional/witty tone.
+
+---
+
+## 16. CRM / DATABASE INTEGRATION
+
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Log DMs to Supabase | ❌ | Not wired |
+| Contact creation on DM | ❌ | Not wired |
+| Relationship scoring | ❌ | Not implemented |
+| Outreach sequence tracking | ❌ | Not implemented |
+| Template system | ❌ | Not implemented |
+
+---
+
+## 17. SCHEDULER INTEGRATION
+
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Scheduled DM sessions | ❌ | Not wired to scheduler |
+| Automated daily touches | ❌ | Not implemented |
+| Cadence enforcement | ❌ | Not implemented |
 
 ---
 
@@ -581,91 +647,41 @@ Code: 7911
 
 ---
 
-## Testing Checklist
+## Summary Scorecard
 
-```bash
-# 1. Test navigation
-python -c "from automation.twitter_dm_automation import TwitterDMAutomation; dm=TwitterDMAutomation(); dm.navigate_to_inbox()"
-
-# 2. Test login check
-python -c "from automation.twitter_dm_automation import TwitterDMAutomation; dm=TwitterDMAutomation(); print(dm.check_login())"
-
-# 3. Test find input
-python -c "from automation.twitter_dm_automation import TwitterDMAutomation; dm=TwitterDMAutomation(); print(dm.find_message_input())"
-
-# 4. Test send message
-python -c "from automation.twitter_dm_automation import TwitterDMAutomation; dm=TwitterDMAutomation(); dm.send_message('username', 'Hello!')"
-```
-
----
-
-## Selector Investigation Script
-
-```python
-# Run to investigate Twitter DM page structure
-python3 -c "
-import subprocess
-import time
-
-subprocess.run(['osascript', '-e', 
-    'tell application \"Safari\" to set URL of front document to \"https://x.com/messages\"'])
-time.sleep(5)
-
-js = '''
-(function() {
-    var result = {
-        testids: [],
-        inputs: [],
-        buttons: [],
-        url: window.location.href
-    };
-    
-    // Get all data-testid elements
-    document.querySelectorAll('[data-testid]').forEach((e, i) => {
-        if (i < 30) {
-            result.testids.push({
-                testid: e.getAttribute('data-testid'),
-                tag: e.tagName,
-                text: e.textContent.trim().substring(0, 30)
-            });
-        }
-    });
-    
-    document.querySelectorAll('input, textarea, [contenteditable]').forEach(i => {
-        result.inputs.push({
-            type: i.type || i.tagName,
-            placeholder: i.placeholder || i.getAttribute('data-placeholder'),
-            testid: i.getAttribute('data-testid')
-        });
-    });
-    
-    document.querySelectorAll('button').forEach((b, i) => {
-        if (i < 15) {
-            result.buttons.push({
-                testid: b.getAttribute('data-testid'),
-                ariaLabel: b.getAttribute('aria-label'),
-                text: b.textContent.trim().substring(0, 20)
-            });
-        }
-    });
-    
-    return JSON.stringify(result, null, 2);
-})()
-'''
-
-print(subprocess.run(['osascript', '-e', 
-    f'tell application \"Safari\" to do JavaScript \"{js}\" in front document'],
-    capture_output=True, text=True).stdout)
-"
-```
+| Category | Score | Notes |
+|----------|-------|-------|
+| Navigation | 5/6 | ✅ Solid |
+| Authentication | 2/7 | ⚠️ Basic login check |
+| DM Inbox | 5/6 | ✅ Best of all 3 (has unread) |
+| Conversation Selection | 3/6 | ✅ Core works |
+| Message Reading | 3/8 | ⚠️ Has scroll, but text-only |
+| Message Sending | 5/8 | ✅ Good |
+| New Conversation | 4/6 | ✅ Good, missing DM-disabled detection |
+| Media & Attachments | 0/7 | 🔲 Not started |
+| Conversation Mgmt | 0/7 | 🔲 Not started |
+| Message Requests | 0/5 | 🔲 Not started |
+| User Profile | 1/9 | ⚠️ Only profile URL nav |
+| Rate Limiting | 4/7 | ✅ Server-side, no UI detection |
+| AI Integration | 0/4 | ❌ **NOT IMPLEMENTED** |
+| CRM Integration | 0/5 | ❌ Not wired |
+| Scheduler | 0/3 | ❌ Not wired |
+| Twitter-Specific | 4/10 | ⚠️ Has unique features, many unbuilt |
+| **TOTAL** | **36/104 (35%)** | |
 
 ---
 
-## Next Steps
+## Next Steps (Priority Order)
 
-1. Check existing `safari_twitter_poster.py` for reusable code
-2. Investigate actual Twitter DM page selectors (data-testid patterns)
-3. Implement core send/read functions
-4. Handle DraftJS/contenteditable input
-5. Add rate limiting and safety
-6. Integrate with warmth scoring system
+1. ❌ **Add AI DM generation** — #1 gap, only platform without it
+2. ❌ Wire CRM logging (Supabase) for all DM send/receive
+3. ❌ Add message timestamp extraction
+4. ❌ Wire scheduler for automated sessions
+5. 🔲 Message requests handling
+6. 🔲 User profile extraction
+7. 🔲 DMs-disabled detection
+
+---
+
+**Last Updated:** February 6, 2026  
+**Audited Against:** `packages/twitter-dm/src/` (TypeScript)

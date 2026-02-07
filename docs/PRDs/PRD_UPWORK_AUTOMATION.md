@@ -485,5 +485,22 @@ const UPWORK_RATE_LIMITS = {
 
 ---
 
+## ⚠️ Important: ECD Bridge Supersedes UI Automation
+
+This PRD's Safari-based UI automation approach has been **superseded** by the event-driven API-first architecture documented in:
+
+**[Upwork ↔ CRM ↔ ECD DevBot Bridge PRD](../upwork-ecd-bridge/PRD.md)**
+
+Key changes:
+- **Official Upwork OAuth2 API** replaces Safari UI automation (compliance-safe)
+- **Event-driven microservices** replace monolithic package
+- **Full DevBot pipeline** for autonomous project delivery
+- **CRM integration** as single source of truth
+
+The job search/scoring interfaces, AI proposal generation, and analytics concepts from this PRD carry forward into the new architecture.
+
+---
+
 **Created:** February 1, 2026  
-**Status:** Ready for development
+**Updated:** February 6, 2026  
+**Status:** Superseded by [ECD Bridge PRD](../upwork-ecd-bridge/PRD.md)

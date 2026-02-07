@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-02-03T23:58:00.000Z",
+  "character": "@isaiahdupree",
+  "title": "THE LAST GUARDIAN",
+  "type": "6-part-epic",
+  "totalVideos": 6,
+  "theme": "A legendary warrior's journey to save the world from an ancient evil",
+  "videos": [
+    {
+      "part": 1,
+      "title": "The Awakening",
+      "prompt": "@isaiahdupree awakens in an ancient stone temple as mystical energy swirls around them, glowing runes activating across their body. They rise from a sarcophagus, eyes blazing with golden light. Outside, the world burns under a red sky. They grab a legendary sword embedded in the altar, lightning strikes as they pull it free, and ancient power surges through their veins."
+    },
+    {
+      "part": 2,
+      "title": "The Gauntlet",
+      "prompt": "@isaiahdupree fights through an army of shadow demons in a burning medieval city, sword cutting through darkness like light itself. Buildings crumble around them as they leap from rooftop to rooftop, dispatching enemies with impossible speed and precision. They save civilians, deflect fireballs, and stand alone against a tide of monsters, refusing to fall."
+    },
+    {
+      "part": 3,
+      "title": "The Trials",
+      "prompt": "@isaiahdupree traverses impossible landscapes: running across crumbling bridges over endless voids, climbing frozen waterfalls that flow upward, swimming through caverns of liquid starlight. Each trial tests their resolve. At the peak of a crystal mountain, they meditate as aurora borealis dances overhead, absorbing the wisdom of fallen guardians who appear as ghostly spirits."
+    },
+    {
+      "part": 4,
+      "title": "The Betrayal",
+      "prompt": "@isaiahdupree confronts their former mentor on a floating fortress in the storm clouds, lightning illuminating their clash. The mentor has turned to darkness, wielding corrupted power. They duel with incredible ferocity, trading blows that shatter stone and split the sky. @isaiahdupree is struck down, falling through clouds toward certain death, but grabs a chain at the last second, hanging over the abyss."
+    },
+    {
+      "part": 5,
+      "title": "The Resurrection",
+      "prompt": "@isaiahdupree lies broken in a crater, rain pouring down. Memories flash of everyone they're fighting for. Their eyes snap open with renewed determination. Rising slowly, wounds healing with golden light, they transform - armor of pure energy materializing around them, wings of flame spreading from their back. They launch into the sky like a comet, screaming toward the final battle."
+    },
+    {
+      "part": 6,
+      "title": "The Final Stand",
+      "prompt": "@isaiahdupree faces the Dark God atop a mountain at the edge of reality, cosmic storms raging around them. The battle is cataclysmic - they trade blows that crack the earth and tear holes in space. In the climax, @isaiahdupree channels all their power into one ultimate strike, plunging their sword through the darkness. Light explodes outward, the sky clears to reveal stars, and they stand victorious as the sun rises on a saved world."
+    }
+  ]
+}

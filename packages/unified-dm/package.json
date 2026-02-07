@@ -10,6 +10,9 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "tsx": "^4.7.0",

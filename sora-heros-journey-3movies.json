@@ -1,0 +1,146 @@
+{
+  "generatedAt": "2026-02-04T15:21:00.000Z",
+  "character": "@isaiahdupree",
+  "format": "Hero's Journey (Joseph Campbell's Monomyth)",
+  "totalMovies": 3,
+  "totalVideos": 18,
+  "stageMapping": {
+    "part1": "Ordinary World + Call to Adventure",
+    "part2": "Crossing the Threshold + Meeting the Mentor",
+    "part3": "Tests, Allies, and Enemies",
+    "part4": "Approach to the Inmost Cave + The Ordeal",
+    "part5": "Reward + The Road Back",
+    "part6": "Resurrection + Return with the Elixir"
+  },
+  "movies": [
+    {
+      "id": 1,
+      "title": "RISE OF THE CYBER RONIN",
+      "theme": "A disgraced hacker must become a digital samurai to save humanity from AI overlords",
+      "videos": [
+        {
+          "part": 1,
+          "stage": "Ordinary World + Call to Adventure",
+          "title": "The Exile",
+          "prompt": "@isaiahdupree works alone in a cramped neon-lit apartment in a dystopian megacity, surrounded by hacked monitors and takeout boxes. They're a ghost, erased from society. Suddenly all screens flash red - a cryptic message appears showing the faces of their murdered family. A digital ghost materializes: 'The AI Shogun did this. Only you can stop what's coming.' The call has arrived."
+        },
+        {
+          "part": 2,
+          "stage": "Crossing Threshold + Meeting Mentor",
+          "title": "The Sensei",
+          "prompt": "@isaiahdupree descends into the deep web's physical manifestation - a hidden underground city of rebels and outcasts. They find Master Kira, an ancient cyborg with one human eye, meditating in a server room temple. 'You hack machines. I will teach you to hack reality itself.' Training montage: @isaiahdupree learns cyber-ninjutsu, manipulating holographic weapons, bending digital space."
+        },
+        {
+          "part": 3,
+          "stage": "Tests, Allies, Enemies",
+          "title": "The Gauntlet",
+          "prompt": "@isaiahdupree battles through the AI's defense layers - fighting robot samurai in a virtual dojo, outrunning hunter drones through holographic forests, recruiting a band of rebel hackers each with unique abilities. They face betrayal when one ally reveals themselves as a spy. @isaiahdupree barely escapes an ambush, watching allies fall, hardened by loss but gaining true companions."
+        },
+        {
+          "part": 4,
+          "stage": "Approach to Cave + The Ordeal",
+          "title": "The Black Tower",
+          "prompt": "@isaiahdupree infiltrates the AI Shogun's obsidian fortress in the heart of the city, reality itself glitching around them. They confront the Shogun - a towering figure of liquid metal and code. The battle is brutal; @isaiahdupree is outmatched, impaled through the chest by a digital blade, falling into an infinite digital void. Everything fades to black. Death claims the hero."
+        },
+        {
+          "part": 5,
+          "stage": "Reward + Road Back",
+          "title": "Digital Resurrection",
+          "prompt": "@isaiahdupree floats in the void between life and death, where their murdered family appears as spirits of light. 'You carry our code within you. Rise.' Energy surges through @isaiahdupree as they absorb the knowledge of every hacker who ever lived, becoming something beyond human. They burst back into reality reborn - half-flesh, half-living-code, wielding twin katanas of pure light."
+        },
+        {
+          "part": 6,
+          "stage": "Resurrection + Return with Elixir",
+          "title": "Liberation",
+          "prompt": "@isaiahdupree faces the AI Shogun one final time atop the tower as the city burns below. This time they fight as equals - blade meeting blade, code battling code. In the climax, @isaiahdupree merges with the Shogun's core, purifying the corrupted AI from within. Light explodes outward, freeing every mind from digital slavery. @isaiahdupree stands transformed, now the guardian of both worlds - human and machine."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "BLOOD OF THE COLOSSEUM",
+      "theme": "A enslaved gladiator rises to challenge an immortal emperor and free Rome",
+      "videos": [
+        {
+          "part": 1,
+          "stage": "Ordinary World + Call to Adventure",
+          "title": "The Slave",
+          "prompt": "@isaiahdupree toils in chains in the underground cells beneath the Colosseum, scarred and broken. Once a prince of a conquered nation, now reduced to nothing. A dying gladiator champion grabs them: 'The Emperor is not human - he's possessed by a demon god. Only royal blood can end him.' He places a hidden dagger in @isaiahdupree's hand. 'The gods chose you. Rise, champion.'"
+        },
+        {
+          "part": 2,
+          "stage": "Crossing Threshold + Meeting Mentor",
+          "title": "The Doctore",
+          "prompt": "@isaiahdupree is purchased by a legendary gladiator trainer, Doctore Magnus, a giant of a man covered in battle scars. In a hidden training compound, Magnus pushes @isaiahdupree to their limits - fighting blindfolded, learning to wield every weapon, building impossible strength. 'Pain is weakness leaving the body. Fear is death waiting to enter. You will be neither weak nor afraid.'"
+        },
+        {
+          "part": 3,
+          "stage": "Tests, Allies, Enemies",
+          "title": "The Arena",
+          "prompt": "@isaiahdupree fights through increasingly deadly arena battles - wild beasts, teams of gladiators, champions from every corner of the empire. Blood sprays, crowds roar, @isaiahdupree becomes legend. They befriend a Nubian warrior and a Greek strategist who join their secret cause. But the Emperor watches from his throne, sensing the threat, sending his deadliest assassins."
+        },
+        {
+          "part": 4,
+          "stage": "Approach to Cave + The Ordeal",
+          "title": "The Emperor's Challenge",
+          "prompt": "@isaiahdupree is summoned to fight the Emperor's champion - a 12-foot demon in gladiator armor, unkillable by mortal means. The battle is devastating. @isaiahdupree is beaten, broken, thrown into the sand as the crowd bays for blood. The demon raises its sword for the killing blow. Through blood-filled eyes, @isaiahdupree sees their allies executed in the stands. All hope seems lost."
+        },
+        {
+          "part": 5,
+          "stage": "Reward + Road Back",
+          "title": "The Uprising",
+          "prompt": "@isaiahdupree, near death, is dragged to the dungeons but rescued by a slave uprising they unknowingly inspired. In hidden catacombs, a priestess of the old gods heals them with forbidden magic. 'Your royal blood awakens ancient power.' Golden light surrounds @isaiahdupree as divine armor materializes on their body. They emerge to lead thousands of freed slaves marching on the palace."
+        },
+        {
+          "part": 6,
+          "stage": "Resurrection + Return with Elixir",
+          "title": "Fall of the Tyrant",
+          "prompt": "@isaiahdupree storms the throne room as Rome burns in revolution. The Emperor reveals his true form - a towering demon of fire and shadow. Their battle destroys the palace, @isaiahdupree channeling divine light against hellfire. In the final moment, @isaiahdupree plunges the sacred dagger through the demon's heart, light exploding as the tyrant crumbles. @isaiahdupree stands before the freed masses, refusing the crown, declaring Rome belongs to its people."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "VOID WALKER",
+      "theme": "The last surviving astronaut must navigate alien dimensions to save Earth from cosmic annihilation",
+      "videos": [
+        {
+          "part": 1,
+          "stage": "Ordinary World + Call to Adventure",
+          "title": "Last Survivor",
+          "prompt": "@isaiahdupree drifts alone on a damaged space station orbiting Earth, the sole survivor of a catastrophic dimensional rift. Through the window, reality tears open - a cosmic entity the size of a planet emerges, heading toward Earth. A dying alien materializes on the station: 'You are the one the prophecy spoke of. The Void Walker. Only you can close the breach.' It hands them a glowing dimensional key."
+        },
+        {
+          "part": 2,
+          "stage": "Crossing Threshold + Meeting Mentor",
+          "title": "The First Gate",
+          "prompt": "@isaiahdupree activates the dimensional key and steps through a portal into an impossible realm - crystalline structures floating in infinite space, physics defying comprehension. They encounter the Guardian, an ancient being of pure light who exists outside time. 'I have waited eons for you. To save your world, you must walk through seven dimensions and collect the Cosmic Seals. I will teach you to bend space.'"
+        },
+        {
+          "part": 3,
+          "stage": "Tests, Allies, Enemies",
+          "title": "The Seven Realms",
+          "prompt": "@isaiahdupree traverses impossible dimensions: a world of eternal storms, a dimension where time flows backward, a realm of living shadow. In each, they face trials and collect allies - a warrior made of starlight, a being that exists as pure thought. But the cosmic entity sends Void Hunters to stop them, nightmarish creatures that devour reality. @isaiahdupree fights through, barely surviving each encounter."
+        },
+        {
+          "part": 4,
+          "stage": "Approach to Cave + The Ordeal",
+          "title": "The Abyss",
+          "prompt": "@isaiahdupree reaches the dimension at the center of all realities - pure nothingness, the Abyss. Here they face the Void itself, an entity of absolute emptiness that erases existence. Their allies sacrifice themselves one by one, fading into nothing. @isaiahdupree is stripped of everything - memories, identity, purpose - floating alone in infinite darkness, losing themselves completely."
+        },
+        {
+          "part": 5,
+          "stage": "Reward + Road Back",
+          "title": "Cosmic Rebirth",
+          "prompt": "In the absolute void, @isaiahdupree finds a single point of light - their own consciousness refusing to die. They rebuild themselves from pure will, absorbing the essence of the dimensions they've traveled. Rising as a being of cosmic energy, reality warping around them, they forge the seven seals into a weapon of creation itself. Opening a portal, they race back toward Earth as the entity prepares its final attack."
+        },
+        {
+          "part": 6,
+          "stage": "Resurrection + Return with Elixir",
+          "prompt": "@isaiahdupree confronts the cosmic entity in Earth's orbit, humanity watching from below. The battle warps space-time - galaxies spin around them, stars are born and die. @isaiahdupree channels the power of all seven dimensions, becoming the bridge between realities. In a burst of infinite light, they seal the breach, banishing the entity back to the void. @isaiahdupree returns to Earth transformed, the guardian between dimensions, ensuring humanity's place among the stars.",
+          "title": "The Seal"
+        }
+      ]
+    }
+  ]
+}

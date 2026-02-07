@@ -1,8 +1,11 @@
 # PRD: Instagram DM Full Platform Control
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** January 28, 2026  
-**Status:** Assessment & Implementation
+**Updated:** February 6, 2026  
+**Status:** ⚠️ Core Working — Gaps Identified  
+**Package:** `packages/instagram-dm/` (TypeScript)  
+**Port:** 3100
 
 ---
 
@@ -10,7 +13,8 @@
 
 Complete Safari automation for Instagram Direct Messages with full controllability of all UI elements, buttons, selectors, and features.
 
-**Target URL:** `https://www.instagram.com/direct/inbox/`
+**Target URL:** `https://www.instagram.com/direct/inbox/`  
+**Implementation:** `packages/instagram-dm/src/` (TypeScript + Express REST API)
 
 ---
 
@@ -18,17 +22,19 @@ Complete Safari automation for Instagram Direct Messages with full controllabili
 
 ### ✅ = Implemented | ⚠️ = Partial | ❌ = Not Working | 🔲 = Not Started
 
+**Last audited:** February 6, 2026 (against actual code in `packages/instagram-dm/`)
+
 ---
 
 ## 1. NAVIGATION
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Navigate to instagram.com | 🔲 | |
-| Navigate to /direct/inbox/ | 🔲 | DM inbox |
-| Navigate to /direct/t/{thread_id}/ | 🔲 | Specific conversation |
-| Navigate to user profile | 🔲 | |
-| Detect current page | 🔲 | |
+| Navigate to instagram.com | ✅ | `SafariDriver.navigateTo()` |
+| Navigate to /direct/inbox/ | ✅ | `navigateToInbox()` in dm-operations.ts |
+| Navigate to /direct/t/{thread_id}/ | ⚠️ | Via `openConversation()`, not direct URL nav |
+| Navigate to user profile | ✅ | Via `SafariDriver.navigateTo()` |
+| Detect current page | ✅ | `SafariDriver.getCurrentUrl()` + `isOnInstagram()` |
 
 ### Required Selectors
 ```javascript
@@ -48,11 +54,11 @@ window.location.pathname.startsWith('/direct/')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Detect logged in state | 🔲 | |
-| Detect login prompt | 🔲 | |
-| Handle 2FA prompt | 🔲 | Manual |
-| Handle session expiry | 🔲 | |
-| Detect rate limiting | 🔲 | |
+| Detect logged in state | ✅ | `SafariDriver.isLoggedIn()` |
+| Detect login prompt | ⚠️ | Inverse of isLoggedIn check |
+| Handle 2FA prompt | 🔲 | Manual intervention required |
+| Handle session expiry | 🔲 | No auto-detection |
+| Detect rate limiting | ⚠️ | Server-side tracking, no IG UI detection |
 
 ### Required Selectors
 ```javascript
@@ -72,12 +78,12 @@ document.body.innerText.includes('Action Blocked')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| List all conversations | 🔲 | |
-| Get conversation count | 🔲 | |
-| Get unread count | 🔲 | |
-| Scroll to load more | 🔲 | |
-| Search conversations | 🔲 | |
-| Filter by type (Primary/General/Requests) | 🔲 | |
+| List all conversations | ✅ | `listConversations()` → returns conversation array |
+| Get conversation count | ✅ | Returned from `listConversations().length` |
+| Get unread count | 🔲 | Not implemented |
+| Scroll to load more | 🔲 | Not implemented |
+| Search conversations | 🔲 | Not implemented |
+| Filter by type (Primary/General/Requests) | ✅ | `switchTab()` + `getAllConversations()` |
 
 ### Required Selectors
 ```javascript
@@ -99,11 +105,11 @@ document.querySelectorAll('[role="tab"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Click on conversation | 🔲 | |
-| Get selected conversation | 🔲 | |
-| Get conversation username | 🔲 | |
-| Get last message preview | 🔲 | |
-| Get message timestamp | 🔲 | |
+| Click on conversation | ✅ | `openConversation(username)` |
+| Get selected conversation | ⚠️ | Implicit from open state |
+| Get conversation username | ✅ | Returned in conversation list |
+| Get last message preview | ⚠️ | In conversation list data |
+| Get message timestamp | 🔲 | Not extracted |
 
 ### Required Selectors
 ```javascript
@@ -124,13 +130,13 @@ conversation.querySelector('span[class*="preview"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Get all messages in thread | 🔲 | |
-| Get message text | 🔲 | |
-| Get message sender | 🔲 | |
-| Get message timestamp | 🔲 | |
-| Detect message type (text/image/video/voice) | 🔲 | |
-| Scroll to load older messages | 🔲 | |
-| Mark as read | 🔲 | |
+| Get all messages in thread | ✅ | `readMessages(limit)` |
+| Get message text | ✅ | Included in message data |
+| Get message sender | ⚠️ | Basic sender detection |
+| Get message timestamp | 🔲 | Not extracted |
+| Detect message type (text/image/video/voice) | 🔲 | Text only |
+| Scroll to load older messages | 🔲 | Not implemented |
+| Mark as read | 🔲 | Implicit on open |
 
 ### Required Selectors
 ```javascript
@@ -153,13 +159,13 @@ message.querySelector('[class*="sent"]') // Your message
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Find message input | 🔲 | |
-| Clear input | 🔲 | |
-| Type message | 🔲 | |
-| Send message (Enter key) | 🔲 | |
-| Send message (Send button) | 🔲 | |
-| Verify message sent | 🔲 | |
-| Handle send failure | 🔲 | |
+| Find message input | ✅ | Via selector in dm-operations |
+| Clear input | ⚠️ | Implicit |
+| Type message | ✅ | JS injection |
+| Send message (Enter key) | ✅ | Primary send method |
+| Send message (Send button) | ⚠️ | Fallback available |
+| Verify message sent | ⚠️ | Basic result check |
+| Handle send failure | ⚠️ | Returns success/failure, no retry |
 
 ### Required Selectors
 ```javascript
@@ -183,10 +189,10 @@ textarea.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Click "New Message" button | 🔲 | |
-| Search for user | 🔲 | |
-| Select user from results | 🔲 | |
-| Start conversation | 🔲 | |
+| Click "New Message" button | ✅ | `startNewConversation()` |
+| Search for user | ✅ | Username search in new convo dialog |
+| Select user from results | ✅ | Auto-select from results |
+| Start conversation | ✅ | Full flow: open + type + send |
 
 ### Required Selectors
 ```javascript
@@ -207,12 +213,12 @@ document.querySelectorAll('[role="button"]').filter(b => b.innerText.includes(us
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Attach image | 🔲 | |
-| Attach video | 🔲 | |
-| Send voice message | 🔲 | |
-| Send GIF | 🔲 | |
-| Send emoji | 🔲 | |
-| React to message | 🔲 | |
+| Attach image | 🔲 | Not implemented |
+| Attach video | 🔲 | Not implemented |
+| Send voice message | 🔲 | Not implemented |
+| Send GIF | 🔲 | Not implemented |
+| Send emoji | ⚠️ | Emoji in text works, picker not automated |
+| React to message | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -233,11 +239,11 @@ document.querySelector('[aria-label="Choose a GIF"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Delete conversation | 🔲 | |
-| Mute conversation | 🔲 | |
-| Block user | 🔲 | |
-| Report conversation | 🔲 | |
-| Pin conversation | 🔲 | |
+| Delete conversation | 🔲 | Not implemented |
+| Mute conversation | 🔲 | Not implemented |
+| Block user | 🔲 | Not implemented |
+| Report conversation | 🔲 | Not implemented |
+| Pin conversation | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -255,11 +261,11 @@ document.querySelectorAll('[role="menuitem"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Navigate to requests | 🔲 | |
-| List pending requests | 🔲 | |
-| Accept request | 🔲 | |
-| Decline request | 🔲 | |
-| Get request count | 🔲 | |
+| Navigate to requests | ✅ | Via `switchTab('requests')` |
+| List pending requests | ✅ | Via `listConversations()` after tab switch |
+| Accept request | 🔲 | Not implemented |
+| Decline request | 🔲 | Not implemented |
+| Get request count | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -278,13 +284,13 @@ document.querySelector('button').filter(b => b.textContent === 'Decline')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Get username | 🔲 | |
-| Get display name | 🔲 | |
-| Get follower count | 🔲 | |
-| Get following count | 🔲 | |
-| Get bio | 🔲 | |
-| Check if verified | 🔲 | |
-| Check if following | 🔲 | |
+| Get username | ⚠️ | From conversation data, not profile scrape |
+| Get display name | 🔲 | Not implemented |
+| Get follower count | 🔲 | Not implemented |
+| Get following count | 🔲 | Not implemented |
+| Get bio | 🔲 | Not implemented |
+| Check if verified | 🔲 | Not implemented |
+| Check if following | 🔲 | Not implemented |
 
 ### Required Selectors
 ```javascript
@@ -305,11 +311,12 @@ document.querySelectorAll('[class*="stat"]')
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Detect rate limit warning | 🔲 | |
-| Detect action blocked | 🔲 | |
-| Implement delay between messages | 🔲 | |
-| Implement daily limits | 🔲 | |
-| Log all actions | 🔲 | |
+| Detect rate limit warning | 🔲 | No IG UI detection |
+| Detect action blocked | 🔲 | No IG UI detection |
+| Implement delay between messages | ✅ | Active hours enforcement |
+| Implement daily limits | ✅ | `messagesPerDay` enforced via middleware |
+| Implement hourly limits | ✅ | `messagesPerHour` enforced via middleware |
+| Log all actions | ⚠️ | Console logging only, no DB persistence |
 
 ### Safety Limits
 ```python
@@ -351,144 +358,119 @@ NEW_ACCOUNT_DMS_PER_DAY = 20
 
 ---
 
-## File Structure
+## Actual File Structure (TypeScript)
 
 ```
-Backend/
-├── automation/
-│   └── instagram_dm_automation.py      # Main automation
-├── services/
-│   └── instagram/
-│       ├── dm_service.py               # High-level DM service
-│       ├── dm_sender.py                # Message sending
-│       └── dm_reader.py                # Message reading
-└── scripts/
-    └── instagram_dm_test.py            # Test script
-```
-
----
-
-## Testing Checklist
-
-```bash
-# 1. Test navigation
-python -c "from automation.instagram_dm_automation import InstagramDMAutomation; dm=InstagramDMAutomation(); dm.navigate_to_inbox()"
-
-# 2. Test login check
-python -c "from automation.instagram_dm_automation import InstagramDMAutomation; dm=InstagramDMAutomation(); print(dm.check_login())"
-
-# 3. Test conversation list
-python -c "from automation.instagram_dm_automation import InstagramDMAutomation; dm=InstagramDMAutomation(); print(dm.get_conversations())"
-
-# 4. Test send message
-python -c "from automation.instagram_dm_automation import InstagramDMAutomation; dm=InstagramDMAutomation(); dm.send_message('username', 'Hello!')"
+packages/instagram-dm/
+├── src/
+│   ├── api/
+│   │   ├── server.ts        # Express REST API (port 3100)
+│   │   ├── client.ts        # Client library for other services
+│   │   └── index.ts         # API exports
+│   ├── automation/
+│   │   ├── safari-driver.ts # Safari AppleScript + JS execution
+│   │   ├── dm-operations.ts # Core DM functions
+│   │   ├── types.ts         # TypeScript interfaces
+│   │   └── index.ts         # Automation exports
+│   ├── utils/
+│   │   └── index.ts         # Helpers
+│   └── index.ts             # Package exports
+├── package.json
+└── tsconfig.json
 ```
 
 ---
 
-## Selector Investigation Script
+## API Endpoints (Implemented)
 
-```python
-# Run to investigate Instagram DM page structure
-python3 -c "
-import subprocess
-import time
-
-subprocess.run(['osascript', '-e', 
-    'tell application \"Safari\" to set URL of front document to \"https://www.instagram.com/direct/inbox/\"'])
-time.sleep(5)
-
-js = '''
-(function() {
-    var result = {
-        buttons: [],
-        inputs: [],
-        conversations: [],
-        url: window.location.href
-    };
-    
-    document.querySelectorAll('button').forEach((b, i) => {
-        if (i < 15) {
-            result.buttons.push({
-                text: b.textContent.trim().substring(0, 30),
-                ariaLabel: b.getAttribute('aria-label')
-            });
-        }
-    });
-    
-    document.querySelectorAll('input, textarea').forEach(i => {
-        result.inputs.push({
-            type: i.type || 'textarea',
-            placeholder: i.placeholder,
-            ariaLabel: i.getAttribute('aria-label')
-        });
-    });
-    
-    document.querySelectorAll('[role=\"listitem\"]').forEach((c, i) => {
-        if (i < 5) {
-            result.conversations.push({
-                text: c.innerText.substring(0, 50)
-            });
-        }
-    });
-    
-    return JSON.stringify(result, null, 2);
-})()
-'''
-
-print(subprocess.run(['osascript', '-e', 
-    f'tell application \"Safari\" to do JavaScript \"{js}\" in front document'],
-    capture_output=True, text=True).stdout)
-"
+```
+GET  /health                  ✅ Health check + rate limit status
+GET  /api/status              ✅ Login status, current URL
+GET  /api/rate-limits         ✅ Rate limit details
+PUT  /api/rate-limits         ✅ Update rate limits
+GET  /api/conversations       ✅ List conversations (current tab)
+GET  /api/conversations/all   ✅ All tabs (Primary/General/Requests)
+POST /api/inbox/navigate      ✅ Navigate to inbox
+POST /api/inbox/tab           ✅ Switch tab
+POST /api/conversations/open  ✅ Open conversation by username
+POST /api/conversations/new   ✅ Start new conversation
+GET  /api/messages            ✅ Read messages (with limit)
+POST /api/messages/send       ✅ Send in current convo (rate limited)
+POST /api/messages/send-to    ✅ Send to user (open/create + send)
+POST /api/execute             ✅ Raw JS execution
+PUT  /api/config              ✅ Update driver config
 ```
 
 ---
 
-## Integration with Warmth Score
+## 13. AI INTEGRATION
 
-```python
-# DM automation should integrate with warmth scoring
-from services.dm_warmth_system import DMWarmthManager
-
-warmth = DMWarmthManager()
-
-# Before sending DM
-contact = warmth.get_contact(platform='instagram', username=username)
-if contact.warmth_score < 0.3:
-    # Too cold - need more engagement first
-    pass
-elif contact.warmth_score > 0.7:
-    # Warm enough for promotional content
-    pass
-else:
-    # Medium - send value-first content
-    pass
-
-# After sending DM
-warmth.log_interaction(
-    platform='instagram',
-    username=username,
-    interaction_type='dm_sent',
-    sentiment='positive'
-)
-```
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| AI DM generation | ✅ | `generateAIDM()` via OpenAI GPT-4o |
+| Personalized by recipient | ✅ | Username + purpose + topic |
+| Fallback on API failure | ✅ | Static fallback message |
+| AI endpoint exposed | 🔲 | Function exists but no dedicated API route |
 
 ---
 
-## Current Files to Check
+## 14. CRM / DATABASE INTEGRATION
 
-| File | Purpose |
-|------|---------|
-| `services/instagram/comment_automation.py` | Existing IG automation |
-| `services/dm_warmth_system.py` | Warmth scoring |
-| `automation/safari_session_manager.py` | Session management |
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Log DMs to Supabase | ❌ | Not wired |
+| Contact creation on DM | ❌ | Not wired |
+| Relationship scoring | ❌ | Not implemented |
+| Outreach sequence tracking | ❌ | Not implemented |
+| Template system | ❌ | Not implemented |
 
 ---
 
-## Next Steps
+## 15. SCHEDULER INTEGRATION
 
-1. Investigate actual Instagram DM page selectors
-2. Create `instagram_dm_automation.py`
-3. Implement core send/read functions
-4. Add rate limiting and safety
-5. Integrate with warmth scoring system
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Scheduled DM sessions | ❌ | Not wired to scheduler |
+| Automated daily touches | ❌ | Not implemented |
+| Cadence enforcement | ❌ | Not implemented |
+
+---
+
+## Summary Scorecard
+
+| Category | Score | Notes |
+|----------|-------|-------|
+| Navigation | 4/5 | ✅ Solid |
+| Authentication | 2/5 | ⚠️ Basic login check only |
+| DM Inbox | 4/6 | ✅ Core works, missing scroll/search/unread count |
+| Conversation Selection | 3/5 | ✅ Core works |
+| Message Reading | 2/7 | ⚠️ Text only, no timestamps/types |
+| Message Sending | 5/7 | ✅ Good |
+| New Conversation | 4/4 | ✅ Complete |
+| Media Handling | 0/6 | 🔲 Not started |
+| Conversation Mgmt | 0/5 | 🔲 Not started |
+| Message Requests | 2/5 | ⚠️ Can navigate/list, can't accept/decline |
+| User Profile | 0/7 | 🔲 Not started |
+| Rate Limiting | 3/5 | ✅ Server-side, no IG UI detection |
+| AI Integration | 3/4 | ✅ Working |
+| CRM Integration | 0/5 | ❌ Not wired |
+| Scheduler | 0/3 | ❌ Not wired |
+| **TOTAL** | **32/79 (40%)** | |
+
+---
+
+## Next Steps (Priority Order)
+
+1. ❌ Wire CRM logging (Supabase) for all DM send/receive
+2. ❌ Add AI DM generation API endpoint
+3. ❌ Add message timestamp extraction
+4. ❌ Add unread count detection
+5. ❌ Add conversation scroll/load more
+6. ❌ Wire scheduler for automated sessions
+7. 🔲 Accept/decline message requests
+8. 🔲 User profile extraction from DM context
+
+---
+
+**Last Updated:** February 6, 2026  
+**Audited Against:** `packages/instagram-dm/src/` (TypeScript)

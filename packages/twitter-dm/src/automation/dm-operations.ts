@@ -193,58 +193,44 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 
 /**
  * Send a DM to the current open conversation.
+ * Uses OS-level keystrokes for React/Draft.js compatibility.
  */
 export async function sendMessage(text: string, driver?: SafariDriver): Promise<SendMessageResult> {
   const d = driver || getDefaultDriver();
   
-  // Find message input (Twitter uses Draft.js - requires execCommand)
-  const inputFound = await d.executeJS(`
-    (function() {
-      var input = document.querySelector('[data-testid="dm-composer-textarea"]') ||
-                  document.querySelector('[role="textbox"]') ||
-                  document.querySelector('[contenteditable="true"]');
-      if (input) {
-        input.focus();
-        return 'found';
-      }
-      return 'not_found';
-    })()
-  `);
+  // Focus message input — try selectors one at a time
+  const selectors = [
+    '[data-testid="dm-composer-textarea"]',
+    '[role="textbox"]',
+    '[contenteditable="true"]',
+  ];
+  let inputFound = false;
+  for (const sel of selectors) {
+    inputFound = await d.focusElement(sel);
+    if (inputFound) break;
+  }
   
-  if (inputFound !== 'found') {
+  if (!inputFound) {
     return { success: false, error: 'Message input not found' };
   }
   
   await d.wait(500);
   
-  // Type message using execCommand for Draft.js compatibility
-  const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  
-  await d.executeJS(`
-    (function() {
-      var input = document.querySelector('[data-testid="dm-composer-textarea"]') ||
-                  document.querySelector('[role="textbox"]');
-      if (input) {
-        input.focus();
-        document.execCommand('insertText', false, "${escaped}");
-        return 'typed';
-      }
-      return 'failed';
-    })()
-  `);
+  // Type via OS-level keystrokes (works with React/Draft.js)
+  const typed = await d.typeViaKeystrokes(text);
+  if (!typed) {
+    return { success: false, error: 'Failed to type message via keystrokes' };
+  }
   
   await d.wait(500);
   
-  // Click send button
+  // Try clicking the send button first (Twitter has a visible send button)
   const sendResult = await d.executeJS(`
     (function() {
       var btn = document.querySelector('[data-testid="dm-composer-send-button"]');
       if (!btn) btn = document.querySelector('[aria-label="Send"]');
-      if (btn) {
-        btn.click();
-        return 'sent';
-      }
-      return 'no_send_button';
+      if (btn) { btn.click(); return 'sent'; }
+      return 'no_button';
     })()
   `);
   
@@ -253,7 +239,14 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
     return { success: true };
   }
   
-  return { success: false, error: 'Could not send message' };
+  // Fallback: press Enter via OS-level
+  const sent = await d.pressEnter();
+  if (!sent) {
+    return { success: false, error: 'Could not send message' };
+  }
+  
+  await d.wait(1000);
+  return { success: true };
 }
 
 /**
@@ -467,8 +460,44 @@ export async function sendDMByUsername(
   })()`);
   
   if (sendResult.includes('sent')) {
-    console.log('   ✅ Message sent!');
-    return { success: true, username };
+    console.log('   ✅ Message sent! Verifying...');
+    
+    // Post-send verification: check message text appeared in conversation
+    await d.wait(2000);
+    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const verifyResult = await d.executeJS(`
+      (function() {
+        var body = document.body.innerText;
+        return body.includes('${snippet}') ? 'verified' : 'not_found';
+      })()
+    `);
+    
+    // Get recipient from conversation header
+    const recipientCheck = await d.executeJS(`
+      (function() {
+        // Strategy 1: DM conversation header with testid
+        var header = document.querySelector('[data-testid="conversation_header"] span');
+        if (header && header.textContent.trim().length < 60) return header.textContent.trim();
+        // Strategy 2: Look for display name in header area
+        var spans = document.querySelectorAll('span, h2');
+        for (var i = 0; i < spans.length; i++) {
+          var r = spans[i].getBoundingClientRect();
+          var t = (spans[i].textContent || '').trim();
+          if (r.width > 0 && r.y < 80 && r.y > 10 && t.length > 2 && t.length < 40 && !t.includes('keyboard') && !t.includes('View') && !t.includes('Back')) {
+            return t;
+          }
+        }
+        return '';
+      })()
+    `);
+    
+    console.log('   🔍 Verified:', verifyResult === 'verified', '| Recipient:', recipientCheck);
+    return { 
+      success: true, 
+      username,
+      verified: verifyResult === 'verified',
+      verifiedRecipient: recipientCheck || username,
+    };
   }
   
   return { success: false, error: 'Could not find Send button', username };

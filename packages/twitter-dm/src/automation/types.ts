@@ -33,6 +33,8 @@ export interface SendMessageResult {
   success: boolean;
   error?: string;
   messageId?: string;
+  verified?: boolean;
+  verifiedRecipient?: string;
 }
 
 export interface NavigationResult {
@@ -45,6 +47,8 @@ export interface ProfileDMResult {
   success: boolean;
   error?: string;
   username?: string;
+  verified?: boolean;
+  verifiedRecipient?: string;
 }
 
 export interface AutomationConfig {

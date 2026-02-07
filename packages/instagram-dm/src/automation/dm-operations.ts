@@ -15,6 +15,40 @@ import type {
 
 const INSTAGRAM_DM_URL = 'https://www.instagram.com/direct/inbox/';
 
+// Thread ID cache: username → threadId
+// Once discovered, thread-based sending is the most reliable method.
+const threadCache = new Map<string, string>();
+
+/**
+ * Register a known username → threadId mapping.
+ */
+export function registerThread(username: string, threadId: string): void {
+  threadCache.set(username.toLowerCase(), threadId);
+}
+
+/**
+ * Look up a cached threadId for a username.
+ */
+export function getThreadId(username: string): string | undefined {
+  return threadCache.get(username.toLowerCase());
+}
+
+/**
+ * Get all cached thread mappings.
+ */
+export function getAllThreads(): Record<string, string> {
+  return Object.fromEntries(threadCache);
+}
+
+/**
+ * Extract threadId from current Safari URL if on a /direct/t/ page.
+ */
+async function captureThreadId(driver: SafariDriver): Promise<string | undefined> {
+  const url = await driver.getCurrentUrl();
+  const match = url.match(/\/direct\/t\/(\d+)/);
+  return match ? match[1] : undefined;
+}
+
 /**
  * Navigate to Instagram DM inbox.
  */
@@ -39,6 +73,7 @@ export async function navigateToInbox(driver?: SafariDriver): Promise<Navigation
 
 /**
  * List conversations from current inbox view.
+ * Captures threadId from /direct/t/{id} links for reliable DM sending.
  */
 export async function listConversations(driver?: SafariDriver): Promise<DMConversation[]> {
   const d = driver || getDefaultDriver();
@@ -46,31 +81,67 @@ export async function listConversations(driver?: SafariDriver): Promise<DMConver
   const result = await d.executeJS(`
     (function() {
       var conversations = [];
-      var imgs = document.querySelectorAll('img[alt*="profile picture"]');
+      var seen = {};
       
-      imgs.forEach(function(img) {
-        var alt = img.getAttribute('alt') || '';
-        var username = alt.replace("'s profile picture", '').trim();
-        if (username && username.length > 1) {
-          var container = img.closest('div[role="button"]') || img.closest('a');
-          var textEl = container ? container.querySelector('span') : null;
+      // Strategy 1: Find conversation links with thread IDs
+      var links = document.querySelectorAll('a[href*="/direct/t/"]');
+      links.forEach(function(link) {
+        var href = link.getAttribute('href') || '';
+        var match = href.match(/\\/direct\\/t\\/([0-9]+)/);
+        var threadId = match ? match[1] : '';
+        
+        var img = link.querySelector('img[alt*="profile picture"]');
+        var username = '';
+        if (img) {
+          username = (img.getAttribute('alt') || '').replace("'s profile picture", '').trim();
+        }
+        if (!username) {
+          var span = link.querySelector('span[dir="auto"]');
+          if (span) username = span.textContent.trim();
+        }
+        
+        if (username && !seen[username]) {
+          seen[username] = true;
           var lastMsg = '';
-          if (textEl) {
-            var spans = container.querySelectorAll('span');
-            for (var i = 0; i < spans.length; i++) {
-              var text = spans[i].innerText || '';
-              if (text.length > 10 && text !== username) {
-                lastMsg = text;
-                break;
-              }
+          var spans = link.querySelectorAll('span');
+          for (var i = spans.length - 1; i >= 0; i--) {
+            var t = (spans[i].textContent || '').trim();
+            if (t.length > 5 && t !== username && t.length < 200) {
+              lastMsg = t;
+              break;
             }
           }
           conversations.push(JSON.stringify({
             username: username,
+            threadId: threadId,
             lastMessage: lastMsg.substring(0, 100)
           }));
         }
       });
+      
+      // Strategy 2: Fallback to profile pictures if no links found
+      if (conversations.length === 0) {
+        var imgs = document.querySelectorAll('img[alt*="profile picture"]');
+        imgs.forEach(function(img) {
+          var alt = img.getAttribute('alt') || '';
+          var username = alt.replace("'s profile picture", '').trim();
+          if (username && username.length > 1 && !seen[username]) {
+            seen[username] = true;
+            var container = img.closest('a[href*="/direct/t/"]');
+            var threadId = '';
+            if (container) {
+              var href = container.getAttribute('href') || '';
+              var m = href.match(/\\/direct\\/t\\/([0-9]+)/);
+              threadId = m ? m[1] : '';
+            }
+            conversations.push(JSON.stringify({
+              username: username,
+              threadId: threadId,
+              lastMessage: ''
+            }));
+          }
+        });
+      }
       
       return '[' + conversations.slice(0, 30).join(',') + ']';
     })()
@@ -82,6 +153,96 @@ export async function listConversations(driver?: SafariDriver): Promise<DMConver
   } catch {
     return [];
   }
+}
+
+/**
+ * Send a DM by navigating directly to a thread URL.
+ * Most reliable Instagram DM method — no search or profile navigation needed.
+ */
+export async function sendDMToThread(
+  threadId: string,
+  message: string,
+  driver?: SafariDriver
+): Promise<SendMessageResult> {
+  const d = driver || getDefaultDriver();
+  
+  const threadUrl = `https://www.instagram.com/direct/t/${threadId}`;
+  const navOk = await d.navigateTo(threadUrl);
+  if (!navOk) return { success: false, error: 'Failed to navigate to thread' };
+  await d.wait(3000);
+  
+  // Verify we're in a DM thread
+  const pageCheck = await d.executeJS(`
+    (function() {
+      if (location.href.includes('/direct/t/')) return 'thread';
+      if (location.href.includes('/accounts/login')) return 'not_logged_in';
+      return 'unknown_' + location.href;
+    })()
+  `);
+  
+  if (pageCheck === 'not_logged_in') {
+    return { success: false, error: 'Not logged in to Instagram' };
+  }
+  if (pageCheck !== 'thread') {
+    return { success: false, error: 'Did not reach thread page: ' + pageCheck };
+  }
+  
+  // Wait for message input to appear
+  const inputReady = await d.waitForElement(
+    'div[contenteditable="true"][role="textbox"]',
+    5000
+  );
+  if (!inputReady) {
+    // Try alternate selector
+    const altReady = await d.waitForElement('textarea[placeholder*="Message"]', 3000);
+    if (!altReady) {
+      return { success: false, error: 'Message input not found in thread' };
+    }
+  }
+  
+  // Verify recipient identity from thread header
+  const recipientCheck = await d.executeJS(`
+    (function() {
+      // Strategy 1: Look for profile picture alt text in header
+      var imgs = document.querySelectorAll('img[alt*="profile picture"]');
+      for (var i = 0; i < imgs.length; i++) {
+        var r = imgs[i].getBoundingClientRect();
+        if (r.y < 80) {
+          return (imgs[i].alt || '').replace("'s profile picture", '').trim();
+        }
+      }
+      // Strategy 2: Look for username-like text in header area
+      var spans = document.querySelectorAll('span, a');
+      for (var j = 0; j < spans.length; j++) {
+        var r2 = spans[j].getBoundingClientRect();
+        var t = (spans[j].textContent || '').trim();
+        if (r2.width > 0 && r2.y < 70 && r2.y > 10 && t.length > 2 && t.length < 40 && t !== 'Instagram' && !t.includes('Direct')) {
+          return t;
+        }
+      }
+      return '';
+    })()
+  `);
+  
+  // Send via the standard sendMessage (uses OS-level keystrokes)
+  const result = await sendMessage(message, d);
+  
+  if (result.success) {
+    // Post-send verification: check message text appeared in conversation
+    await d.wait(2000);
+    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const verified = await d.executeJS(`
+      (function() {
+        return document.body.innerText.includes('${snippet}') ? 'yes' : 'no';
+      })()
+    `);
+    return {
+      ...result,
+      verified: verified === 'yes',
+      verifiedRecipient: recipientCheck || undefined,
+    };
+  }
+  return result;
 }
 
 /**
@@ -216,89 +377,51 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 
 /**
  * Send a DM to the current open conversation.
+ * Uses OS-level keystrokes for React contenteditable compatibility.
  */
 export async function sendMessage(text: string, driver?: SafariDriver): Promise<SendMessageResult> {
   const d = driver || getDefaultDriver();
   
-  // Find message input
-  const inputFound = await d.executeJS(`
-    (function() {
-      var input = document.querySelector('textarea[placeholder*="Message"]') ||
-                  document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-                  document.querySelector('[aria-label*="Message"]');
-      if (input) {
-        input.focus();
-        return 'found';
-      }
-      return 'not_found';
-    })()
-  `);
+  // Focus message input — try selectors one at a time (comma selectors break through AppleScript)
+  const selectors = [
+    'div[contenteditable="true"][role="textbox"]',
+    'textarea[placeholder*="Message"]',
+    '[aria-label*="Message"]',
+  ];
   
-  if (inputFound !== 'found') {
+  let inputFound = false;
+  for (const sel of selectors) {
+    inputFound = await d.focusElement(sel);
+    if (inputFound) break;
+  }
+  
+  if (!inputFound) {
     return { success: false, error: 'Message input not found' };
   }
   
   await d.wait(500);
   
-  // Type message
-  const escaped = text.replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  
-  await d.executeJS(`
-    (function() {
-      var input = document.querySelector('textarea[placeholder*="Message"]') ||
-                  document.querySelector('div[contenteditable="true"][role="textbox"]');
-      if (input) {
-        if (input.tagName === 'TEXTAREA') {
-          input.value = '${escaped}';
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-        } else {
-          input.innerText = '${escaped}';
-          input.dispatchEvent(new InputEvent('input', { bubbles: true }));
-        }
-        return 'typed';
-      }
-      return 'failed';
-    })()
-  `);
+  // Type via OS-level keystrokes (works with React)
+  const typed = await d.typeViaKeystrokes(text);
+  if (!typed) {
+    return { success: false, error: 'Failed to type message via keystrokes' };
+  }
   
   await d.wait(500);
   
-  // Click send button
-  const sendResult = await d.executeJS(`
-    (function() {
-      // Look for send button
-      var btns = document.querySelectorAll('button, div[role="button"]');
-      for (var i = 0; i < btns.length; i++) {
-        var text = (btns[i].innerText || '').toLowerCase();
-        var label = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        if (text === 'send' || label.includes('send')) {
-          btns[i].click();
-          return 'sent';
-        }
-      }
-      
-      // Fallback: press Enter
-      var input = document.querySelector('textarea[placeholder*="Message"]') ||
-                  document.querySelector('div[contenteditable="true"][role="textbox"]');
-      if (input) {
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-        return 'sent_enter';
-      }
-      
-      return 'no_send_button';
-    })()
-  `);
-  
-  if (sendResult === 'sent' || sendResult === 'sent_enter') {
-    await d.wait(1000);
-    return { success: true };
+  // Send via Enter key (OS-level)
+  const sent = await d.pressEnter();
+  if (!sent) {
+    return { success: false, error: 'Failed to press Enter to send' };
   }
   
-  return { success: false, error: 'Could not send message' };
+  await d.wait(1000);
+  return { success: true };
 }
 
 /**
- * Start a new conversation with a user.
+ * Start a new conversation with a user via the New Message dialog.
+ * Uses OS-level keystrokes for search input.
  */
 export async function startNewConversation(username: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
@@ -322,26 +445,18 @@ export async function startNewConversation(username: string, driver?: SafariDriv
   
   await d.wait(1500);
   
-  // Type username in search
-  await d.executeJS(`
-    (function() {
-      var input = document.querySelector('input[placeholder*="Search"]') ||
-                  document.querySelector('input[name="queryBox"]');
-      if (input) {
-        input.value = '${username}';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        return 'typed';
-      }
-      return 'not_found';
-    })()
-  `);
+  // Focus search input then type via OS keystrokes
+  const searchFocused = await d.focusElement('input[placeholder*="Search"], input[name="queryBox"]');
+  if (!searchFocused) return false;
   
+  await d.wait(300);
+  await d.typeViaKeystrokes(username);
   await d.wait(2000);
   
-  // Click on first result
+  // Click on first matching result
   const selectResult = await d.executeJS(`
     (function() {
-      var results = document.querySelectorAll('div[role="button"]');
+      var results = document.querySelectorAll('div[role="button"], div[role="listitem"]');
       for (var i = 0; i < results.length; i++) {
         if ((results[i].innerText || '').toLowerCase().includes('${username.toLowerCase()}')) {
           results[i].click();
@@ -352,10 +467,7 @@ export async function startNewConversation(username: string, driver?: SafariDriv
     })()
   `);
   
-  if (selectResult !== 'selected') {
-    return false;
-  }
-  
+  if (selectResult !== 'selected') return false;
   await d.wait(1000);
   
   // Click Next/Chat button
@@ -375,6 +487,124 @@ export async function startNewConversation(username: string, driver?: SafariDriv
   
   await d.wait(1500);
   return true;
+}
+
+/**
+ * Send a DM by navigating to a user's profile first (profile-to-DM flow).
+ * Most reliable method — works even if user isn't in conversation list.
+ */
+export async function sendDMFromProfile(
+  username: string,
+  message: string,
+  driver?: SafariDriver
+): Promise<SendMessageResult> {
+  const d = driver || getDefaultDriver();
+  
+  // Navigate to profile
+  const profileUrl = `https://www.instagram.com/${username.replace('@', '')}/`;
+  const navOk = await d.navigateTo(profileUrl);
+  if (!navOk) return { success: false, error: 'Failed to navigate to profile' };
+  await d.wait(3000);
+  
+  // Check profile loaded
+  const profileStatus = await d.executeJS(`
+    (function() {
+      if (document.body.innerText.includes("Sorry, this page")) return 'not_found';
+      var btns = document.querySelectorAll('div[role="button"], button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].textContent.trim() === 'Message') return 'ready';
+      }
+      return 'no_message_btn';
+    })()
+  `);
+  
+  if (profileStatus === 'not_found') {
+    return { success: false, error: `Profile @${username} not found` };
+  }
+  if (profileStatus === 'no_message_btn') {
+    return { success: false, error: 'No Message button on profile (may need to follow first)' };
+  }
+  
+  // Click Message button
+  const clicked = await d.executeJS(`
+    (function() {
+      var btns = document.querySelectorAll('div[role="button"], button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].textContent.trim() === 'Message') {
+          btns[i].click();
+          return 'clicked';
+        }
+      }
+      return 'not_found';
+    })()
+  `);
+  
+  if (clicked !== 'clicked') {
+    return { success: false, error: 'Could not click Message button' };
+  }
+  
+  await d.wait(3000);
+  
+  // Wait for message input
+  const inputReady = await d.waitForElement(
+    'div[contenteditable="true"][role="textbox"], textarea[placeholder*="Message"]',
+    5000
+  );
+  
+  if (!inputReady) {
+    return { success: false, error: 'DM composer did not open' };
+  }
+  
+  // Capture threadId from URL for future use
+  const threadId = await captureThreadId(d);
+  if (threadId) {
+    registerThread(username, threadId);
+  }
+  
+  // Send via the standard sendMessage (which uses keystrokes)
+  const result = await sendMessage(message, d);
+  
+  if (result.success) {
+    await d.wait(2000);
+    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const verified = await d.executeJS(`
+      (function() {
+        return document.body.innerText.includes('${snippet}') ? 'yes' : 'no';
+      })()
+    `);
+    return {
+      ...result,
+      verified: verified === 'yes',
+      verifiedRecipient: username,
+    };
+  }
+  return result;
+}
+
+/**
+ * Smart DM send: tries thread URL first (if cached), then profile-to-DM.
+ * This is the recommended single entry point for sending a DM by username.
+ */
+export async function smartSendDM(
+  username: string,
+  message: string,
+  driver?: SafariDriver
+): Promise<SendMessageResult & { method: string }> {
+  const d = driver || getDefaultDriver();
+  const cleanUsername = username.replace('@', '').toLowerCase();
+  
+  // Check thread cache first
+  const cachedThreadId = getThreadId(cleanUsername);
+  if (cachedThreadId) {
+    const result = await sendDMToThread(cachedThreadId, message, d);
+    if (result.success) {
+      return { ...result, method: 'thread-url' };
+    }
+  }
+  
+  // Fall back to profile-to-DM
+  const result = await sendDMFromProfile(cleanUsername, message, d);
+  return { ...result, method: 'profile-to-dm' };
 }
 
 /**

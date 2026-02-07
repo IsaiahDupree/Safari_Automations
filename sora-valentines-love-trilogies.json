@@ -1,0 +1,253 @@
+{
+  "generatedAt": "2026-02-05T00:00:00.000Z",
+  "character": "@isaiahdupree",
+  "theme": "Valentine's Day - The Many Faces of Love",
+  "totalMovies": 8,
+  "totalVideos": 24,
+  "characterDescription": {
+    "isaiahdupree": "A tall, handsome man with warm brown skin, kind eyes that hold depth and wisdom, a gentle smile that lights up when genuine, strong hands that are tender when they need to be. He wears his heart visibly - emotions play across his face. Style: sophisticated casual, often in earth tones and blues.",
+    "note": "Each trilogy features a unique love interest with consistent traits throughout that story."
+  },
+  "movies": [
+    {
+      "id": 1,
+      "title": "FIRST LIGHT",
+      "loveType": "First Love / Innocent Love",
+      "theme": "The magic of falling in love for the first time - pure, terrifying, beautiful",
+      "loveInterest": {
+        "name": "Liesel",
+        "description": "A free-spirited artist with long flowing honey-blonde hair, porcelain skin, striking ice-blue eyes, paint-stained fingers. She has high cheekbones and a captivating accent. She wears bohemian dresses and delicate silver jewelry."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Collision",
+          "stage": "Meeting - The Spark",
+          "prompt": "@isaiahdupree, wearing a blue linen shirt, reaches for the same book at a sunlit bookstore as Maya, a beautiful woman with long flowing locs and paint-stained fingers. Their hands touch. Time freezes. Floating text appears like thoughts: his reads 'Her smile... I forgot how to breathe' while hers reads 'Those eyes see right through me.' They both pull back, laughing nervously, the afternoon light catching dust motes dancing between them like magic."
+        },
+        {
+          "part": 2,
+          "title": "The Unraveling",
+          "stage": "Vulnerability - Letting Walls Down",
+          "prompt": "@isaiahdupree and Maya sit on a rooftop at golden hour, her easel nearby with a half-finished painting of him. He's telling her something difficult - we see his inner thought float: 'If I show her who I really am, will she stay?' She reaches for his hand. Her thought appears: 'He doesn't see how beautiful his broken pieces are.' Paint smudges on her colorful sundress. Tears well in both their eyes as the city glows amber below them."
+        },
+        {
+          "part": 3,
+          "title": "The Leap",
+          "stage": "Declaration - Choosing Love",
+          "prompt": "@isaiahdupree runs through rain-soaked streets at night, streetlights creating halos in the downpour. He reaches Maya's apartment, soaking wet, and she opens the door in her painting clothes. Without words, he cups her face. Inner dialogue overlaps: his says 'I've never been more terrified or more certain' and hers says 'Finally. Finally someone brave enough to stay.' They kiss in the doorway as rain pours behind him, her silver rings catching the light as she pulls him inside."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "OCEAN BETWEEN US",
+      "loveType": "Long-Distance Love",
+      "theme": "Love that survives separation - the ache of distance and the power of devotion",
+      "loveInterest": {
+        "name": "Amara",
+        "description": "A graceful woman with deep brown skin, close-cropped natural hair, elegant neck, and a smile that holds both strength and softness. A journalist who wears tailored clothes and her grandmother's gold pendant always."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Goodbye",
+          "stage": "Separation - Love Tested by Distance",
+          "prompt": "@isaiahdupree holds Amara, a graceful woman with close-cropped natural hair and her grandmother's gold pendant, at an airport terminal. Final boarding call echoes. Her thought appears: 'Six months. 4,380 miles. Can love survive numbers?' His thought: 'I'm not losing her to geography.' They press foreheads together, both crying but trying to smile. She touches his face one last time, turns, walks toward the gate. He watches until she disappears, his reflection ghostly in the terminal glass."
+        },
+        {
+          "part": 2,
+          "title": "The Wait",
+          "stage": "Longing - Finding Connection Across Miles",
+          "prompt": "Split screen: @isaiahdupree sits alone at 3am, phone glowing, while Amara sits in golden daylight in a foreign city, same phone glow. They're video calling. Her elegant neck visible, gold pendant catching light. His thought: 'She's never looked more beautiful than in pixels at 3am.' Her thought: 'His tired eyes still make my heart race.' They fall asleep on the call, screens side by side, her tailored jacket draped on a chair, his hand reaching toward the screen as if he could touch her."
+        },
+        {
+          "part": 3,
+          "title": "The Return",
+          "stage": "Reunion - Love Proven",
+          "prompt": "@isaiahdupree waits in an arrival terminal, holding flowers that tremble in his hands. Crowds part. Amara appears, running, her close-cropped hair catching the light, gold pendant bouncing. She drops her bags and leaps into his arms. Inner thoughts merge into one: 'Every mile. Every sleepless night. Worth it.' They spin slowly as travelers flow around them, oblivious to the universe contained in their embrace. He kisses her tears and she laughs against his lips."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "EMBERS",
+      "loveType": "Second Chance Love",
+      "theme": "Love lost and found again - forgiveness, growth, and choosing each other twice",
+      "loveInterest": {
+        "name": "Zara",
+        "description": "His ex-wife, a strong-featured woman with striking silver streaks in her black curly hair, laugh lines she's earned, warm amber eyes. She wears simple gold hoops and carries herself with hard-won confidence."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Encounter",
+          "stage": "Unexpected Meeting - Old Wounds Surface",
+          "prompt": "@isaiahdupree freezes in a grocery store aisle. At the other end stands Zara, his ex-wife, her black curly hair now with striking silver streaks, same gold hoops, same amber eyes that once knew every part of him. Their carts nearly collide. His thought: 'Three years. She's more beautiful. I still can't breathe around her.' Her thought: 'He looks... different. Softer. The man I always knew was in there.' Awkward smiles. Neither can walk away."
+        },
+        {
+          "part": 2,
+          "title": "The Reckoning",
+          "stage": "Confronting the Past - Honest Words Finally Spoken",
+          "prompt": "@isaiahdupree and Zara sit across from each other at a quiet café, coffee growing cold between them. Her silver-streaked curls catch window light. Tears stream down both faces. His floating thought: 'I was so broken then. I broke us.' Her thought: 'We were both drowning. Neither knew how to ask for help.' She reaches across the table. Their hands meet. 'I forgive you,' she says aloud. 'I forgive myself,' he responds. Rain begins outside, washing the world clean."
+        },
+        {
+          "part": 3,
+          "title": "The Vow",
+          "stage": "Second Beginning - Choosing Each Other Again",
+          "prompt": "@isaiahdupree and Zara stand in a small garden at sunset, intimate gathering of friends behind them. She wears cream, he wears navy. Same gold hoops she always wore. His thought: 'This time I choose you with my eyes open.' Her thought: 'We're not who we were. We're who we've become.' He slides a new ring onto her finger - different from the first. She cups his face, amber eyes full of tears. 'Again,' she whispers. 'Always,' he answers. They kiss as golden light bathes them both."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "THROUGH THE FIRE",
+      "loveType": "Love Through Adversity",
+      "theme": "Love that holds you up when life tears you down - partnership in darkness",
+      "loveInterest": {
+        "name": "Nina",
+        "description": "A resilient woman with warm brown skin, natural hair often wrapped in colorful headwraps, bright eyes that have seen pain but refuse to dim, and a nurturing presence. She wears soft cardigans and always smells of lavender."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Fall",
+          "stage": "Crisis Hits - Love Faces the Storm",
+          "prompt": "@isaiahdupree sits in a hospital hallway, head in hands, world crumbling. Nina rushes in wearing her colorful headwrap and soft cardigan, drops to her knees beside him. The news is devastating - his mother. His thought: 'I'm drowning. I don't know how to survive this.' Her thought: 'I can't fix this. I can only stay.' She wraps herself around him as he breaks, her arms a shelter. Harsh fluorescent lights. His tears soak her shoulder. She doesn't let go."
+        },
+        {
+          "part": 2,
+          "title": "The Darkness",
+          "stage": "Weathering Together - When One Carries the Other",
+          "prompt": "@isaiahdupree lies in bed unable to move, grief consuming him. Nina appears with tea, opens curtains gently. Weeks of this. His thought: 'I have nothing to give her. Why does she stay?' Her thought, fierce and tender: 'This is what love is. Not the sunshine. This.' She doesn't ask him to talk. Just sits beside him, her hand on his chest, headwrap bright against the gray room. He finally reaches up and holds her hand. First movement in days. She exhales relief she's been hiding."
+        },
+        {
+          "part": 3,
+          "title": "The Rise",
+          "stage": "Emergence - Gratitude and Renewed Bond",
+          "prompt": "@isaiahdupree and Nina slow dance in their living room, no music, just holding each other. Months later. He's found his way back. His thought: 'She saw me at my worst and loved me harder.' Her thought: 'He's rising. We're rising.' Soft evening light through curtains. He pulls back to look at her, touches her colorful headwrap reverently. 'You saved me,' he whispers. She shakes her head: 'We saved each other.' Their foreheads touch, breathing in sync, lavender filling the air."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "MAGNETIC",
+      "loveType": "Passionate / Intense Love",
+      "theme": "Love as a force of nature - consuming, electric, impossible to resist",
+      "loveInterest": {
+        "name": "Sage",
+        "description": "A magnetic woman with rich dark skin, bold red lips, confident stride, natural hair styled dramatically different each time. She commands every room, wears statement pieces, and her energy is fire and silk combined."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Pull",
+          "stage": "Attraction - Gravity Between Souls",
+          "prompt": "@isaiahdupree sees Sage across a crowded rooftop party - rich dark skin, bold red lips, natural hair in a dramatic updo. The crowd seems to blur around her. She catches his stare. Neither looks away. His thought: 'Dangerous. She's dangerous. I don't care.' Her thought: 'Finally. Someone who can handle the fire.' Slow motion as they walk toward each other, the city lights behind them, music pulsing. They stop inches apart. Chemistry visible in the charged air between them."
+        },
+        {
+          "part": 2,
+          "title": "The Collision",
+          "stage": "Intensity - Love That Burns",
+          "prompt": "@isaiahdupree and Sage argue passionately in a rain-soaked alley, both soaking wet. Her hair is different now - wild and free. His thought: 'I've never felt this alive. Not even when we're fighting.' Her thought: 'He matches me. Finally someone who isn't afraid of my fire.' Anger transforms. He pulls her close, she grabs his collar. Their breath mingles in the rain. 'I can't quit you,' he says. 'Then stop trying,' she answers. They kiss like the world is ending around them."
+        },
+        {
+          "part": 3,
+          "title": "The Surrender",
+          "stage": "Acceptance - Choosing the Fire",
+          "prompt": "@isaiahdupree and Sage lie tangled in white sheets at sunrise, her hair now in loose twists across the pillow. Post-storm calm. His thought: 'I don't want safe. I want her.' Her thought: 'He sees all of me - the chaos and the calm - and stays.' She traces patterns on his chest. He catches her hand, kisses her red-stained fingertips. 'This is terrifying,' she admits. 'I know,' he says, pulling her closer. 'Let's be terrified together.' Golden sunrise bathes their intertwined silhouettes."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "SILENT KNOWING",
+      "loveType": "Soulmate Love",
+      "theme": "Love that transcends words - deep understanding, twin flames finding each other",
+      "loveInterest": {
+        "name": "Iris",
+        "description": "A deeply intuitive woman with gentle features, long sisterlocks often adorned with gold cuffs, knowing eyes that seem ancient, a serene presence. She wears flowing earth tones and moves like water."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Recognition",
+          "stage": "First Sight - Souls That Remember",
+          "prompt": "@isaiahdupree and Iris lock eyes at a meditation retreat, complete strangers. Her sisterlocks adorned with gold cuffs, wearing flowing earth tones. Neither speaks. Neither needs to. His thought: 'I know you. From somewhere older than this life.' Her thought: 'There you are. I've been waiting.' The world falls silent around them. They walk toward each other as if pulled by invisible strings. When they finally stand face to face, she simply says: 'Finally.' He nods. 'I know.'"
+        },
+        {
+          "part": 2,
+          "title": "The Knowing",
+          "stage": "Understanding - Love Beyond Words",
+          "prompt": "@isaiahdupree and Iris sit in comfortable silence on a beach at dusk, her sisterlocks lifting in the sea breeze. No words for an hour, yet they communicate everything. He thinks something; she answers without him speaking. His thought: 'She hears the things I can't say.' Her thought: 'Our souls speak a language our mouths forgot.' She rests her head on his shoulder. He pulls her closer. The ocean mirrors their depth. Two people breathing as one entity, perfectly synchronized without trying."
+        },
+        {
+          "part": 3,
+          "title": "The Merging",
+          "stage": "Unity - Two Becoming One",
+          "prompt": "@isaiahdupree and Iris face each other in a sacred ceremony, surrounded by candles and flowers. She wears white, sisterlocks crowned with flowers. Eyes locked. No officiant needed. They place hands over each other's hearts. His thought: 'Not 'I complete you' - you remind me I was always whole.' Her thought: 'Every lifetime, I'll find you again.' They don't exchange vows aloud - just close their eyes, foreheads touching, and breathe. Visible energy seems to glow between their palms. Perfect stillness. Perfect union."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "BRIDGES",
+      "loveType": "Forbidden / Against All Odds Love",
+      "theme": "Love that defies expectations, families, and circumstances to choose each other",
+      "loveInterest": {
+        "name": "Elena",
+        "description": "A graceful woman from a different world than his - porcelain skin, long dark hair, elegant features, old money poise but rebellious spirit in her eyes. She wears pearls but paints her nails black."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Worlds",
+          "stage": "Different Universes Collide",
+          "prompt": "@isaiahdupree, dressed simply but dignified, enters an opulent gallery opening. Elena stands among the wealthy elite - porcelain skin, long dark hair, pearls at her throat, but black nail polish catching light. Their eyes meet across class divide. His thought: 'She belongs to a world that was never meant for me.' Her thought: 'He looks at me like I'm a person, not a porcelain doll.' She excuses herself from her parents and walks straight to him. The room watches. Neither cares."
+        },
+        {
+          "part": 2,
+          "title": "The Cost",
+          "stage": "Love vs. Everything Else",
+          "prompt": "@isaiahdupree and Elena face each other in a park at night, her family's ultimatum hanging between them. Her long dark hair is loose, mascara running from tears. His thought: 'I won't ask her to choose. But I can't pretend this doesn't break me.' Her thought: 'They want me to be their daughter or his love. Why can't I be both?' She steps closer. 'They said I have to choose.' He swallows hard. 'Then don't choose yet.' She shakes her head. 'I already did.' Pulls him into a fierce kiss."
+        },
+        {
+          "part": 3,
+          "title": "The Choice",
+          "stage": "Building Their Own World",
+          "prompt": "@isaiahdupree and Elena sit in a tiny apartment - no opulence, just love. She's still beautiful - dark hair pinned up simply, pearls traded for a ring he made by hand. Black nail polish remains. His thought: 'She gave up everything and never once blamed me.' Her thought: 'I didn't give up anything. I gained everything real.' She's cooking badly; he's laughing. She throws a dish towel at him. They collapse into each other, giggling. Outside their window: an ordinary life. Inside: extraordinary love."
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "FOREVER ECHOES",
+      "loveType": "Eternal / Timeless Love",
+      "theme": "Love that transcends death and time - always finding each other across lifetimes",
+      "loveInterest": {
+        "name": "Nadia",
+        "description": "An ethereal woman with deep brown skin, cloud-like natural hair, ageless eyes that hold centuries, a birthmark shaped like a crescent moon on her shoulder. She appears slightly different each era but always recognizable."
+      },
+      "videos": [
+        {
+          "part": 1,
+          "title": "Ancient",
+          "stage": "First Lifetime - Where It Began",
+          "prompt": "@isaiahdupree as an ancient warrior finds Nadia in a temple garden - deep brown skin, cloud-like hair, crescent moon birthmark on her shoulder. They've never met yet they know each other. His thought, shown as ancient script: 'My soul sings a song I never learned. It's her name.' Her thought: 'You found me. Just as you always will.' They reach for each other as the scene dissolves into stars and reforms - same souls, different bodies, another time period beginning."
+        },
+        {
+          "part": 2,
+          "title": "Through Time",
+          "stage": "Many Lifetimes - Always Finding Each Other",
+          "prompt": "Rapid montage: @isaiahdupree and Nadia across eras - 1920s jazz club (she wears a flapper dress, same birthmark visible), 1960s protest march (their signs touch), Victorian garden (stolen glance across class lines), modern day subway (eyes meet through closing doors). Her hair and style change; the crescent birthmark and eyes remain constant. His thought echoes through time: 'A thousand lifetimes, a thousand first meetings.' Her thought ripples back: 'And I'll choose you in a thousand more.' Their love: eternal."
+        },
+        {
+          "part": 3,
+          "title": "Now",
+          "stage": "This Lifetime - Present Love",
+          "prompt": "@isaiahdupree wakes gasping from a dream - he's seen all their lifetimes. Modern day. He races through the city to a café. Nadia sits there, cloud-like natural hair glowing in morning light, crescent birthmark visible, waiting as if she knew. He drops to his knees before her. His thought: 'I remember everything.' Her thought, tears streaming: 'I've been remembering alone for so long.' 'I found you again,' he whispers. 'You always do,' she says, pulling him up to kiss him. Forever continues."
+        }
+      ]
+    }
+  ]
+}
