@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { videoRouter } from './routes/video.js';
 import { jobsRouter } from './routes/jobs.js';
 import { healthRouter } from './routes/health.js';
+import { commandsRouter } from './routes/commands.js';
 import { JobManager } from './services/job-manager.js';
 import { logger } from './utils/logger.js';
 import { resolve, dirname } from 'path';
@@ -161,6 +162,22 @@ const server = createServer(async (req, res) => {
     // List jobs
     else if (path === '/api/v1/jobs' && method === 'GET') {
       await jobsRouter.listJobs(req, res);
+      matched = true;
+    }
+
+    // Commands API (ACTP workflow integration)
+    else if (path === '/v1/commands' && method === 'POST') {
+      const body = await parseBody(req);
+      await commandsRouter.submitCommand(req, res, body);
+      matched = true;
+    }
+    else if (path === '/v1/commands' && method === 'GET') {
+      await commandsRouter.listCommands(req, res);
+      matched = true;
+    }
+    else if (path.startsWith('/v1/commands/') && method === 'GET') {
+      const commandId = path.split('/')[3];
+      await commandsRouter.getCommand(req, res, commandId);
       matched = true;
     }
 
