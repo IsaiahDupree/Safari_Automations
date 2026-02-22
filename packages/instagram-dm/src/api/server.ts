@@ -18,6 +18,8 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
     return `Hey! Wanted to connect with you about ${context.topic || 'your content'}. Let me know if you're interested!`;
   }
   
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -31,10 +33,13 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
         max_tokens: 80,
         temperature: 0.85,
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     const data = await response.json() as { choices?: { message?: { content?: string } }[] };
     return data.choices?.[0]?.message?.content?.trim() || `Hey! Love your content, wanted to connect! 🙌`;
   } catch {
+    clearTimeout(timeout);
     return `Hey! Love your content, wanted to connect! 🙌`;
   }
 }

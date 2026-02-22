@@ -391,44 +391,60 @@ app.post('/api/upwork/proposals/generate', async (req: Request, res: Response) =
       });
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        messages: [
-          {
-            role: 'system',
-            content: `You are a professional freelancer writing an Upwork proposal. Write a concise, personalized cover letter (150-250 words). Be specific about the client's needs, show understanding of the project, and demonstrate relevant expertise. Do NOT be generic or salesy. End with 2-3 clarifying questions.${customInstructions ? `\n\nAdditional instructions: ${customInstructions}` : ''}`,
-          },
-          {
-            role: 'user',
-            content: `Job: ${job.title}\nDescription: ${(job.description || '').substring(0, 1000)}\nSkills: ${(job.skills || []).join(', ')}\nBudget: ${JSON.stringify(job.budget)}\n${highlightSkills ? `My strengths: ${highlightSkills.join(', ')}` : ''}`,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.7,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const fallbackLetter = `I'm excited about your project "${job.title}". With my expertise in ${(job.skills || []).slice(0, 3).join(', ')}, I'm confident I can deliver excellent results. Let's discuss the details!`;
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [
+            {
+              role: 'system',
+              content: `You are a professional freelancer writing an Upwork proposal. Write a concise, personalized cover letter (150-250 words). Be specific about the client's needs, show understanding of the project, and demonstrate relevant expertise. Do NOT be generic or salesy. End with 2-3 clarifying questions.${customInstructions ? `\n\nAdditional instructions: ${customInstructions}` : ''}`,
+            },
+            {
+              role: 'user',
+              content: `Job: ${job.title}\nDescription: ${(job.description || '').substring(0, 1000)}\nSkills: ${(job.skills || []).join(', ')}\nBudget: ${JSON.stringify(job.budget)}\n${highlightSkills ? `My strengths: ${highlightSkills.join(', ')}` : ''}`,
+            },
+          ],
+          max_tokens: 500,
+          temperature: 0.7,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    const text = data.choices?.[0]?.message?.content?.trim() || '';
+      if (!response.ok) {
+        console.error(`[AI] OpenAI returned ${response.status}`);
+        return res.json({ coverLetter: fallbackLetter, suggestedQuestions: ['What is the expected timeline?'], confidence: 0.3, aiGenerated: false });
+      }
 
-    // Split into cover letter and questions
-    const parts = text.split(/(?:questions?|clarif)/i);
-    const coverLetter = parts[0]?.trim() || text;
-    const questionsRaw = parts[1] || '';
-    const suggestedQuestions = questionsRaw
-      .split(/\d+[\.\)]\s*/)
-      .filter(q => q.trim().length > 10)
-      .map(q => q.trim());
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const text = data.choices?.[0]?.message?.content?.trim() || '';
 
-    res.json({
-      coverLetter,
-      suggestedQuestions: suggestedQuestions.length > 0 ? suggestedQuestions : ['What is the expected timeline?'],
-      confidence: 0.8,
-      aiGenerated: true,
-    });
+      // Split into cover letter and questions
+      const parts = text.split(/(?:questions?|clarif)/i);
+      const coverLetter = parts[0]?.trim() || text;
+      const questionsRaw = parts[1] || '';
+      const suggestedQuestions = questionsRaw
+        .split(/\d+[\.\)]\s*/)
+        .filter(q => q.trim().length > 10)
+        .map(q => q.trim());
+
+      res.json({
+        coverLetter: coverLetter || fallbackLetter,
+        suggestedQuestions: suggestedQuestions.length > 0 ? suggestedQuestions : ['What is the expected timeline?'],
+        confidence: 0.8,
+        aiGenerated: true,
+      });
+    } catch (aiError) {
+      clearTimeout(timeout);
+      console.error('[AI] OpenAI request failed:', aiError instanceof Error ? aiError.message : aiError);
+      res.json({ coverLetter: fallbackLetter, suggestedQuestions: ['What is the expected timeline?'], confidence: 0.3, aiGenerated: false });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -131,42 +131,51 @@ export class AICommentGenerator {
       throw new Error('OpenAI API key not configured');
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a social media engagement expert. Generate authentic, engaging comments that sound natural and human. Never be generic or spammy.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a social media engagement expert. Generate authentic, engaging comments that sound natural and human. Never be generic or spammy.',
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          max_tokens: this.config.maxTokens,
+          temperature: this.config.temperature,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`OpenAI API error: ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`OpenAI API error: ${error}`);
+      }
+
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const comment = data.choices?.[0]?.message?.content?.trim();
+      
+      if (!comment) {
+        throw new Error('No comment generated from OpenAI');
+      }
+
+      return comment;
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
     }
-
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    const comment = data.choices?.[0]?.message?.content?.trim();
-    
-    if (!comment) {
-      throw new Error('No comment generated from OpenAI');
-    }
-
-    return comment;
   }
 
   /**
@@ -177,38 +186,47 @@ export class AICommentGenerator {
       throw new Error('Anthropic API key not configured');
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: this.config.model ?? 'claude-3-haiku-20240307',
-        max_tokens: this.config.maxTokens,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.config.model ?? 'claude-3-haiku-20240307',
+          max_tokens: this.config.maxTokens,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Anthropic API error: ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Anthropic API error: ${error}`);
+      }
+
+      const data = await response.json() as { content?: { text?: string }[] };
+      const comment = data.content?.[0]?.text?.trim();
+      
+      if (!comment) {
+        throw new Error('No comment generated from Anthropic');
+      }
+
+      return comment;
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
     }
-
-    const data = await response.json() as { content?: { text?: string }[] };
-    const comment = data.content?.[0]?.text?.trim();
-    
-    if (!comment) {
-      throw new Error('No comment generated from Anthropic');
-    }
-
-    return comment;
   }
 
   /**

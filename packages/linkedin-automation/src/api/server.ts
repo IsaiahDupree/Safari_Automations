@@ -516,34 +516,50 @@ app.post('/api/linkedin/ai/generate-message', async (req: Request, res: Response
       });
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        messages: [
-          {
-            role: 'system',
-            content: `Generate a SHORT, personalized LinkedIn ${purposeLabel.replace(/_/g, ' ')} (max 280 chars for notes, 500 for messages). Tone: ${toneLabel}. Be specific, not generic. Reference their actual role/company. No emojis unless friendly tone.`,
-          },
-          {
-            role: 'user',
-            content: `Profile: ${profile.name}, ${profile.headline || ''}, ${profile.currentPosition?.company || ''}. Location: ${profile.location || ''}. ${context ? `Context: ${context}` : ''}`,
-          },
-        ],
-        max_tokens: 150,
-        temperature: 0.8,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const fallbackText = `Hi ${profile.name?.split(' ')[0] || 'there'}, would love to connect!`;
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [
+            {
+              role: 'system',
+              content: `Generate a SHORT, personalized LinkedIn ${purposeLabel.replace(/_/g, ' ')} (max 280 chars for notes, 500 for messages). Tone: ${toneLabel}. Be specific, not generic. Reference their actual role/company. No emojis unless friendly tone.`,
+            },
+            {
+              role: 'user',
+              content: `Profile: ${profile.name}, ${profile.headline || ''}, ${profile.currentPosition?.company || ''}. Location: ${profile.location || ''}. ${context ? `Context: ${context}` : ''}`,
+            },
+          ],
+          max_tokens: 150,
+          temperature: 0.8,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    const text = data.choices?.[0]?.message?.content?.trim() || '';
+      if (!response.ok) {
+        console.error(`[AI] OpenAI returned ${response.status}`);
+        return res.json({ text: fallbackText, confidence: 0.3, aiGenerated: false });
+      }
 
-    res.json({
-      text: text || `Hi ${profile.name?.split(' ')[0]}, would love to connect!`,
-      confidence: text ? 0.85 : 0.3,
-      aiGenerated: !!text,
-    });
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const text = data.choices?.[0]?.message?.content?.trim() || '';
+
+      res.json({
+        text: text || fallbackText,
+        confidence: text ? 0.85 : 0.3,
+        aiGenerated: !!text,
+      });
+    } catch (aiError) {
+      clearTimeout(timeout);
+      console.error('[AI] OpenAI request failed:', aiError instanceof Error ? aiError.message : aiError);
+      res.json({ text: fallbackText, confidence: 0.3, aiGenerated: false });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

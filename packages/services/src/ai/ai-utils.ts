@@ -222,6 +222,8 @@ Provide analysis in this exact JSON format:
       return this.generateLocal(prompt);
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -241,7 +243,9 @@ Provide analysis in this exact JSON format:
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       if (!response.ok) {
         console.error('[AI] OpenAI error, falling back to local');
@@ -251,6 +255,7 @@ Provide analysis in this exact JSON format:
       const data = await response.json() as { choices?: { message?: { content?: string } }[] };
       return data.choices?.[0]?.message?.content?.trim() || this.generateLocal(prompt);
     } catch (error) {
+      clearTimeout(timeout);
       console.error('[AI] Error:', error);
       return this.generateLocal(prompt);
     }

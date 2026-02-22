@@ -26,6 +26,8 @@ async function generateAIComment(postContent: string, username: string): Promise
     return templates[Math.floor(Math.random() * templates.length)];
   }
   
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -39,10 +41,13 @@ async function generateAIComment(postContent: string, username: string): Promise
         max_tokens: 50,
         temperature: 0.85,
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     const data = await response.json() as { choices?: { message?: { content?: string } }[] };
     return data.choices?.[0]?.message?.content?.trim() || "This! 💯";
   } catch {
+    clearTimeout(timeout);
     return "This! 💯";
   }
 }
