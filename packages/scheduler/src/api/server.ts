@@ -943,6 +943,94 @@ app.post('/api/upwork/apply', (req: Request, res: Response) => {
   }
 });
 
+// === UPWORK MONITOR ===
+
+app.post('/api/upwork/monitor', (req: Request, res: Response) => {
+  try {
+    const { priority = 2 } = req.body;
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'upwork-monitor-scan' as TaskType,
+      name: 'Upwork Monitor Scan',
+      platform: 'upwork' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'upwork' as Platform, safariExclusive: true },
+      payload: {},
+    });
+    res.json({ success: true, taskId, message: 'Upwork monitor scan scheduled' });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/upwork/monitor/recurring', (req: Request, res: Response) => {
+  try {
+    const { intervalHours = 3, count = 8, priority = 3 } = req.body;
+    const s = getScheduler();
+    const taskIds: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const scheduledFor = new Date(Date.now() + i * intervalHours * 60 * 60 * 1000);
+      const taskId = s.schedule({
+        type: 'upwork-monitor-scan' as TaskType,
+        name: `Upwork Monitor #${i + 1}`,
+        platform: 'upwork' as Platform,
+        priority: priority as TaskPriority,
+        scheduledFor,
+        resourceRequirements: { platform: 'upwork' as Platform, safariExclusive: true },
+        payload: {},
+      });
+      taskIds.push(taskId);
+    }
+    res.json({ success: true, taskIds, message: `Scheduled ${count} monitor scans every ${intervalHours}h` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === LINKEDIN PROSPECT ===
+
+app.post('/api/linkedin/prospect', (req: Request, res: Response) => {
+  try {
+    const { search, targetTitles, targetLocations, minScore, maxProspects, dryRun, noteTemplate, sendConnections, sendDMs, priority = 2 } = req.body;
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'linkedin-prospect' as TaskType,
+      name: `LinkedIn Prospect: ${search?.keywords?.[0] || 'default'}`,
+      platform: 'linkedin' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'linkedin' as Platform, safariExclusive: true },
+      payload: { search, targetTitles, targetLocations, minScore, maxProspects, dryRun, noteTemplate, sendConnections, sendDMs },
+    });
+    res.json({ success: true, taskId, message: 'LinkedIn prospect pipeline scheduled' });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/linkedin/prospect/recurring', (req: Request, res: Response) => {
+  try {
+    const { search, targetTitles, targetLocations, minScore, maxProspects, dryRun = true, noteTemplate, sendConnections, sendDMs, intervalHours = 8, count = 3, priority = 3 } = req.body;
+    const s = getScheduler();
+    const taskIds: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const scheduledFor = new Date(Date.now() + i * intervalHours * 60 * 60 * 1000);
+      const taskId = s.schedule({
+        type: 'linkedin-prospect' as TaskType,
+        name: `LinkedIn Prospect #${i + 1}`,
+        platform: 'linkedin' as Platform,
+        priority: priority as TaskPriority,
+        scheduledFor,
+        resourceRequirements: { platform: 'linkedin' as Platform, safariExclusive: true },
+        payload: { search, targetTitles, targetLocations, minScore, maxProspects, dryRun, noteTemplate, sendConnections, sendDMs },
+      });
+      taskIds.push(taskId);
+    }
+    res.json({ success: true, taskIds, message: `Scheduled ${count} LinkedIn prospect runs every ${intervalHours}h` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // === LINKEDIN OUTREACH ===
 
 app.post('/api/linkedin/outreach', (req: Request, res: Response) => {
@@ -1071,6 +1159,10 @@ export function startServer(port: number = PORT): void {
     console.log(`   UpworkScan:  POST /api/upwork/scan`);
     console.log(`   UpworkRecur: POST /api/upwork/scan/recurring`);
     console.log(`   UpworkApply: POST /api/upwork/apply`);
+    console.log(`   Monitor:     POST /api/upwork/monitor`);
+    console.log(`   MonRecur:    POST /api/upwork/monitor/recurring`);
+    console.log(`   Prospect:    POST /api/linkedin/prospect`);
+    console.log(`   ProsRecur:   POST /api/linkedin/prospect/recurring`);
     console.log(`   LinkedIn:    POST /api/linkedin/outreach`);
     console.log(`   ContentPkg:  POST /api/content/package`);
     console.log(`   ContentSend: POST /api/content/package/send`);

@@ -684,6 +684,39 @@ export class TaskScheduler extends EventEmitter {
         return { detail, proposal };
       }
 
+      case 'upwork-monitor-scan': {
+        console.log(`[SCHEDULER] 🔔 Upwork monitor scan...`);
+        const setupCmd = `curl -s -X POST http://localhost:3104/api/upwork/monitor/setup`;
+        await execAsync(setupCmd, { timeout: 10 * 1000 });
+        const monitorCmd = `curl -s -X POST http://localhost:3104/api/upwork/monitor/scan`;
+        const monitorResult = await execAsync(monitorCmd, { timeout: 2 * 60 * 1000 });
+        const monitorData = JSON.parse(monitorResult.stdout);
+        console.log(`[SCHEDULER] 🔔 Monitor: ${monitorData.totalNew || 0} new, ${monitorData.totalNotified || 0} notified`);
+        return monitorData;
+      }
+
+      case 'linkedin-prospect': {
+        const lpPayload = task.payload as any;
+        const pipelineBody = JSON.stringify({
+          search: lpPayload.search || { keywords: ['marketing agency owner'], title: 'founder' },
+          targetTitles: lpPayload.targetTitles || ['Founder', 'CEO', 'Owner'],
+          targetLocations: lpPayload.targetLocations || [],
+          minScore: lpPayload.minScore || 40,
+          maxProspects: lpPayload.maxProspects || 5,
+          dryRun: lpPayload.dryRun !== false,
+          noteTemplate: lpPayload.noteTemplate || '',
+          sendConnections: lpPayload.sendConnections || false,
+          sendDMs: lpPayload.sendDMs || false,
+        });
+        const lpCmd = `curl -s -X POST http://localhost:3105/api/linkedin/prospect/pipeline -H "Content-Type: application/json" -d '${pipelineBody}'`;
+        console.log(`[SCHEDULER] 💼 LinkedIn prospect pipeline...`);
+        const lpResult = await execAsync(lpCmd, { timeout: 3 * 60 * 1000 });
+        const lpData = JSON.parse(lpResult.stdout);
+        const lpSummary = lpData.summary || {};
+        console.log(`[SCHEDULER] 💼 Prospect: ${lpSummary.searched || 0} searched, ${lpSummary.qualified || 0} qualified, ${lpSummary.connectionsSent || 0} connected`);
+        return lpData;
+      }
+
       case 'linkedin-outreach': {
         const lnPayload = task.payload as any;
         const lnAction = lnPayload.action || 'search';
