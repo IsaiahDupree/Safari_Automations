@@ -51,6 +51,7 @@ export interface ConnectionResult {
   success: boolean;
   status: 'sent' | 'already_connected' | 'pending' | 'cannot_connect' | 'error';
   reason?: string;
+  noteSent?: boolean;
 }
 
 export interface ConnectionStatus {

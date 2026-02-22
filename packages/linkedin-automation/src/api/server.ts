@@ -32,6 +32,13 @@ import {
 } from '../automation/index.js';
 import type { RateLimitConfig, ConnectionRequest, PeopleSearchConfig } from '../automation/types.js';
 import type { ProspectingConfig } from '../automation/prospecting-pipeline.js';
+import {
+  createCampaign, getCampaigns, getCampaign,
+  getProspects, getStats, getRecentRuns,
+  runOutreachCycle,
+  markConverted, markOptedOut, addProspectNote, tagProspect,
+} from '../automation/outreach-engine.js';
+import type { ProspectStage } from '../automation/outreach-engine.js';
 
 const PORT = process.env.LINKEDIN_PORT || 3105;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -133,6 +140,20 @@ app.post('/api/linkedin/navigate/profile', async (req: Request, res: Response) =
     res.json(result);
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── Debug ───────────────────────────────────────────────────
+
+app.post('/api/linkedin/debug/js', async (req: Request, res: Response) => {
+  try {
+    const { js } = req.body;
+    if (!js) return res.status(400).json({ error: 'js required' });
+    const d = getDefaultDriver();
+    const result = await d.executeJS(js);
+    res.json({ result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -587,6 +608,84 @@ app.post('/api/linkedin/prospect/pipeline', async (req: Request, res: Response) 
   }
 });
 
+// ─── Outreach Engine ─────────────────────────────────────────
+
+// Campaigns
+app.post('/api/linkedin/outreach/campaigns', (req: Request, res: Response) => {
+  try {
+    const campaign = createCampaign(req.body);
+    res.json({ success: true, campaign });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/linkedin/outreach/campaigns', (_req: Request, res: Response) => {
+  res.json({ campaigns: getCampaigns() });
+});
+
+app.get('/api/linkedin/outreach/campaigns/:id', (req: Request, res: Response) => {
+  const c = getCampaign(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Campaign not found' });
+  res.json(c);
+});
+
+// Prospects
+app.get('/api/linkedin/outreach/prospects', (req: Request, res: Response) => {
+  const filters: any = {};
+  if (req.query.campaign) filters.campaign = req.query.campaign;
+  if (req.query.stage) filters.stage = (req.query.stage as string).split(',') as ProspectStage[];
+  if (req.query.minScore) filters.minScore = parseInt(req.query.minScore as string);
+  res.json({ prospects: getProspects(filters) });
+});
+
+// Stats
+app.get('/api/linkedin/outreach/stats', (req: Request, res: Response) => {
+  const campaign = req.query.campaign as string | undefined;
+  res.json(getStats(campaign));
+});
+
+// Runs
+app.get('/api/linkedin/outreach/runs', (req: Request, res: Response) => {
+  const limit = parseInt(req.query.limit as string) || 10;
+  res.json({ runs: getRecentRuns(limit) });
+});
+
+// Run outreach cycle
+app.post('/api/linkedin/outreach/run', async (req: Request, res: Response) => {
+  try {
+    const { campaignId, dryRun, skipDiscovery, skipFollowUps } = req.body;
+    if (!campaignId) return res.status(400).json({ error: 'campaignId required' });
+    const result = await runOutreachCycle(campaignId, { dryRun, skipDiscovery, skipFollowUps });
+    if (result.summary.connectionsSent > 0) connectionsToday += result.summary.connectionsSent;
+    if (result.summary.dmsSent > 0) messagesToday += result.summary.dmsSent;
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Manual prospect actions
+app.post('/api/linkedin/outreach/prospects/:id/convert', (req: Request, res: Response) => {
+  const p = markConverted(req.params.id, req.body.notes);
+  if (!p) return res.status(404).json({ error: 'Prospect not found' });
+  res.json({ success: true, prospect: p });
+});
+
+app.post('/api/linkedin/outreach/prospects/:id/opt-out', (req: Request, res: Response) => {
+  const p = markOptedOut(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Prospect not found' });
+  res.json({ success: true, prospect: p });
+});
+
+app.post('/api/linkedin/outreach/prospects/:id/note', (req: Request, res: Response) => {
+  const p = addProspectNote(req.params.id, req.body.note || '');
+  if (!p) return res.status(404).json({ error: 'Prospect not found' });
+  res.json({ success: true, prospect: p });
+});
+
+app.post('/api/linkedin/outreach/prospects/:id/tag', (req: Request, res: Response) => {
+  const p = tagProspect(req.params.id, req.body.tag || '');
+  if (!p) return res.status(404).json({ error: 'Prospect not found' });
+  res.json({ success: true, prospect: p });
+});
+
 // ─── Start Server ────────────────────────────────────────────
 
 app.listen(PORT, () => {
@@ -600,6 +699,12 @@ app.listen(PORT, () => {
   if (OPENAI_API_KEY) console.log(`   AI: POST http://localhost:${PORT}/api/linkedin/ai/generate-message`);
   console.log(`   Prospect: POST http://localhost:${PORT}/api/linkedin/prospect/search-score`);
   console.log(`   Pipeline: POST http://localhost:${PORT}/api/linkedin/prospect/pipeline`);
+  console.log(`   ── Outreach Engine ──`);
+  console.log(`   Campaigns: POST/GET http://localhost:${PORT}/api/linkedin/outreach/campaigns`);
+  console.log(`   Prospects: GET http://localhost:${PORT}/api/linkedin/outreach/prospects`);
+  console.log(`   Stats:     GET http://localhost:${PORT}/api/linkedin/outreach/stats`);
+  console.log(`   Run Cycle: POST http://localhost:${PORT}/api/linkedin/outreach/run`);
+  console.log(`   Runs:      GET http://localhost:${PORT}/api/linkedin/outreach/runs`);
   console.log(`   Rate limits: connections ${rateLimits.connectionRequestsPerDay}/day, messages ${rateLimits.messagesPerDay}/day`);
   console.log(`   Active hours: ${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`);
   console.log('');

@@ -271,17 +271,34 @@ export async function sendConnectionRequest(
 
   await d.humanDelay(2000, 4000);
 
-  // Check current status
+  // Check current status — look at profile section buttons
   const statusCheck = await d.executeJS(`
     (function() {
-      var connected = !!document.querySelector('button[aria-label*="Message"]') &&
-                      !document.querySelector('button[aria-label*="Connect"]');
-      var pending = !!document.querySelector('button[aria-label*="Pending"]');
-      if (connected) return 'already_connected';
-      if (pending) return 'pending';
-      return 'can_connect';
+      var main = document.querySelector('main');
+      if (!main) return 'no_main';
+      var section = main.querySelector('section');
+      if (!section) return 'no_section';
+      var btns = section.querySelectorAll('button');
+      var hasMessage = false, hasPending = false, hasConnect = false, hasFollow = false, hasMore = false;
+      for (var i = 0; i < btns.length; i++) {
+        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+        var t = btns[i].innerText.trim().toLowerCase();
+        if (a.includes('message')) hasMessage = true;
+        if (a.includes('pending')) hasPending = true;
+        if (a.includes('connect') || a.includes('invite')) hasConnect = true;
+        if (a.includes('follow')) hasFollow = true;
+        if (a === 'more') hasMore = true;
+      }
+      if (hasPending) return 'pending';
+      if (hasMessage && !hasConnect && !hasFollow) return 'already_connected';
+      if (hasConnect) return 'can_connect_direct';
+      if (hasFollow && hasMore) return 'can_connect_via_more';
+      if (hasMore) return 'can_connect_via_more';
+      return 'unknown';
     })()
   `);
+
+  console.log(`[Connection] Status check for ${request.profileUrl}: ${statusCheck}`);
 
   if (statusCheck === 'already_connected' && request.skipIfConnected) {
     return { success: true, status: 'already_connected' };
@@ -289,63 +306,78 @@ export async function sendConnectionRequest(
   if (statusCheck === 'pending' && request.skipIfPending) {
     return { success: true, status: 'pending' };
   }
-  if (statusCheck !== 'can_connect') {
-    return { success: false, status: statusCheck as any, reason: `Status: ${statusCheck}` };
-  }
 
-  // Click Connect button
-  const clicked = await d.executeJS(`
-    (function() {
-      var btn = document.querySelector('button[aria-label*="Connect"]') ||
-                document.querySelector('button[aria-label*="Invite"]');
-      if (btn) { btn.click(); return 'clicked'; }
-
-      // Check "More" dropdown
-      var moreBtn = document.querySelector('button[aria-label="More actions"]');
-      if (moreBtn) {
-        moreBtn.click();
-        return 'more_clicked';
-      }
-      return 'not_found';
-    })()
-  `);
-
-  if (clicked === 'not_found') {
-    return { success: false, status: 'cannot_connect', reason: 'Connect button not found' };
-  }
-
-  if (clicked === 'more_clicked') {
-    await d.wait(1000);
+  // Direct Connect button
+  if (statusCheck === 'can_connect_direct') {
     await d.executeJS(`
       (function() {
-        var items = document.querySelectorAll('[role="menuitem"], .artdeco-dropdown__content-inner li');
-        for (var item of items) {
-          if (item.innerText.toLowerCase().includes('connect')) {
-            item.click();
+        var main = document.querySelector('main');
+        var section = main.querySelector('section');
+        var btns = section.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+          if (a.includes('connect') || a.includes('invite')) { btns[i].click(); return 'clicked'; }
+        }
+        return 'not_found';
+      })()
+    `);
+    await d.wait(2000);
+
+  } else if (statusCheck === 'can_connect_via_more') {
+    // Open More dropdown in profile section
+    await d.executeJS(`
+      (function() {
+        var main = document.querySelector('main');
+        var section = main.querySelector('section');
+        var btn = section.querySelector('button[aria-label="More"]');
+        if (btn) btn.click();
+      })()
+    `);
+    await d.wait(1500);
+
+    // Click Connect in dropdown
+    const connectClicked = await d.executeJS(`
+      (function() {
+        var items = document.querySelectorAll('[role="menuitem"], .artdeco-dropdown__content-inner li, .artdeco-dropdown__item');
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].innerText.trim().toLowerCase() === 'connect') {
+            items[i].click();
             return 'clicked';
           }
         }
         return 'not_found';
       })()
     `);
-  }
 
-  await d.wait(2000);
+    console.log(`[Connection] Connect from More dropdown: ${connectClicked}`);
+    if (connectClicked === 'not_found') {
+      return { success: false, status: 'cannot_connect', reason: 'Connect not in More menu' };
+    }
+    await d.wait(2000);
+
+  } else {
+    return { success: false, status: statusCheck as any, reason: `Status: ${statusCheck}` };
+  }
 
   // Add note if provided
   if (request.note) {
     const addNoteClicked = await d.executeJS(`
       (function() {
-        var btn = document.querySelector('button[aria-label="Add a note"]');
-        if (btn) { btn.click(); return 'clicked'; }
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+          var t = btns[i].innerText.trim().toLowerCase();
+          if (a.includes('add a note') || t === 'add a note') { btns[i].click(); return 'clicked'; }
+        }
         return 'not_found';
       })()
     `);
 
+    console.log(`[Connection] Add note button: ${addNoteClicked}`);
     if (addNoteClicked === 'clicked') {
-      await d.wait(1000);
+      await d.wait(1500);
 
-      // Focus the note textarea
+      // Focus and type into the note textarea
       await d.focusElement('textarea#custom-message, textarea[name="message"]');
       await d.wait(300);
       await d.typeViaClipboard(request.note.substring(0, 300));
@@ -353,21 +385,30 @@ export async function sendConnectionRequest(
     }
   }
 
-  // Click Send
+  // Click Send — try multiple selectors for the invitation button
   const sent = await d.executeJS(`
     (function() {
-      var btn = document.querySelector('button[aria-label="Send invitation"]') ||
-                document.querySelector('button[aria-label="Send"]') ||
-                document.querySelector('button[aria-label="Send without a note"]');
-      if (btn && !btn.disabled) { btn.click(); return 'sent'; }
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+        var t = btns[i].innerText.trim().toLowerCase();
+        if ((a.includes('send invitation') || a.includes('send now') ||
+             t === 'send invitation' || t === 'send' || t === 'send now' ||
+             a === 'send without a note' || t === 'send without a note') &&
+            !btns[i].disabled) {
+          btns[i].click();
+          return 'sent';
+        }
+      }
       return 'not_found';
     })()
   `);
 
+  console.log(`[Connection] Send invitation: ${sent}`);
   await d.wait(2000);
 
   if (sent === 'sent') {
-    return { success: true, status: 'sent' };
+    return { success: true, status: 'sent', noteSent: !!request.note };
   }
 
   return { success: false, status: 'error', reason: 'Could not send invitation' };

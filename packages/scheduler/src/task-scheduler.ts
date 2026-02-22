@@ -717,6 +717,18 @@ export class TaskScheduler extends EventEmitter {
         return lpData;
       }
 
+      case 'linkedin-outreach-cycle': {
+        const ocPayload = task.payload as any;
+        const ocBody = JSON.stringify({ campaignId: ocPayload.campaignId, dryRun: ocPayload.dryRun ?? false, skipDiscovery: ocPayload.skipDiscovery, skipFollowUps: ocPayload.skipFollowUps });
+        const ocCmd = `curl -s -X POST http://localhost:3105/api/linkedin/outreach/run -H "Content-Type: application/json" -d '${ocBody}'`;
+        console.log(`[SCHEDULER] 📋 LinkedIn outreach cycle...`);
+        const ocResult = await execAsync(ocCmd, { timeout: 5 * 60 * 1000 });
+        const ocData = JSON.parse(ocResult.stdout);
+        const ocSm = ocData.summary || {};
+        console.log(`[SCHEDULER] 📋 Outreach: ${ocSm.discovered || 0} discovered, ${ocSm.connectionsSent || 0} connected, ${ocSm.dmsSent || 0} DMs, ${ocSm.followUpsSent || 0} follow-ups`);
+        return ocData;
+      }
+
       case 'linkedin-outreach': {
         const lnPayload = task.payload as any;
         const lnAction = lnPayload.action || 'search';

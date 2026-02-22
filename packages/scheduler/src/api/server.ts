@@ -1031,7 +1031,49 @@ app.post('/api/linkedin/prospect/recurring', (req: Request, res: Response) => {
   }
 });
 
-// === LINKEDIN OUTREACH ===
+// === LINKEDIN OUTREACH CYCLE ===
+
+app.post('/api/linkedin/outreach-cycle', (req: Request, res: Response) => {
+  try {
+    const { campaignId, dryRun, skipDiscovery, skipFollowUps, priority = 2 } = req.body;
+    if (!campaignId) return res.status(400).json({ error: 'campaignId required' });
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'linkedin-outreach-cycle' as TaskType,
+      name: `Outreach Cycle: ${campaignId.substring(0, 20)}`,
+      platform: 'linkedin' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'linkedin' as Platform, safariExclusive: true },
+      payload: { campaignId, dryRun, skipDiscovery, skipFollowUps },
+    });
+    res.json({ success: true, taskId, message: 'Outreach cycle scheduled' });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+app.post('/api/linkedin/outreach-cycle/recurring', (req: Request, res: Response) => {
+  try {
+    const { campaignId, dryRun, skipDiscovery, skipFollowUps, intervalHours = 8, count = 3, priority = 3 } = req.body;
+    if (!campaignId) return res.status(400).json({ error: 'campaignId required' });
+    const s = getScheduler();
+    const taskIds: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const scheduledFor = new Date(Date.now() + i * intervalHours * 60 * 60 * 1000);
+      const taskId = s.schedule({
+        type: 'linkedin-outreach-cycle' as TaskType,
+        name: `Outreach Cycle #${i + 1}`,
+        platform: 'linkedin' as Platform,
+        priority: priority as TaskPriority,
+        scheduledFor,
+        resourceRequirements: { platform: 'linkedin' as Platform, safariExclusive: true },
+        payload: { campaignId, dryRun, skipDiscovery, skipFollowUps },
+      });
+      taskIds.push(taskId);
+    }
+    res.json({ success: true, taskIds, message: `Scheduled ${count} outreach cycles every ${intervalHours}h` });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+// === LINKEDIN OUTREACH (LEGACY) ===
 
 app.post('/api/linkedin/outreach', (req: Request, res: Response) => {
   try {
