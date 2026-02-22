@@ -452,7 +452,15 @@ Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
   async activateSafari(): Promise<boolean> {
     try {
-      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      await execAsync(`osascript -e '
+tell application "Safari" to activate
+delay 0.2
+tell application "System Events"
+    set frontmost of process "Safari" to true
+    try
+        perform action "AXRaise" of front window of process "Safari"
+    end try
+end tell'`);
       return true;
     } catch {
       return false;

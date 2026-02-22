@@ -629,6 +629,28 @@ app.get('/gateway/dashboard', async (_req: Request, res: Response) => {
   const lock = lockManager.getLock();
   const sessionList = Array.from(sessions.values());
 
+  // Get Safari state for dashboard
+  let safariState = { running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '' };
+  try {
+    const sr = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+    set isRunning to exists process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+    const sp = sr.stdout.trim().split('|');
+    safariState = { running: sp[0] === 'true', frontmost: sp[1] === 'true', windowCount: parseInt(sp[2]) || 0, currentUrl: sp[3] || '', pageTitle: sp[4] || '' };
+  } catch {}
+
   res.json({
     gateway: {
       status: 'running',
@@ -636,6 +658,7 @@ app.get('/gateway/dashboard', async (_req: Request, res: Response) => {
       uptime: process.uptime(),
     },
     safari: {
+      ...safariState,
       locked: !!lock,
       lock,
       queueLength: lockManager.getQueueLength(),
@@ -658,11 +681,15 @@ app.get('/gateway/dashboard', async (_req: Request, res: Response) => {
 export function startGateway(port: number = PORT): void {
   app.listen(port, () => {
     console.log(`\n🌐 Safari Gateway running on http://localhost:${port}`);
-    console.log(`   Dashboard:  GET http://localhost:${port}/gateway/dashboard`);
-    console.log(`   Services:   GET http://localhost:${port}/gateway/services`);
-    console.log(`   Lock:       GET http://localhost:${port}/gateway/lock`);
-    console.log(`   Sessions:   GET http://localhost:${port}/gateway/sessions`);
+    console.log(`   Dashboard:  GET  http://localhost:${port}/gateway/dashboard`);
+    console.log(`   Services:   GET  http://localhost:${port}/gateway/services`);
+    console.log(`   Lock:       GET  http://localhost:${port}/gateway/lock`);
+    console.log(`   Sessions:   GET  http://localhost:${port}/gateway/sessions`);
     console.log(`   Route:      POST http://localhost:${port}/gateway/route`);
+    console.log(`   ── Safari Focus ──`);
+    console.log(`   Focus:      POST http://localhost:${port}/gateway/safari/focus`);
+    console.log(`   State:      GET  http://localhost:${port}/gateway/safari/state`);
+    console.log(`   Prepare:    POST http://localhost:${port}/gateway/safari/prepare`);
     console.log(`\n   ${SERVICES.length} registered services across ${new Set(SERVICES.map(s => s.platform)).size} platforms\n`);
   });
 }
