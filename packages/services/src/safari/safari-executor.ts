@@ -290,9 +290,9 @@ do shell script "screencapture -R" & x & "," & y & "," & w & "," & h & " ${filep
    * Type text using clipboard paste (supports emojis)
    */
   async typeViaClipboard(text: string): Promise<boolean> {
-    // Copy to clipboard using echo and pipe
-    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    await execAsync(`echo -n "${escaped}" | pbcopy`).catch(() => null);
+    // Copy to clipboard using printf (echo -n is unreliable on macOS)
+    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+    await execAsync(`printf "%s" "${escaped}" | pbcopy`).catch(() => null);
 
     await this.wait(200);
 
