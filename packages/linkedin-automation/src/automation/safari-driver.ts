@@ -176,8 +176,8 @@ export class SafariDriver {
   async typeViaClipboard(text: string): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
     try {
-      const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-      await execAsync(`echo -n "${escaped}" | pbcopy`);
+      const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+      await execAsync(`printf "%s" "${escaped}" | pbcopy`);
       await this.wait(200);
       await this.activateSafari();
       await this.wait(200);
