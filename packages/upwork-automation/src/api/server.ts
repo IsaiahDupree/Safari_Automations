@@ -31,6 +31,15 @@ import {
   sendMessage,
   getUnreadCount,
   DEFAULT_RATE_LIMITS,
+  addWatch,
+  removeWatch,
+  updateWatch,
+  listWatches,
+  getMonitorStatus,
+  scanAllWatches,
+  scanWatch,
+  setupDefaultWatches,
+  PRESET_WATCHES,
 } from '../automation/index.js';
 import type { RateLimitConfig, JobSearchConfig, JobTab } from '../automation/types.js';
 
@@ -439,6 +448,80 @@ app.put('/api/upwork/rate-limits', (req: Request, res: Response) => {
   res.json({ updated: true, config: rateLimits });
 });
 
+// ─── Job Monitor ─────────────────────────────────────────────
+
+app.get('/api/upwork/monitor/status', async (_req: Request, res: Response) => {
+  try {
+    const status = await getMonitorStatus();
+    res.json(status);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/upwork/monitor/watches', async (_req: Request, res: Response) => {
+  try {
+    const watches = await listWatches();
+    res.json({ watches, count: watches.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/upwork/monitor/watches', async (req: Request, res: Response) => {
+  try {
+    const watch = await addWatch(req.body);
+    res.json(watch);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/upwork/monitor/watches/:id', async (req: Request, res: Response) => {
+  try {
+    const watch = await updateWatch(req.params.id, req.body);
+    if (!watch) return res.status(404).json({ error: 'Watch not found' });
+    res.json(watch);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/upwork/monitor/watches/:id', async (req: Request, res: Response) => {
+  try {
+    const removed = await removeWatch(req.params.id);
+    res.json({ removed });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/upwork/monitor/scan', async (_req: Request, res: Response) => {
+  try {
+    if (!checkRateLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+    const results = await scanAllWatches();
+    const totalNew = results.reduce((s, r) => s + r.newJobs, 0);
+    const totalNotified = results.reduce((s, r) => s + r.notified, 0);
+    res.json({ results, totalNew, totalNotified });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/upwork/monitor/setup', async (_req: Request, res: Response) => {
+  try {
+    const added = await setupDefaultWatches();
+    const all = await listWatches();
+    res.json({ added: added.length, total: all.length, watches: all });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/upwork/monitor/presets', (_req: Request, res: Response) => {
+  res.json({ presets: Object.keys(PRESET_WATCHES).map(k => ({ key: k, ...PRESET_WATCHES[k] })) });
+});
+
 // ─── Start Server ────────────────────────────────────────────
 
 app.listen(PORT, () => {
@@ -452,6 +535,10 @@ app.listen(PORT, () => {
   console.log(`   Batch:  POST http://localhost:${PORT}/api/upwork/jobs/score-batch`);
   console.log(`   Messages: GET http://localhost:${PORT}/api/upwork/conversations`);
   if (OPENAI_API_KEY) console.log(`   AI Proposals: POST http://localhost:${PORT}/api/upwork/proposals/generate`);
+  console.log(`   Monitor: GET  http://localhost:${PORT}/api/upwork/monitor/status`);
+  console.log(`   Watches: GET  http://localhost:${PORT}/api/upwork/monitor/watches`);
+  console.log(`   Scan:    POST http://localhost:${PORT}/api/upwork/monitor/scan`);
+  console.log(`   Setup:   POST http://localhost:${PORT}/api/upwork/monitor/setup`);
   console.log('');
 });
 
