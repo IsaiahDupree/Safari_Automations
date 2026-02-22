@@ -432,7 +432,7 @@ app.post('/api/threads/execute', async (req: Request, res: Response) => {
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
     
-    const escaped = script.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    const escaped = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
     const { stdout } = await execAsync(
       `osascript -e 'tell application "Safari" to do JavaScript "${escaped}" in current tab of front window'`
     );
