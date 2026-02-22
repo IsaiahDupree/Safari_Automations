@@ -325,7 +325,7 @@ export class ThreadsDriver {
     const path = await import('path');
     
     // Write JS to temp file (like Python's execute_js method)
-    const jsFile = path.join(os.tmpdir(), `safari_js_${Date.now()}.js`);
+    const jsFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.js`);
     fs.writeFileSync(jsFile, script);
     
     const appleScript = `
@@ -336,7 +336,7 @@ tell application "Safari"
   end tell
 end tell`;
     
-    const scptFile = path.join(os.tmpdir(), `safari_cmd_${Date.now()}.scpt`);
+    const scptFile = path.join(os.tmpdir(), `safari_cmd_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     fs.writeFileSync(scptFile, appleScript);
     
     try {
@@ -381,8 +381,9 @@ end tell`;
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await execAsync(
-        `osascript -e 'tell application "Safari" to set URL of current tab of front window to "${url}"'`
+        `osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`
       );
       await this.wait(3000);
       return true;

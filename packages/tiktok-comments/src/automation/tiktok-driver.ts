@@ -42,7 +42,7 @@ export class TikTokDriver {
     const os = await import('os');
     const path = await import('path');
     
-    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}.scpt`);
+    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
     const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
     
@@ -57,7 +57,8 @@ export class TikTokDriver {
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${url}"'`);
+      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
       await new Promise(r => setTimeout(r, 3000));
       return true;
     } catch { return false; }
