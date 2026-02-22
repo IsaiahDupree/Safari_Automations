@@ -372,6 +372,86 @@ export async function acceptRequest(profileUrl: string, driver?: SafariDriver): 
   return result === 'accepted';
 }
 
+// ─── Search Extraction JS ────────────────────────────────────
+
+const SEARCH_EXTRACTION_JS = `
+(function() {
+  var results = [];
+  var processedLis = [];
+  var mainEl = document.querySelector('main, [role="main"]');
+  if (!mainEl) return '[]';
+  var allLis = mainEl.querySelectorAll('li');
+
+  for (var i = 0; i < allLis.length; i++) {
+    var li = allLis[i];
+    if (processedLis.indexOf(li) !== -1) continue;
+    var links = li.querySelectorAll('a[href*="/in/"]');
+    if (links.length === 0) continue;
+    var href = '';
+    for (var x = 0; x < links.length; x++) {
+      var h = links[x].href.split('?')[0];
+      if (h.indexOf('ACoAA') === -1) { href = h; break; }
+    }
+    if (!href) href = links[0].href.split('?')[0];
+    processedLis.push(li);
+
+    var nameSpans = [];
+    var spans = li.querySelectorAll('span[aria-hidden="true"]');
+    for (var j = 0; j < spans.length; j++) {
+      var cl = spans[j].className || '';
+      if (cl.indexOf('visually-hidden') !== -1) continue;
+      var st = spans[j].innerText.trim();
+      if (st.length > 2 && st.length < 150 && st.indexOf('Status') !== 0) nameSpans.push(st);
+    }
+
+    var name = '';
+    for (var k = 0; k < nameSpans.length; k++) {
+      if (nameSpans[k].charAt(0) !== '\\u2022' && nameSpans[k].indexOf('degree') === -1) {
+        name = nameSpans[k]; break;
+      }
+    }
+
+    var degree = '';
+    for (var dd = 0; dd < nameSpans.length; dd++) {
+      if (nameSpans[dd].indexOf('1st') !== -1) { degree = '1st'; break; }
+      if (nameSpans[dd].indexOf('2nd') !== -1) { degree = '2nd'; break; }
+      if (nameSpans[dd].indexOf('3rd') !== -1) { degree = '3rd'; break; }
+    }
+
+    var headline = '';
+    var location = '';
+    var divs = li.querySelectorAll('div');
+    for (var di = 0; di < divs.length; di++) {
+      var div = divs[di];
+      if (div.children.length > 0) continue;
+      var dt = div.innerText.trim();
+      if (dt.length < 5 || dt.length > 200) continue;
+      if (dt === name || dt.indexOf('degree') !== -1 || dt === 'Connect' || dt === 'Message' || dt === 'Follow') continue;
+      if (!headline) { headline = dt; }
+      else if (!location && dt.length < 60) { location = dt; break; }
+    }
+
+    var mutual = 0;
+    var allText = li.innerText;
+    var mutMatch = allText.match(/(\\\\d+)\\\\s*mutual/i);
+    if (mutMatch) mutual = parseInt(mutMatch[1]);
+
+    if (name && href) {
+      results.push(JSON.stringify({
+        name: name,
+        profileUrl: href,
+        headline: headline.substring(0, 150),
+        location: location,
+        connectionDegree: degree,
+        mutualConnections: mutual,
+      }));
+    }
+  }
+
+  return '[' + results.slice(0, 20).join(',') + ']';
+})()
+`;
+
 // ─── People Search ───────────────────────────────────────────
 
 export async function searchPeople(
@@ -387,51 +467,22 @@ export async function searchPeople(
 
   const searchUrl = `${LINKEDIN_SEARCH}?${params.toString()}`;
   await d.navigateTo(searchUrl);
-  await d.wait(4000);
+  await d.wait(5000);
 
-  const resultsJson = await d.executeJS(`
-    (function() {
-      var results = [];
-      var items = document.querySelectorAll('.entity-result, .reusable-search__result-container');
+  // Wait for search results to render inside main (not just nav links)
+  const maxWait = 15000;
+  const startWait = Date.now();
+  while (Date.now() - startWait < maxWait) {
+    const check = await d.executeJS(
+      'var m = document.querySelector("main"); m && m.querySelectorAll("a[href*=\\"/in/\\"]").length > 0 ? "ready" : "waiting"'
+    );
+    if (check === 'ready') break;
+    await d.wait(1000);
+  }
+  await d.wait(1000);
 
-      items.forEach(function(item) {
-        try {
-          var nameEl = item.querySelector('.entity-result__title-text a span[aria-hidden="true"], .entity-result__title-line span');
-          var name = nameEl ? nameEl.innerText.trim() : '';
-
-          var linkEl = item.querySelector('a[href*="/in/"]');
-          var profileUrl = linkEl ? linkEl.href.split('?')[0] : '';
-
-          var headlineEl = item.querySelector('.entity-result__primary-subtitle, .entity-result__summary');
-          var headline = headlineEl ? headlineEl.innerText.trim() : '';
-
-          var locationEl = item.querySelector('.entity-result__secondary-subtitle');
-          var location = locationEl ? locationEl.innerText.trim() : '';
-
-          var degreeEl = item.querySelector('.dist-value, .entity-result__badge-text span');
-          var degree = degreeEl ? degreeEl.innerText.trim() : '';
-
-          var mutualEl = item.querySelector('[class*="member-insights"] span');
-          var mutualText = mutualEl ? mutualEl.innerText.trim() : '0';
-          var mutualMatch = mutualText.match(/(\\d+)/);
-          var mutual = mutualMatch ? parseInt(mutualMatch[1]) : 0;
-
-          if (name && profileUrl) {
-            results.push(JSON.stringify({
-              name: name,
-              profileUrl: profileUrl,
-              headline: headline.substring(0, 150),
-              location: location,
-              connectionDegree: degree,
-              mutualConnections: mutual,
-            }));
-          }
-        } catch(e) {}
-      });
-
-      return '[' + results.slice(0, 20).join(',') + ']';
-    })()
-  `);
+  const resultsJson = await d.executeJS(SEARCH_EXTRACTION_JS);
+  
 
   try {
     return JSON.parse(resultsJson || '[]') as SearchResult[];

@@ -26,9 +26,12 @@ import {
   sendMessage,
   sendMessageToProfile,
   getUnreadCount,
+  runProspectingPipeline,
+  searchAndScore,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
 import type { RateLimitConfig, ConnectionRequest, PeopleSearchConfig } from '../automation/types.js';
+import type { ProspectingConfig } from '../automation/prospecting-pipeline.js';
 
 const PORT = process.env.LINKEDIN_PORT || 3105;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -232,6 +235,81 @@ app.post('/api/linkedin/search/people', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/linkedin/search/extract-current', async (_req: Request, res: Response) => {
+  try {
+    const d = getDefaultDriver();
+    const url = await d.getCurrentUrl();
+    const raw = await d.executeJS(`
+      (function() {
+        var results = [];
+        var processedLis = [];
+        var mainEl = document.querySelector('main, [role="main"]');
+        if (!mainEl) return JSON.stringify({ error: 'no main', liCount: 0 });
+        var allLis = mainEl.querySelectorAll('li');
+
+        for (var i = 0; i < allLis.length; i++) {
+          var li = allLis[i];
+          if (processedLis.indexOf(li) !== -1) continue;
+          var links = li.querySelectorAll('a[href*="/in/"]');
+          if (links.length === 0) continue;
+          var href = '';
+          for (var x = 0; x < links.length; x++) {
+            var h = links[x].href.split('?')[0];
+            if (h.indexOf('ACoAA') === -1) { href = h; break; }
+          }
+          if (!href) href = links[0].href.split('?')[0];
+          processedLis.push(li);
+
+          var nameSpans = [];
+          var spans = li.querySelectorAll('span[aria-hidden="true"]');
+          for (var j = 0; j < spans.length; j++) {
+            var cl = spans[j].className || '';
+            if (cl.indexOf('visually-hidden') !== -1) continue;
+            var st = spans[j].innerText.trim();
+            if (st.length > 2 && st.length < 150 && st.indexOf('Status') !== 0) nameSpans.push(st);
+          }
+
+          var name = '';
+          for (var k = 0; k < nameSpans.length; k++) {
+            if (nameSpans[k].charAt(0) !== '\\u2022' && nameSpans[k].indexOf('degree') === -1) {
+              name = nameSpans[k]; break;
+            }
+          }
+
+          var degree = '';
+          for (var dd = 0; dd < nameSpans.length; dd++) {
+            if (nameSpans[dd].indexOf('1st') !== -1) { degree = '1st'; break; }
+            if (nameSpans[dd].indexOf('2nd') !== -1) { degree = '2nd'; break; }
+            if (nameSpans[dd].indexOf('3rd') !== -1) { degree = '3rd'; break; }
+          }
+
+          var headline = '';
+          var location = '';
+          var divs = li.querySelectorAll('div');
+          for (var di = 0; di < divs.length; di++) {
+            var div = divs[di];
+            if (div.children.length > 0) continue;
+            var dt = div.innerText.trim();
+            if (dt.length < 5 || dt.length > 200) continue;
+            if (dt === name || dt.indexOf('degree') !== -1 || dt === 'Connect' || dt === 'Message' || dt === 'Follow') continue;
+            if (!headline) { headline = dt; }
+            else if (!location && dt.length < 60) { location = dt; break; }
+          }
+
+          if (name && href) {
+            results.push({ name: name, profileUrl: href, headline: headline.substring(0, 150), location: location, connectionDegree: degree, mutualConnections: 0 });
+          }
+        }
+        return JSON.stringify({ count: results.length, liTotal: allLis.length, results: results.slice(0, 20) });
+      })()
+    `);
+    const parsed = JSON.parse(raw || '{}');
+    res.json({ url, ...parsed });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Messages ────────────────────────────────────────────────
 
 app.get('/api/linkedin/conversations', async (_req: Request, res: Response) => {
@@ -374,6 +452,65 @@ app.put('/api/linkedin/rate-limits', (req: Request, res: Response) => {
   res.json({ updated: true, config: rateLimits });
 });
 
+// ─── Prospecting Pipeline ────────────────────────────────────
+
+app.post('/api/linkedin/prospect/search-score', async (req: Request, res: Response) => {
+  try {
+    if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+    const { search, targetTitles, targetCompanies, targetLocations } = req.body;
+    if (!search) return res.status(400).json({ error: 'search config required' });
+    const results = await searchAndScore(search, targetTitles, targetCompanies, targetLocations);
+    res.json({
+      results,
+      count: results.length,
+      qualified: results.filter((r: any) => r.score.recommendation !== 'skip').length,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/linkedin/prospect/pipeline', async (req: Request, res: Response) => {
+  try {
+    if (!isWithinActiveHours() && !req.body.force) {
+      return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}` });
+    }
+
+    const config: ProspectingConfig = {
+      search: req.body.search || {},
+      scoring: {
+        targetTitles: req.body.targetTitles || [],
+        targetCompanies: req.body.targetCompanies || [],
+        targetLocations: req.body.targetLocations || [],
+        minScore: req.body.minScore || 30,
+      },
+      connection: {
+        sendRequest: req.body.sendConnections !== false,
+        noteTemplate: req.body.noteTemplate || 'Hi {firstName}, I came across your work as {headline} and would love to connect.',
+        skipIfConnected: true,
+        skipIfPending: true,
+      },
+      dm: {
+        enabled: req.body.sendDMs || false,
+        messageTemplate: req.body.dmTemplate || 'Hi {firstName}, I noticed your experience in {headline}. I work on automation tools and thought we might have some synergies. Would love to chat!',
+        onlyIfConnected: true,
+      },
+      maxProspects: req.body.maxProspects || 5,
+      dryRun: req.body.dryRun !== false,
+      delayBetweenActions: req.body.delayMs || 30000,
+    };
+
+    const result = await runProspectingPipeline(config);
+
+    if (result.summary.connectionsSent > 0) connectionsToday += result.summary.connectionsSent;
+    if (result.summary.messagesSent > 0) messagesToday += result.summary.messagesSent;
+
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Start Server ────────────────────────────────────────────
 
 app.listen(PORT, () => {
@@ -385,6 +522,8 @@ app.listen(PORT, () => {
   console.log(`   Search: POST http://localhost:${PORT}/api/linkedin/search/people`);
   console.log(`   Messages: GET http://localhost:${PORT}/api/linkedin/conversations`);
   if (OPENAI_API_KEY) console.log(`   AI: POST http://localhost:${PORT}/api/linkedin/ai/generate-message`);
+  console.log(`   Prospect: POST http://localhost:${PORT}/api/linkedin/prospect/search-score`);
+  console.log(`   Pipeline: POST http://localhost:${PORT}/api/linkedin/prospect/pipeline`);
   console.log(`   Rate limits: connections ${rateLimits.connectionRequestsPerDay}/day, messages ${rateLimits.messagesPerDay}/day`);
   console.log(`   Active hours: ${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`);
   console.log('');

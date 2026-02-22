@@ -931,38 +931,50 @@ export async function submitProposal(
     }
 
     // Step 3: Set hourly rate or fixed price
-    if (submission.hourlyRate) {
-      await d.executeJS(`
-        (function() {
-          var input = document.getElementById('step-rate');
-          if (!input) return 'no_rate_input';
-          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          nativeSet.call(input, '${submission.hourlyRate.toFixed(2)}');
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return 'set';
-        })()
-      `);
-      result.bidAmount = `$${submission.hourlyRate}/hr`;
-      await d.wait(500);
-    }
+    // Upwork uses a masked/formatted input that ignores programmatic value changes.
+    // We must use OS-level click + select-all + clipboard paste to set the rate.
+    if (submission.hourlyRate || submission.fixedPrice) {
+      const rateValue = submission.hourlyRate || submission.fixedPrice || 0;
+      const rateSelector = 'step-rate';
 
-    if (submission.fixedPrice) {
-      await d.executeJS(`
+      // Scroll input into view and get its viewport coordinates
+      const coordsJson = await d.executeJS(`
         (function() {
-          // Fixed-price jobs use a different input — look for bid/amount input
-          var input = document.getElementById('step-rate') ||
-                      document.querySelector('input[id*="bid"], input[id*="amount"], input[id*="price"]');
-          if (!input) return 'no_price_input';
-          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          nativeSet.call(input, '${submission.fixedPrice.toFixed(2)}');
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return 'set';
+          var input = document.getElementById('${rateSelector}');
+          if (!input) {
+            input = document.querySelector('input[id*="bid"], input[id*="amount"], input[id*="price"]');
+          }
+          if (!input) return JSON.stringify({ found: false });
+          input.scrollIntoView({ block: 'center' });
+          var r = input.getBoundingClientRect();
+          return JSON.stringify({ found: true, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
         })()
       `);
-      result.bidAmount = `$${submission.fixedPrice} fixed`;
-      await d.wait(500);
+
+      try {
+        const coords = JSON.parse(coordsJson);
+        if (coords.found) {
+          // OS-level click into the input field
+          await d.clickAtViewportPosition(coords.x, coords.y);
+          await d.wait(400);
+          // Select all text via JS (works after OS-level click gave us focus)
+          await d.executeJS(`
+            (function() {
+              var input = document.activeElement;
+              if (input && input.select) input.select();
+            })()
+          `);
+          await d.wait(200);
+          // Paste the new rate value via clipboard (OS-level Cmd+V)
+          await d.typeViaClipboard(String(Math.round(rateValue)));
+          await d.wait(300);
+          // Tab out to trigger formatting
+          await d.pressTab();
+          await d.wait(500);
+        }
+      } catch {}
+
+      result.bidAmount = submission.hourlyRate ? `$${submission.hourlyRate}/hr` : `$${submission.fixedPrice} fixed`;
     }
 
     // Step 4: Fill cover letter (first textarea)
