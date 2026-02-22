@@ -11,11 +11,16 @@ import {
   SafariDriver,
   getDefaultDriver,
   navigateToFindWork,
+  navigateToTab,
   navigateToMyJobs,
   navigateToJob,
   searchJobs,
   extractJobDetail,
+  extractJobsFromCurrentPage,
+  getJobsFromTab,
+  getAvailableFilters,
   scoreJob,
+  recommendConnects,
   saveJob,
   getApplications,
   navigateToMessages,
@@ -26,7 +31,7 @@ import {
   getUnreadCount,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
-import type { RateLimitConfig, JobSearchConfig } from '../automation/types.js';
+import type { RateLimitConfig, JobSearchConfig, JobTab } from '../automation/types.js';
 
 const PORT = process.env.UPWORK_PORT || 3104;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -95,6 +100,20 @@ app.post('/api/upwork/navigate/find-work', async (_req: Request, res: Response) 
   }
 });
 
+app.post('/api/upwork/navigate/tab', async (req: Request, res: Response) => {
+  try {
+    const { tab } = req.body;
+    const validTabs: JobTab[] = ['best_matches', 'most_recent', 'us_only', 'saved_jobs'];
+    if (!tab || !validTabs.includes(tab)) {
+      return res.status(400).json({ error: 'tab required (best_matches | most_recent | us_only | saved_jobs)' });
+    }
+    const result = await navigateToTab(tab);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/upwork/navigate/my-jobs', async (_req: Request, res: Response) => {
   try {
     const result = await navigateToMyJobs();
@@ -139,11 +158,60 @@ app.post('/api/upwork/jobs/search', async (req: Request, res: Response) => {
   }
 });
 
+// Get jobs from a specific tab (best_matches, most_recent, us_only, saved_jobs)
+app.post('/api/upwork/jobs/tab', async (req: Request, res: Response) => {
+  try {
+    if (!checkRateLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+    const { tab } = req.body;
+    const validTabs: JobTab[] = ['best_matches', 'most_recent', 'us_only', 'saved_jobs'];
+    if (!tab || !validTabs.includes(tab)) {
+      return res.status(400).json({ error: 'tab required (best_matches | most_recent | us_only | saved_jobs)' });
+    }
+    const result = await getJobsFromTab(tab);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Extract jobs from whatever page Safari is currently on
+app.get('/api/upwork/jobs/current-page', async (_req: Request, res: Response) => {
+  try {
+    const jobs = await extractJobsFromCurrentPage();
+    res.json({ jobs, count: jobs.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get available filters from current search page
+app.get('/api/upwork/jobs/filters', async (_req: Request, res: Response) => {
+  try {
+    const filters = await getAvailableFilters();
+    res.json(filters);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Full job detail page extraction — click into a job and get everything
+app.get('/api/upwork/jobs/detail', async (req: Request, res: Response) => {
+  try {
+    if (!checkRateLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'url query param required' });
+    const detail = await extractJobDetail(url);
+    if (!detail) return res.status(404).json({ error: 'Could not extract job detail' });
+    res.json(detail);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Legacy: get job by ID
 app.get('/api/upwork/jobs/:id', async (req: Request, res: Response) => {
   try {
-    if (!checkRateLimit()) {
-      return res.status(429).json({ error: 'Rate limit exceeded' });
-    }
+    if (!checkRateLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
     const jobUrl = `https://www.upwork.com/jobs/${req.params.id}`;
     const job = await extractJobDetail(jobUrl);
     if (!job) return res.status(404).json({ error: 'Job not found or could not extract' });
@@ -153,12 +221,33 @@ app.get('/api/upwork/jobs/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Score a job with connects recommendation
 app.post('/api/upwork/jobs/score', async (req: Request, res: Response) => {
   try {
-    const { job, preferredSkills, minBudget } = req.body;
+    const { job, preferredSkills, minBudget, availableConnects } = req.body;
     if (!job) return res.status(400).json({ error: 'job object required' });
-    const score = scoreJob(job, preferredSkills || [], minBudget || 0);
+    const score = scoreJob(job, preferredSkills || [], minBudget || 0, availableConnects || 100);
     res.json(score);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Score + recommend connects for multiple jobs at once
+app.post('/api/upwork/jobs/score-batch', async (req: Request, res: Response) => {
+  try {
+    const { jobs, preferredSkills, minBudget, availableConnects } = req.body;
+    if (!jobs || !Array.isArray(jobs)) return res.status(400).json({ error: 'jobs array required' });
+    const scores = jobs.map((job: any) => scoreJob(job, preferredSkills || [], minBudget || 0, availableConnects || 100));
+    // Sort by score descending
+    scores.sort((a: any, b: any) => b.totalScore - a.totalScore);
+    res.json({
+      scores,
+      count: scores.length,
+      applyCount: scores.filter((s: any) => s.recommendation === 'apply').length,
+      maybeCount: scores.filter((s: any) => s.recommendation === 'maybe').length,
+      skipCount: scores.filter((s: any) => s.recommendation === 'skip').length,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -319,6 +408,10 @@ app.listen(PORT, () => {
   console.log(`   Health: GET http://localhost:${PORT}/health`);
   console.log(`   Status: GET http://localhost:${PORT}/api/upwork/status`);
   console.log(`   Search: POST http://localhost:${PORT}/api/upwork/jobs/search`);
+  console.log(`   Tabs:   POST http://localhost:${PORT}/api/upwork/jobs/tab`);
+  console.log(`   Detail: GET  http://localhost:${PORT}/api/upwork/jobs/detail?url=...`);
+  console.log(`   Score:  POST http://localhost:${PORT}/api/upwork/jobs/score`);
+  console.log(`   Batch:  POST http://localhost:${PORT}/api/upwork/jobs/score-batch`);
   console.log(`   Messages: GET http://localhost:${PORT}/api/upwork/conversations`);
   if (OPENAI_API_KEY) console.log(`   AI Proposals: POST http://localhost:${PORT}/api/upwork/proposals/generate`);
   console.log('');

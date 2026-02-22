@@ -1,32 +1,60 @@
 /**
  * Upwork Job Discovery & Extraction Operations
  * High-level Safari automation for job search, extraction, and scoring.
+ * All selectors verified against live Upwork DOM (Feb 2026).
  */
 
 import { SafariDriver, getDefaultDriver } from './safari-driver.js';
 import type {
   UpworkJob,
+  UpworkJobDetail,
   JobSearchConfig,
   JobScore,
+  JobTab,
   NavigationResult,
-  UPWORK_SELECTORS,
 } from './types.js';
-import { DEFAULT_SEARCH_CONFIG } from './types.js';
+import { DEFAULT_SEARCH_CONFIG, JOB_TAB_URLS } from './types.js';
 
-const UPWORK_FIND_WORK = 'https://www.upwork.com/nx/find-work/best-matches';
 const UPWORK_SEARCH = 'https://www.upwork.com/nx/search/jobs';
 const UPWORK_MY_JOBS = 'https://www.upwork.com/nx/find-work/my-jobs';
 
 // ─── Navigation ──────────────────────────────────────────────
 
 export async function navigateToFindWork(driver?: SafariDriver): Promise<NavigationResult> {
+  return navigateToTab('best_matches', driver);
+}
+
+export async function navigateToTab(tab: JobTab, driver?: SafariDriver): Promise<NavigationResult> {
   const d = driver || getDefaultDriver();
-  const success = await d.navigateTo(UPWORK_FIND_WORK);
-  if (!success) return { success: false, error: 'Failed to navigate to Find Work' };
+  const url = JOB_TAB_URLS[tab];
+  const success = await d.navigateTo(url);
+  if (!success) return { success: false, error: `Failed to navigate to ${tab}` };
 
   await d.wait(3000);
   const isLoggedIn = await d.isLoggedIn();
   if (!isLoggedIn) return { success: false, error: 'Not logged in to Upwork' };
+
+  // For tabs that use buttons instead of URL navigation, click the button
+  if (tab !== 'saved_jobs') {
+    const tabNames: Record<string, string> = {
+      best_matches: 'Best Matches',
+      most_recent: 'Most Recent',
+      us_only: 'U.S. Only',
+    };
+    await d.executeJS(`
+      (function() {
+        var btns = document.querySelectorAll('button');
+        for (var b of btns) {
+          if (b.innerText.trim().startsWith('${tabNames[tab]}')) {
+            b.click();
+            return 'clicked';
+          }
+        }
+        return 'not_found';
+      })()
+    `);
+    await d.wait(2000);
+  }
 
   const currentUrl = await d.getCurrentUrl();
   return { success: true, currentUrl };
@@ -51,118 +79,362 @@ export async function navigateToJob(jobUrl: string, driver?: SafariDriver): Prom
   return { success: true, currentUrl };
 }
 
-// ─── Job Search ──────────────────────────────────────────────
+// ─── Build Search URL with ALL Filters ───────────────────────
+
+function buildSearchUrl(config: JobSearchConfig): string {
+  const params = new URLSearchParams();
+
+  // Keywords
+  if (config.keywords.length > 0) params.set('q', config.keywords.join(' '));
+
+  // Sort
+  const sortMap: Record<string, string> = {
+    relevance: 'relevance',
+    newest: 'recency',
+    client_spending: 'client_total_charge',
+  };
+  params.set('sort', sortMap[config.sortBy] || 'recency');
+
+  // Job type: t=0 (hourly), t=1 (fixed), t=0,1 (both)
+  if (config.jobType === 'hourly') params.set('t', '0');
+  else if (config.jobType === 'fixed') params.set('t', '1');
+
+  // Experience levels (can select multiple): contractor_tier=1,2,3
+  if (config.experienceLevel !== 'any') {
+    const levelMap: Record<string, string> = { entry: '1', intermediate: '2', expert: '3' };
+    if (Array.isArray(config.experienceLevel)) {
+      const tiers = config.experienceLevel.map(l => levelMap[l]).filter(Boolean);
+      if (tiers.length > 0) params.set('contractor_tier', tiers.join(','));
+    }
+  }
+
+  // Category
+  if (config.category) params.set('category2_uid', config.category);
+
+  // Hourly rate range: amount=MIN-MAX
+  if (config.hourlyRateMin || config.hourlyRateMax) {
+    const min = config.hourlyRateMin || '';
+    const max = config.hourlyRateMax || '';
+    params.set('amount', `${min}-${max}`);
+  }
+
+  // Fixed price ranges
+  if (config.fixedPriceRange) {
+    const fpMap: Record<string, string> = {
+      less_100: '-100',
+      '100_500': '100-500',
+      '500_1k': '500-1000',
+      '1k_5k': '1000-5000',
+      '5k_plus': '5000-',
+    };
+    params.set('amount', fpMap[config.fixedPriceRange] || '');
+  } else if (config.fixedPriceMin || config.fixedPriceMax) {
+    const min = config.fixedPriceMin || '';
+    const max = config.fixedPriceMax || '';
+    params.set('amount', `${min}-${max}`);
+  }
+
+  // Proposal ranges
+  if (config.proposalRange) {
+    const propMap: Record<string, string> = {
+      less_5: '0-4',
+      '5_10': '5-9',
+      '10_15': '10-14',
+      '15_20': '15-19',
+      '20_50': '20-49',
+    };
+    params.set('proposals', propMap[config.proposalRange] || '');
+  }
+
+  // Client info
+  if (config.paymentVerified) params.set('payment_verified', '1');
+  if (config.previousClients) params.set('previous_clients', 'all');
+
+  // Client history (hires)
+  if (config.clientHires) {
+    const hiresMap: Record<string, string> = {
+      no_hires: '0',
+      '1_9': '1-9',
+      '10_plus': '10-',
+    };
+    params.set('client_hires', hiresMap[config.clientHires] || '');
+  }
+
+  // Client location
+  if (config.clientLocation) params.set('location', config.clientLocation);
+
+  // Client timezone
+  if (config.clientTimezone) params.set('timezone', config.clientTimezone);
+
+  // Project length
+  if (config.projectLength) {
+    const plMap: Record<string, string> = {
+      less_month: 'week',
+      '1_3_months': 'month',
+      '3_6_months': 'semester',
+      '6_plus_months': 'ongoing',
+    };
+    params.set('project_length', plMap[config.projectLength] || '');
+  }
+
+  // Hours per week
+  if (config.hoursPerWeek) {
+    params.set('hours_per_week', config.hoursPerWeek === 'less_30' ? 'less' : 'more');
+  }
+
+  // Contract to hire
+  if (config.contractToHire) params.set('contract_to_hire', '1');
+
+  // US only
+  if (config.usOnly) params.set('location', 'United States');
+
+  // Posted within
+  if (config.postedWithin) {
+    const pwMap: Record<string, string> = {
+      '24h': '1', '3d': '3', '7d': '7', '14d': '14', '30d': '30',
+    };
+    params.set('per_page', '50');
+    params.set('days', pwMap[config.postedWithin] || '');
+  }
+
+  return `${UPWORK_SEARCH}?${params.toString()}`;
+}
+
+// ─── Shared Job Tile Extraction JS ───────────────────────────
+
+// Universal extractor that works on both search results (article.job-tile)
+// and find-work tabs (section.air3-card-hover). Verified Feb 2026.
+const JOB_TILE_EXTRACTION_JS = `
+(function() {
+  var jobs = [];
+
+  // Strategy 1: Search results page (article.job-tile with data-test attrs)
+  var tiles = document.querySelectorAll('article.job-tile');
+
+  if (tiles.length > 0) {
+    tiles.forEach(function(tile) {
+      try {
+        var titleEl = tile.querySelector('[data-test*="job-tile-title-link"]');
+        var title = titleEl ? titleEl.innerText.trim() : '';
+        var url = titleEl ? titleEl.href : '';
+
+        var descEl = tile.querySelector('[data-test*="JobDescription"]');
+        var description = descEl ? descEl.innerText.trim().substring(0, 500) : '';
+
+        var budgetEl = tile.querySelector('[data-test="is-fixed-price"]') ||
+                       tile.querySelector('[data-test="job-type-label"]');
+        var budgetText = budgetEl ? budgetEl.innerText.trim() : '';
+
+        var skillEls = tile.querySelectorAll('[data-test="token"]');
+        var skills = [];
+        skillEls.forEach(function(s) { skills.push(s.innerText.trim()); });
+
+        var proposalEl = tile.querySelector('[data-test="proposals-tier"]');
+        var proposalText = proposalEl ? proposalEl.innerText.trim() : '';
+        var proposalMatch = proposalText.match(/(\\d+)/);
+        var proposals = proposalMatch ? parseInt(proposalMatch[1]) : 0;
+
+        var postedEl = tile.querySelector('[data-test="job-pubilshed-date"]');
+        var posted = postedEl ? postedEl.innerText.trim() : '';
+
+        var levelEl = tile.querySelector('[data-test="experience-level"]');
+        var level = levelEl ? levelEl.innerText.trim() : '';
+
+        var spentEl = tile.querySelector('[data-test="total-spent"]');
+        var ratingEl = tile.querySelector('[data-test*="feedback-rating"]');
+        var locEl = tile.querySelector('[data-test="location"]');
+        var verifiedEl = tile.querySelector('[data-test="payment-verified"]');
+
+        var clientInfo = {
+          totalSpent: spentEl ? spentEl.innerText.trim().split(String.fromCharCode(10))[0] : '',
+          reviewScore: ratingEl ? (function(){ var m = ratingEl.innerText.trim().match(/[\\d.]+/); return m ? parseFloat(m[0]) : 0; })() : 0,
+          location: locEl ? locEl.innerText.trim().replace('Location ', '') : '',
+          paymentVerified: !!verifiedEl,
+          hireRate: '',
+          jobsPosted: 0,
+        };
+
+        var idMatch = url.match(/~(\\d+)/);
+        var jobId = idMatch ? idMatch[1] : Date.now().toString();
+
+        if (title) {
+          jobs.push(JSON.stringify({
+            id: jobId,
+            title: title,
+            description: description,
+            url: url.split('?')[0],
+            budget: { text: budgetText },
+            skills: skills,
+            experienceLevel: level,
+            postedAt: posted,
+            proposals: proposals,
+            proposalTier: proposalText,
+            clientInfo: clientInfo,
+          }));
+        }
+      } catch(e) {}
+    });
+  }
+
+  // Strategy 2: Find-work tabs (section.air3-card-hover with text parsing)
+  if (jobs.length === 0) {
+    var sections = document.querySelectorAll('section.air3-card-hover');
+    sections.forEach(function(sec) {
+      try {
+        var titleEl = sec.querySelector('h3 a, h4 a, h2 a');
+        var title = titleEl ? titleEl.innerText.trim() : '';
+        var url = titleEl ? titleEl.href : '';
+        if (!title || !url.includes('/jobs/')) return;
+
+        // Description
+        var descEl = sec.querySelector('.air3-line-clamp-wrapper, [class*=description]');
+        var description = descEl ? descEl.innerText.trim().replace(/^Job Description:\\s*/i, '').substring(0, 500) : '';
+
+        // Posted
+        var postedEl = sec.querySelector('[data-test="posted-on"]');
+        var posted = postedEl ? postedEl.innerText.trim() : '';
+
+        // Skills
+        var skillEls = sec.querySelectorAll('.air3-token, [data-test="token"]');
+        var skills = [];
+        skillEls.forEach(function(s) { skills.push(s.innerText.trim()); });
+
+        // Parse budget, level, proposals, client info from full text
+        var fullText = sec.innerText;
+
+        // Budget
+        var budgetText = '';
+        var budgetMatch = fullText.match(/(Fixed-price|Hourly)[^\\n]*(\\$[\\d,]+(?:\\.\\d+)?(?:\\s*-\\s*\\$[\\d,]+(?:\\.\\d+)?)?)/i);
+        if (budgetMatch) budgetText = budgetMatch[0].trim();
+        else {
+          var estMatch = fullText.match(/Est\\.?\\s*Budget:\\s*(\\$[\\d,.]+)/i);
+          if (estMatch) budgetText = 'Fixed-price - Est. Budget: ' + estMatch[1];
+          var hourlyMatch = fullText.match(/(\\$[\\d.]+)\\s*-\\s*(\\$[\\d.]+).*?\\/hr/i);
+          if (hourlyMatch) budgetText = hourlyMatch[0];
+        }
+
+        // Experience level
+        var level = '';
+        if (fullText.includes('Expert')) level = 'Expert';
+        else if (fullText.includes('Intermediate')) level = 'Intermediate';
+        else if (fullText.includes('Entry Level') || fullText.includes('Entry level')) level = 'Entry Level';
+
+        // Proposals
+        var proposals = 0;
+        var propMatch = fullText.match(/Proposals:\\s*(\\d+)\\s*(?:to\\s*(\\d+))?/i);
+        if (propMatch) proposals = parseInt(propMatch[2] || propMatch[1]);
+        var proposalTier = propMatch ? propMatch[0] : '';
+
+        // Client info from text
+        var paymentVerified = fullText.includes('Payment verified');
+        var spentMatch = fullText.match(/(\\$[\\d,.]+K?\\+?)\\s*(?:total\\s*)?spent/i);
+        var totalSpent = spentMatch ? spentMatch[1] : '';
+        var ratingMatch = fullText.match(/(\\d\\.\\d+)\\s*(?:of|out|star)/i);
+        var reviewScore = ratingMatch ? parseFloat(ratingMatch[1]) : 0;
+        var locMatch = fullText.match(/(?:Location|from)\\s+([A-Z][\\w\\s,]+?)(?:\\n|$)/i);
+        var location = locMatch ? locMatch[1].trim() : '';
+
+        var clientInfo = {
+          totalSpent: totalSpent,
+          reviewScore: reviewScore,
+          location: location,
+          paymentVerified: paymentVerified,
+          hireRate: '',
+          jobsPosted: 0,
+        };
+
+        var idMatch = url.match(/~(\\d+)/);
+        var jobId = idMatch ? idMatch[1] : url.split('/').filter(Boolean).pop() || Date.now().toString();
+
+        jobs.push(JSON.stringify({
+          id: jobId,
+          title: title,
+          description: description,
+          url: url.split('?')[0],
+          budget: { text: budgetText },
+          skills: skills,
+          experienceLevel: level,
+          postedAt: posted,
+          proposals: proposals,
+          proposalTier: proposalTier,
+          clientInfo: clientInfo,
+        }));
+      } catch(e) {}
+    });
+  }
+
+  return '[' + jobs.join(',') + ']';
+})()
+`;
+
+function parseJobTiles(raw: any[]): UpworkJob[] {
+  return raw.map((j: any) => ({
+    ...j,
+    budget: parseBudget(j.budget?.text || ''),
+    connectsCost: 0,
+    isInviteOnly: false,
+    category: '',
+    scrapedAt: new Date().toISOString(),
+  }));
+}
+
+// ─── Job Search (Full Filter Support) ────────────────────────
 
 export async function searchJobs(
   config: Partial<JobSearchConfig> = {},
   driver?: SafariDriver
 ): Promise<UpworkJob[]> {
   const d = driver || getDefaultDriver();
-  const search = { ...DEFAULT_SEARCH_CONFIG, ...config };
+  const search: JobSearchConfig = { ...DEFAULT_SEARCH_CONFIG, ...config };
 
-  // Build search URL
-  const params = new URLSearchParams();
-  if (search.keywords.length > 0) params.set('q', search.keywords.join(' '));
-  if (search.jobType !== 'both') params.set('t', search.jobType === 'hourly' ? '0' : '1');
-  if (search.experienceLevel !== 'any') {
-    const levelMap: Record<string, string> = { entry: '1', intermediate: '2', expert: '3' };
-    params.set('contractor_tier', levelMap[search.experienceLevel] || '');
-  }
-  if (search.budgetMin) params.set('amount', String(search.budgetMin));
-  const sortMap: Record<string, string> = { relevance: 'relevance', newest: 'recency', client_spending: 'client_total_charge' };
-  params.set('sort', sortMap[search.sortBy] || 'recency');
-
-  const searchUrl = `${UPWORK_SEARCH}?${params.toString()}`;
+  const searchUrl = buildSearchUrl(search);
   const success = await d.navigateTo(searchUrl);
   if (!success) return [];
 
   await d.wait(4000);
 
-  // Extract jobs from search results (selectors verified against live Upwork DOM Feb 2026)
-  const jobsJson = await d.executeJS(`
-    (function() {
-      var jobs = [];
-      var tiles = document.querySelectorAll('article.job-tile');
-
-      tiles.forEach(function(tile) {
-        try {
-          var titleEl = tile.querySelector('[data-test*="job-tile-title-link"]');
-          var title = titleEl ? titleEl.innerText.trim() : '';
-          var url = titleEl ? titleEl.href : '';
-
-          var descEl = tile.querySelector('[data-test*="JobDescription"]');
-          var description = descEl ? descEl.innerText.trim().substring(0, 500) : '';
-
-          var budgetEl = tile.querySelector('[data-test="is-fixed-price"]') ||
-                         tile.querySelector('[data-test="job-type-label"]');
-          var budgetText = budgetEl ? budgetEl.innerText.trim() : '';
-
-          var skillEls = tile.querySelectorAll('[data-test="token"]');
-          var skills = [];
-          skillEls.forEach(function(s) { skills.push(s.innerText.trim()); });
-
-          var proposalEl = tile.querySelector('[data-test="proposals-tier"]');
-          var proposalText = proposalEl ? proposalEl.innerText.trim() : '';
-          var proposalMatch = proposalText.match(/(\\d+)/);
-          var proposals = proposalMatch ? parseInt(proposalMatch[1]) : 0;
-
-          var postedEl = tile.querySelector('[data-test="job-pubilshed-date"]');
-          var posted = postedEl ? postedEl.innerText.trim() : '';
-
-          var levelEl = tile.querySelector('[data-test="experience-level"]');
-          var level = levelEl ? levelEl.innerText.trim() : '';
-
-          var spentEl = tile.querySelector('[data-test="total-spent"]');
-          var ratingEl = tile.querySelector('[data-test*="feedback-rating"]');
-          var locEl = tile.querySelector('[data-test="location"]');
-          var verifiedEl = tile.querySelector('[data-test="payment-verified"]');
-
-          var clientInfo = {
-            totalSpent: spentEl ? spentEl.innerText.trim().split(String.fromCharCode(10))[0] : '',
-            reviewScore: ratingEl ? ratingEl.innerText.trim().match(/[\\d.]+/) ? parseFloat(ratingEl.innerText.trim().match(/[\\d.]+/)[0]) : 0 : 0,
-            location: locEl ? locEl.innerText.trim().replace('Location ', '') : '',
-            paymentVerified: !!verifiedEl,
-          };
-
-          // Extract job ID from URL pattern: _~NNNNN/
-          var idMatch = url.match(/~(\\d+)/);
-          var jobId = idMatch ? idMatch[1] : Date.now().toString();
-
-          if (title) {
-            jobs.push(JSON.stringify({
-              id: jobId,
-              title: title,
-              description: description,
-              url: url.split('?')[0],
-              budget: { text: budgetText },
-              skills: skills,
-              experienceLevel: level,
-              postedAt: posted,
-              proposals: proposals,
-              clientInfo: clientInfo,
-            }));
-          }
-        } catch(e) {}
-      });
-
-      return '[' + jobs.join(',') + ']';
-    })()
-  `);
+  const jobsJson = await d.executeJS(JOB_TILE_EXTRACTION_JS);
 
   try {
     const raw = JSON.parse(jobsJson || '[]');
-    return raw.map((j: any) => ({
-      ...j,
-      budget: parseBudget(j.budget?.text || ''),
-      connectsCost: 0,
-      isInviteOnly: false,
-      category: '',
-      scrapedAt: new Date().toISOString(),
-    }));
+    return parseJobTiles(raw);
   } catch {
     return [];
   }
 }
+
+// ─── Extract Jobs from Current Page (for tabs) ──────────────
+
+export async function extractJobsFromCurrentPage(driver?: SafariDriver): Promise<UpworkJob[]> {
+  const d = driver || getDefaultDriver();
+  const jobsJson = await d.executeJS(JOB_TILE_EXTRACTION_JS);
+
+  try {
+    const raw = JSON.parse(jobsJson || '[]');
+    return parseJobTiles(raw);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Browse Tab + Extract ────────────────────────────────────
+
+export async function getJobsFromTab(tab: JobTab, driver?: SafariDriver): Promise<{
+  success: boolean;
+  tab: string;
+  jobs: UpworkJob[];
+  count: number;
+}> {
+  const d = driver || getDefaultDriver();
+  const nav = await navigateToTab(tab, d);
+  if (!nav.success) return { success: false, tab, jobs: [], count: 0 };
+
+  await d.wait(2000);
+  const jobs = await extractJobsFromCurrentPage(d);
+  return { success: true, tab, jobs, count: jobs.length };
+}
+
+// ─── Budget Parser ───────────────────────────────────────────
 
 function parseBudget(text: string): UpworkJob['budget'] {
   if (!text) return { type: 'fixed' };
@@ -178,9 +450,9 @@ function parseBudget(text: string): UpworkJob['budget'] {
   return { type: 'fixed' };
 }
 
-// ─── Job Detail Extraction ───────────────────────────────────
+// ─── Full Job Detail Page Extraction ─────────────────────────
 
-export async function extractJobDetail(jobUrl: string, driver?: SafariDriver): Promise<UpworkJob | null> {
+export async function extractJobDetail(jobUrl: string, driver?: SafariDriver): Promise<UpworkJobDetail | null> {
   const d = driver || getDefaultDriver();
   const nav = await navigateToJob(jobUrl, d);
   if (!nav.success) return null;
@@ -188,86 +460,286 @@ export async function extractJobDetail(jobUrl: string, driver?: SafariDriver): P
   await d.wait(3000);
 
   const detailJson = await d.executeJS(`
-    (function() {
-      var title = '';
-      var titleEl = document.querySelector('h1, [data-test="job-title"], .job-title');
-      if (titleEl) title = titleEl.innerText.trim();
+(function() {
+  var result = {};
 
-      var descEl = document.querySelector('[data-test="description"], .job-description, [data-cy="description"]');
-      var description = descEl ? descEl.innerText.trim() : '';
+  // Title — Upwork job detail uses h4, not h1
+  var titleEl = document.querySelector('h4') || document.querySelector('h1');
+  result.title = titleEl ? titleEl.innerText.trim() : '';
 
-      var budgetEl = document.querySelector('[data-test="budget"], [data-cy="budget"]');
-      var budgetText = budgetEl ? budgetEl.innerText.trim() : '';
+  // Full description — [data-test="Description"]
+  var descEl = document.querySelector('[data-test="Description"]');
+  result.fullDescription = descEl ? descEl.innerText.trim() : '';
 
-      var skillEls = document.querySelectorAll('[data-test="token"], .air3-token, .up-skill-badge');
-      var skills = [];
-      skillEls.forEach(function(s) { skills.push(s.innerText.trim()); });
+  // Skills/tokens — detail page uses .air3-badge, search uses .air3-token
+  var skillEls = document.querySelectorAll('.air3-badge, .air3-token, [data-test="token"]');
+  result.skills = [];
+  var seen = {};
+  skillEls.forEach(function(s) {
+    var t = s.innerText.trim();
+    if (t && t.length > 1 && t.length < 50 && !seen[t]) {
+      seen[t] = true;
+      result.skills.push(t);
+    }
+  });
 
-      var proposalEl = document.querySelector('[data-test="proposals"]');
-      var proposalText = proposalEl ? proposalEl.innerText.trim() : '';
-      var proposalMatch = proposalText.match(/(\\d+)/);
-      var proposals = proposalMatch ? parseInt(proposalMatch[1]) : 0;
+  // Parse all <li> elements — Upwork puts project metadata and client info in li items
+  var lis = document.querySelectorAll('li');
+  result.experienceLevel = '';
+  result.budgetText = '';
+  result.projectType = '';
+  result.projectLength = '';
+  result.weeklyHours = '';
+  result.proposalsCount = 0;
+  result.interviewing = 0;
+  result.invitesSent = 0;
+  result.unansweredInvites = 0;
 
-      var levelEl = document.querySelector('[data-test="experience-level"]');
-      var level = levelEl ? levelEl.innerText.trim() : '';
+  lis.forEach(function(li) {
+    var t = li.innerText.trim();
 
-      var connectsEl = document.querySelector('[data-test="connects"]');
-      var connectsText = connectsEl ? connectsEl.innerText.trim() : '';
-      var connectsMatch = connectsText.match(/(\\d+)/);
-      var connects = connectsMatch ? parseInt(connectsMatch[1]) : 0;
+    // Experience level: "Intermediate\\nI am looking for..."
+    if (t.match(/^(Entry Level|Intermediate|Expert)/)) {
+      result.experienceLevel = t.split(String.fromCharCode(10))[0].trim();
+    }
 
-      var clientSection = document.querySelector('.client-info, [data-test="client-info"], [data-cy="client-info"]');
-      var clientInfo = {};
-      if (clientSection) {
-        var items = clientSection.querySelectorAll('li, div, span');
-        items.forEach(function(item) {
-          var text = item.innerText.trim();
-          if (text.includes('$')) clientInfo.totalSpent = text;
-          if (text.includes('hire rate') || text.includes('%')) clientInfo.hireRate = text;
-          if (text.includes('Payment verified')) clientInfo.paymentVerified = true;
-          if (text.match(/\\d+ jobs? posted/)) clientInfo.jobsPosted = parseInt(text);
-          if (text.match(/\\d\\.\\d/)) clientInfo.reviewScore = parseFloat(text);
-        });
-        var locEl = clientSection.querySelector('[data-test="location"], .client-location');
-        if (locEl) clientInfo.location = locEl.innerText.trim();
+    // Hours/week + job type: "Less than 30 hrs/week\\nHourly"
+    if (t.match(/hrs\\/week/i)) {
+      result.weeklyHours = t.split(String.fromCharCode(10))[0].trim();
+      if (t.toLowerCase().includes('hourly')) result.budgetText = 'Hourly';
+    }
+
+    // Duration: "1 to 3 months\\nDuration"
+    if (t.match(/Duration$/im)) {
+      result.projectLength = t.split(String.fromCharCode(10))[0].trim();
+    }
+
+    // Project type: "Project Type:Ongoing project"
+    if (t.match(/^Project Type:/i)) {
+      result.projectType = t.replace(/^Project Type:/i, '').trim();
+    }
+
+    // Proposals: "Proposals:\\n10 to 15"
+    if (t.match(/^Proposals:/i)) {
+      var pm = t.match(/(\\d+)\\s*(?:to\\s*(\\d+))?/);
+      if (pm) result.proposalsCount = parseInt(pm[2] || pm[1]);
+    }
+
+    // Interviewing
+    if (t.match(/^Interviewing:/i)) {
+      var im = t.match(/(\\d+)/);
+      if (im) result.interviewing = parseInt(im[1]);
+    }
+
+    // Invites sent
+    if (t.match(/^Invites sent:/i)) {
+      var isM = t.match(/(\\d+)/);
+      if (isM) result.invitesSent = parseInt(isM[1]);
+    }
+
+    // Unanswered invites
+    if (t.match(/^Unanswered invites:/i)) {
+      var ui = t.match(/(\\d+)/);
+      if (ui) result.unansweredInvites = parseInt(ui[1]);
+    }
+
+    // Fixed-price budget from li text
+    if (t.match(/^\\$[\\d,.]+$/) && !result.budgetText) {
+      result.budgetText = 'Fixed-price - ' + t;
+    }
+  });
+
+  // Build activity summary
+  result.activityOnJob = 'Proposals: ' + result.proposalsCount +
+    ', Interviewing: ' + result.interviewing +
+    ', Invites: ' + result.invitesSent +
+    ', Unanswered: ' + result.unansweredInvites;
+
+  // Connects required + available — scan for "connects" text
+  result.connectsRequired = 0;
+  result.availableConnects = 0;
+  var allSpans = document.querySelectorAll('span, p, div, strong');
+  for (var cel of allSpans) {
+    var ct = cel.innerText.trim();
+    if (ct.length > 5 && ct.length < 80) {
+      if (ct.match(/(\\d+)\\s*connects?\\s*(?:required|to submit|needed)/i)) {
+        var cm = ct.match(/(\\d+)/);
+        if (cm) result.connectsRequired = parseInt(cm[1]);
       }
+      if (ct.match(/(?:you have|available)[^\\d]*(\\d+)\\s*connect/i)) {
+        var am = ct.match(/(\\d+)/);
+        if (am) result.availableConnects = parseInt(am[1]);
+      }
+      if (ct.match(/(\\d+)\\s*connect/i) && !result.connectsRequired) {
+        var cm2 = ct.match(/(\\d+)\\s*connect/i);
+        if (cm2) result.connectsRequired = parseInt(cm2[1]);
+      }
+    }
+  }
 
-      return JSON.stringify({
-        title: title,
-        description: description,
-        url: window.location.href,
-        budget: { text: budgetText },
-        skills: skills,
-        experienceLevel: level,
-        proposals: proposals,
-        connectsCost: connects,
-        clientInfo: clientInfo,
-      });
-    })()
+  // Questions for freelancer
+  result.questionsForFreelancer = [];
+  var questionEls = document.querySelectorAll('[data-test*="question"], .question-text');
+  questionEls.forEach(function(q) {
+    var qt = q.innerText.trim();
+    if (qt) result.questionsForFreelancer.push(qt);
+  });
+
+  // Attachments
+  result.attachments = [];
+  var attachEls = document.querySelectorAll('[data-test*="attachment"] a, .attachment a');
+  attachEls.forEach(function(a) {
+    result.attachments.push(a.innerText.trim() || a.href);
+  });
+
+  // Client info — [data-test="about-client-container"]
+  var clientSection = document.querySelector('[data-test="about-client-container"]');
+  result.clientInfo = { paymentVerified: false, location: '', totalSpent: '', hireRate: '', jobsPosted: 0, reviewScore: 0 };
+  if (clientSection) {
+    var cText = clientSection.innerText;
+
+    result.clientInfo.paymentVerified = cText.includes('Payment') && cText.includes('verified');
+
+    var spentMatch = cText.match(/(\\$[\\d,.]+K?\\+?)\\s*total\\s*spent/i);
+    if (spentMatch) result.clientInfo.totalSpent = spentMatch[1];
+
+    var rateMatch = cText.match(/(\\d+)%\\s*hire\\s*rate/i);
+    if (rateMatch) result.clientInfo.hireRate = rateMatch[1] + '%';
+
+    var postedMatch = cText.match(/(\\d+)\\s*jobs?\\s*posted/i);
+    if (postedMatch) result.clientInfo.jobsPosted = parseInt(postedMatch[1]);
+
+    var openMatch = cText.match(/(\\d+)\\s*open\\s*job/i);
+    if (openMatch) result.clientOpenJobs = parseInt(openMatch[1]);
+
+    var ratingMatch = cText.match(/Rating is (\\d\\.\\d+)/i) || cText.match(/(\\d\\.\\d+)\\s*of\\s*\\d/i);
+    if (ratingMatch) result.clientInfo.reviewScore = parseFloat(ratingMatch[1]);
+
+    // Location — scan lines for country (skip "Payment method verified" line)
+    var cLines = cText.split(String.fromCharCode(10)).map(function(l) { return l.trim(); });
+    for (var li = 0; li < cLines.length; li++) {
+      var cl = cLines[li];
+      if (cl.match(/^(United States|Canada|United Kingdom|Australia|Germany|France|India|Philippines|Pakistan|Brazil|Nigeria|[A-Z][a-z]+ [A-Z][a-z]+)/) && !cl.match(/Payment|Rating|Member|review/i)) {
+        result.clientInfo.location = cl;
+        break;
+      }
+    }
+    var locMatch = null; // Already handled above
+    if (locMatch) result.clientInfo.location = locMatch[1];
+
+    var joinedMatch = cText.match(/Member since\\s*(.+?)(?:\\n|$)/i);
+    if (joinedMatch) result.clientJoined = joinedMatch[1].trim();
+
+    var avgRateMatch = cText.match(/(\\$[\\d.]+)\\s*\\/hr\\s*avg/i);
+    if (avgRateMatch) result.clientAvgHourlyRate = avgRateMatch[1];
+
+    var totalSpentMatch = cText.match(/(\\$[\\d,.]+K?\\+?)\\s*total/i);
+    if (totalSpentMatch) result.clientTotalSpent = totalSpentMatch[1];
+
+    var hiresMatch = cText.match(/(\\d+)\\s*hires?,/i);
+    if (hiresMatch) result.clientHires = parseInt(hiresMatch[1]);
+  }
+
+  // Posted date — look for "Posted X ago" text
+  result.postedAt = '';
+  var timeEls = document.querySelectorAll('span, small, time');
+  for (var te of timeEls) {
+    var tt = te.innerText.trim();
+    if (tt.match(/^Posted\\s+/i) || tt.match(/\\d+\\s*(minute|hour|day|week)s?\\s*ago/i)) {
+      result.postedAt = tt.replace(/^Posted\\s+/i, '');
+      break;
+    }
+  }
+
+  result.url = window.location.href.split('?')[0];
+  var idMatch = result.url.match(/~(\\d+)/);
+  result.id = idMatch ? idMatch[1] : '';
+
+  return JSON.stringify(result);
+})()
   `);
 
   try {
     const raw = JSON.parse(detailJson || '{}');
     return {
       ...raw,
-      id: jobUrl.split('/').pop() || Date.now().toString(),
-      budget: parseBudget(raw.budget?.text || ''),
+      id: raw.id || jobUrl.match(/~(\d+)/)?.[1] || Date.now().toString(),
+      budget: parseBudget(raw.budgetText || ''),
+      description: raw.fullDescription?.substring(0, 500) || '',
+      connectsCost: raw.connectsRequired || 0,
       isInviteOnly: false,
       category: '',
-      postedAt: '',
       scrapedAt: new Date().toISOString(),
-    };
+    } as UpworkJobDetail;
   } catch {
     return null;
   }
 }
 
-// ─── Job Scoring ─────────────────────────────────────────────
+// ─── Smart Connects Recommendation Engine ────────────────────
+
+export function recommendConnects(
+  job: UpworkJob,
+  score: JobScore,
+  availableConnects: number = 100,
+): JobScore['connectsRecommendation'] {
+  const proposals = job.proposals || 0;
+  const budget = job.budget.amount || job.budget.max || job.budget.min || 0;
+
+  // Determine competition level
+  let competitionLevel: 'low' | 'medium' | 'high' | 'very_high';
+  if (proposals <= 5) competitionLevel = 'low';
+  else if (proposals <= 15) competitionLevel = 'medium';
+  else if (proposals <= 30) competitionLevel = 'high';
+  else competitionLevel = 'very_high';
+
+  // Base connects by competition
+  let suggestedConnects: number;
+  if (competitionLevel === 'low') suggestedConnects = 2;
+  else if (competitionLevel === 'medium') suggestedConnects = 6;
+  else if (competitionLevel === 'high') suggestedConnects = 10;
+  else suggestedConnects = 16;
+
+  // Adjust for budget (higher budget = worth more connects)
+  if (budget >= 5000) suggestedConnects = Math.min(suggestedConnects + 6, 16);
+  else if (budget >= 1000) suggestedConnects = Math.min(suggestedConnects + 4, 16);
+  else if (budget >= 500) suggestedConnects = Math.min(suggestedConnects + 2, 16);
+
+  // Adjust for score (high score jobs = bid more aggressively)
+  if (score.totalScore >= 70) suggestedConnects = Math.min(suggestedConnects + 4, 16);
+  else if (score.totalScore >= 55) suggestedConnects = Math.min(suggestedConnects + 2, 16);
+  else if (score.totalScore < 35) suggestedConnects = Math.max(suggestedConnects - 4, 2);
+
+  // Adjust for client quality
+  if (job.clientInfo.paymentVerified && (job.clientInfo.reviewScore || 0) >= 4.5) {
+    suggestedConnects = Math.min(suggestedConnects + 2, 16);
+  }
+
+  // Cap at available connects
+  suggestedConnects = Math.min(suggestedConnects, availableConnects);
+
+  // Build reasoning
+  const reasons: string[] = [];
+  reasons.push(`Competition: ${competitionLevel} (${proposals} proposals)`);
+  if (budget > 0) reasons.push(`Budget: $${budget}`);
+  if (score.totalScore >= 70) reasons.push('High score — bid aggressively');
+  else if (score.totalScore < 35) reasons.push('Low score — conserve connects');
+  if (job.clientInfo.paymentVerified) reasons.push('Payment verified client');
+
+  return {
+    suggestedConnects,
+    reasoning: reasons.join('. '),
+    competitionLevel,
+  };
+}
+
+// ─── Job Scoring (with Connects) ─────────────────────────────
 
 export function scoreJob(
   job: UpworkJob,
   preferredSkills: string[] = [],
   minBudget: number = 0,
+  availableConnects: number = 100,
 ): JobScore {
   let totalScore = 0;
   const factors: JobScore['factors'] = {
@@ -331,12 +803,19 @@ export function scoreJob(
   if (factors.freshness >= 8) reasons.push('Just posted');
   if (reasons.length === 0) reasons.push('Average opportunity');
 
-  return {
+  const partialScore: Omit<JobScore, 'connectsRecommendation'> = {
     jobId: job.id,
     totalScore,
     factors,
     recommendation,
     reason: reasons.join(', '),
+  };
+
+  const connectsRecommendation = recommendConnects(job, partialScore as JobScore, availableConnects);
+
+  return {
+    ...partialScore,
+    connectsRecommendation,
   };
 }
 
@@ -349,9 +828,9 @@ export async function saveJob(jobUrl: string, driver?: SafariDriver): Promise<bo
 
   const result = await d.executeJS(`
     (function() {
-      var btn = document.querySelector('[data-test="save-job"]') ||
-                document.querySelector('[aria-label*="Save"]') ||
-                document.querySelector('button[title*="Save"]');
+      var btn = document.querySelector('[data-test="JobActionSave"]') ||
+                document.querySelector('[data-test="save-job"]') ||
+                document.querySelector('[aria-label*="Save"]');
       if (btn) { btn.click(); return 'saved'; }
       return 'not_found';
     })()
@@ -390,5 +869,49 @@ export async function getApplications(driver?: SafariDriver): Promise<any[]> {
     return JSON.parse(appsJson || '[]');
   } catch {
     return [];
+  }
+}
+
+// ─── Get Available Filters (reads from current page) ─────────
+
+export async function getAvailableFilters(driver?: SafariDriver): Promise<Record<string, any>> {
+  const d = driver || getDefaultDriver();
+
+  const filtersJson = await d.executeJS(`
+(function() {
+  var result = {};
+
+  // Get search result count
+  var countEl = document.querySelector('[data-test*="total"], .search-count, h1');
+  if (countEl) result.totalResults = countEl.innerText.trim();
+
+  // Get currently active filters
+  var activeFilters = [];
+  var pills = document.querySelectorAll('[data-test*="filter-pill"], .air3-tag, .search-filter-tag');
+  pills.forEach(function(p) { activeFilters.push(p.innerText.trim()); });
+  result.activeFilters = activeFilters;
+
+  // Detect current tab
+  var btns = document.querySelectorAll('button');
+  for (var b of btns) {
+    var text = b.innerText.trim();
+    if (b.classList.contains('active') || b.getAttribute('aria-selected') === 'true') {
+      if (text.includes('Best') || text.includes('Recent') || text.includes('U.S.') || text.includes('Saved')) {
+        result.activeTab = text;
+      }
+    }
+  }
+
+  // Current URL params
+  result.currentUrl = window.location.href;
+
+  return JSON.stringify(result);
+})()
+  `);
+
+  try {
+    return JSON.parse(filtersJson || '{}');
+  } catch {
+    return {};
   }
 }

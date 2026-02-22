@@ -202,20 +202,29 @@ export class SafariDriver {
       }
     }
 
-    // Try OS-level click on Turnstile iframe (usually centered or near top)
+    // Try OS-level click on Turnstile widget
     if (this.config.instanceType === 'local') {
       if (this.config.verbose) console.log('[SafariDriver:Upwork] Trying OS-level click on CAPTCHA...');
 
-      // Get iframe position
+      // Get widget position — try iframe first, then div.main-wrapper (Cloudflare Turnstile)
       const posJson = await this.executeJS(`
         (function() {
-          var iframe = document.querySelector('iframe[src*="turnstile"]') ||
-                       document.querySelector('iframe[src*="challenge"]') ||
-                       document.querySelector('.cf-turnstile iframe') ||
-                       document.querySelector('iframe[title*="challenge"]');
-          if (iframe) {
-            var rect = iframe.getBoundingClientRect();
+          var el = document.querySelector('iframe[src*="turnstile"]') ||
+                   document.querySelector('iframe[src*="challenge"]') ||
+                   document.querySelector('.cf-turnstile iframe') ||
+                   document.querySelector('iframe[title*="challenge"]');
+          if (el) {
+            var rect = el.getBoundingClientRect();
             return JSON.stringify({ x: rect.left + 25, y: rect.top + 25, w: rect.width, h: rect.height });
+          }
+          // Fallback: Cloudflare renders inside div.main-wrapper when iframe isn't queryable
+          el = document.querySelector('div.main-wrapper');
+          if (el) {
+            var rect = el.getBoundingClientRect();
+            if (rect.width > 200 && rect.width < 400 && rect.height > 40) {
+              // Checkbox is ~17px from left edge, vertically centered
+              return JSON.stringify({ x: rect.left + 17, y: rect.top + (rect.height / 2), w: rect.width, h: rect.height });
+            }
           }
           return 'none';
         })()
@@ -227,11 +236,9 @@ export class SafariDriver {
           if (pos.w > 0 && pos.h > 0) {
             await this.activateSafari();
             await this.wait(500);
-            // Click in the center of the iframe using OS-level click
             await this.clickAtViewportPosition(pos.x, pos.y);
             await this.wait(4000);
 
-            // Check if resolved
             const afterClick = await this.executeJS(`
               document.title.toLowerCase().includes('just a moment') ||
               (document.body.innerText || '').toLowerCase().includes('verify you are human') ? 'blocked' : 'clear'
@@ -288,22 +295,31 @@ export class SafariDriver {
       const parts = stdout.trim().split(',').map((s: string) => parseInt(s.trim()));
       const winX = parts[0] || 0;
       const winY = parts[1] || 0;
-      const toolbarOffset = 75; // Safari toolbar height
+      const toolbarOffset = 92; // Safari toolbar height (URL bar + tab bar)
 
       const absX = winX + vpX;
       const absY = winY + toolbarOffset + vpY;
 
-      // Use cliclick if available, otherwise AppleScript
+      // Use cliclick if available, otherwise Python Quartz with human-like movement
       try {
         await execAsync(`cliclick c:${Math.round(absX)},${Math.round(absY)}`);
       } catch {
-        // Fallback: Python Quartz click
+        // Fallback: Python Quartz click with human-like mouse movement
         const pyScript = `
-import Quartz
-point = (${Math.round(absX)}, ${Math.round(absY)})
-event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft)
+import Quartz, time
+target = (${Math.round(absX)}, ${Math.round(absY)})
+# Human-like mouse movement toward target
+for step in range(6):
+    mx = target[0] - 150 + step * 30
+    my = target[1] - 60 + step * 12
+    ev = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventMouseMoved, (mx, my), Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+    time.sleep(0.04)
+time.sleep(0.15)
+event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, target, Quartz.kCGMouseButtonLeft)
 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft)
+time.sleep(0.07)
+event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, target, Quartz.kCGMouseButtonLeft)
 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 `;
         const tmpPy = `/tmp/safari_click_${Date.now()}.py`;

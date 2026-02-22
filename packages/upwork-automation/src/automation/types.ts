@@ -48,14 +48,73 @@ export interface UpworkJob {
   scrapedAt: string;
 }
 
+// ─── Job Tabs ────────────────────────────────────────────────
+
+export type JobTab = 'best_matches' | 'most_recent' | 'us_only' | 'saved_jobs';
+
+export const JOB_TAB_URLS: Record<JobTab, string> = {
+  best_matches: 'https://www.upwork.com/nx/find-work/best-matches',
+  most_recent: 'https://www.upwork.com/nx/find-work/most-recent',
+  us_only: 'https://www.upwork.com/nx/find-work/domestic',
+  saved_jobs: 'https://www.upwork.com/nx/search/jobs/saved/',
+};
+
+// ─── Search Config (ALL Upwork Filters) ──────────────────────
+
 export interface JobSearchConfig {
   keywords: string[];
-  budgetMin?: number;
-  budgetMax?: number;
+
+  // Category
+  category?: string;
+
+  // Experience level (can select multiple)
+  experienceLevel: ('entry' | 'intermediate' | 'expert')[] | 'any';
+
+  // Job type
   jobType: 'hourly' | 'fixed' | 'both';
-  experienceLevel: 'entry' | 'intermediate' | 'expert' | 'any';
-  postedWithin: '24h' | '3d' | '7d' | '14d' | '30d';
+
+  // Budget ranges
+  hourlyRateMin?: number;
+  hourlyRateMax?: number;
+  fixedPriceRange?: 'less_100' | '100_500' | '500_1k' | '1k_5k' | '5k_plus';
+  fixedPriceMin?: number;
+  fixedPriceMax?: number;
+
+  // Proposals / competition
+  proposalRange?: 'less_5' | '5_10' | '10_15' | '15_20' | '20_50';
+
+  // Client info
+  paymentVerified?: boolean;
+  previousClients?: boolean;
+
+  // Client history
+  clientHires?: 'no_hires' | '1_9' | '10_plus';
+
+  // Client location
+  clientLocation?: string;
+
+  // Client time zones
+  clientTimezone?: string;
+
+  // Project length
+  projectLength?: 'less_month' | '1_3_months' | '3_6_months' | '6_plus_months';
+
+  // Hours per week (for hourly jobs)
+  hoursPerWeek?: 'less_30' | 'more_30';
+
+  // Contract-to-hire
+  contractToHire?: boolean;
+
+  // US only
+  usOnly?: boolean;
+
+  // Sort
   sortBy: 'relevance' | 'newest' | 'client_spending';
+
+  // Posted within
+  postedWithin?: '24h' | '3d' | '7d' | '14d' | '30d';
+
+  // Exclude keywords
   excludeKeywords?: string[];
 }
 
@@ -63,9 +122,10 @@ export const DEFAULT_SEARCH_CONFIG: JobSearchConfig = {
   keywords: [],
   jobType: 'both',
   experienceLevel: 'any',
-  postedWithin: '7d',
   sortBy: 'newest',
 };
+
+// ─── Job Score + Connects Recommendation ─────────────────────
 
 export interface JobScore {
   jobId: string;
@@ -79,6 +139,36 @@ export interface JobScore {
   };
   recommendation: 'apply' | 'maybe' | 'skip';
   reason: string;
+  connectsRecommendation: {
+    suggestedConnects: number;
+    reasoning: string;
+    competitionLevel: 'low' | 'medium' | 'high' | 'very_high';
+  };
+}
+
+// ─── Job Detail (Full Page) ──────────────────────────────────
+
+export interface UpworkJobDetail extends UpworkJob {
+  fullDescription: string;
+  attachments: string[];
+  questionsForFreelancer: string[];
+  connectsRequired: number;
+  availableConnects?: number;
+  hireDate?: string;
+  projectType?: string;
+  projectLength?: string;
+  weeklyHours?: string;
+  clientJoined?: string;
+  clientJobsPosted?: number;
+  clientHireRate?: string;
+  clientOpenJobs?: number;
+  clientTotalSpent?: string;
+  clientAvgHourlyRate?: string;
+  activityOnJob?: string;
+  proposalsCount?: number;
+  interviewing?: number;
+  invitesSent?: number;
+  unansweredInvites?: number;
 }
 
 // ─── Proposal Types ──────────────────────────────────────────
