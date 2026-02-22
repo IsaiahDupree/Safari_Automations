@@ -138,13 +138,20 @@ const PROFILE_EXTRACTION_JS = `
   var isOpenToWork = mainText.indexOf('Open to work') !== -1 || mainText.indexOf('#OpenToWork') !== -1;
   var isHiring = mainText.indexOf('Hiring') !== -1 || mainText.indexOf('#Hiring') !== -1;
 
-  // Buttons
+  // Buttons AND anchors (LinkedIn Feb 2026 uses <a> for Connect/Message)
   var canConnect = false; var canMessage = false;
   var buttons = document.querySelectorAll('button');
   for (var bi = 0; bi < buttons.length; bi++) {
     var label = (buttons[bi].getAttribute('aria-label') || '') + ' ' + buttons[bi].innerText;
     if (label.match(/Connect|Invite.*connect/i)) canConnect = true;
     if (label.match(/^Message/i)) canMessage = true;
+  }
+  var anchors = document.querySelectorAll('a');
+  for (var ai = 0; ai < anchors.length; ai++) {
+    var aLabel = (anchors[ai].getAttribute('aria-label') || '') + ' ' + anchors[ai].innerText.trim();
+    var aHref = anchors[ai].href || '';
+    if (aLabel.match(/Connect|Invite.*connect/i) || aHref.indexOf('custom-invite') !== -1) canConnect = true;
+    if (aLabel.match(/^Message/i) || aHref.indexOf('/messaging/compose') !== -1) canMessage = true;
   }
 
   return JSON.stringify({ name: name, headline: headline, location: location, about: about, currentPosition: currentPosition, connectionDegree: connectionDegree, mutualConnections: mutualConnections, isOpenToWork: isOpenToWork, isHiring: isHiring, skills: skills, canConnect: canConnect, canMessage: canMessage });
@@ -189,11 +196,11 @@ export async function extractProfile(profileUrl: string, driver?: SafariDriver):
   );
 
   const canConnect = await d.executeJS(
-    'var bs=document.querySelectorAll("button"); var c=false; for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||"")+" "+bs[i].innerText; if(l.match(/Connect|Invite.*connect/i)){c=true;break}} c?"true":"false"'
+    'var c=false; var bs=document.querySelectorAll("button"); for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||"")+ " "+bs[i].innerText; if(l.match(/Connect|Invite.*connect/i)){c=true;break}} if(!c){var as=document.querySelectorAll("a"); for(var j=0;j<as.length;j++){var al=(as[j].getAttribute("aria-label")||"")+ " "+as[j].innerText.trim(); var ah=as[j].href||""; if(al.match(/Connect|Invite.*connect/i)||ah.indexOf("custom-invite")!==-1){c=true;break}}} c?"true":"false"'
   );
 
   const canMessage = await d.executeJS(
-    'var bs=document.querySelectorAll("button"); var c=false; for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||""); if(l.match(/^Message/i)){c=true;break}} c?"true":"false"'
+    'var c=false; var bs=document.querySelectorAll("button"); for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||""); if(l.match(/^Message/i)){c=true;break}} if(!c){var as=document.querySelectorAll("a"); for(var j=0;j<as.length;j++){var al=(as[j].getAttribute("aria-label")||"")+ " "+as[j].innerText.trim(); var ah=as[j].href||""; if(al.match(/^Message/i)||ah.indexOf("/messaging/compose")!==-1){c=true;break}}} c?"true":"false"'
   );
 
   try {
@@ -271,15 +278,16 @@ export async function sendConnectionRequest(
 
   await d.humanDelay(2000, 4000);
 
-  // Check current status — look at profile section buttons
+  // Check current status — look at profile section buttons AND anchors
   const statusCheck = await d.executeJS(`
     (function() {
       var main = document.querySelector('main');
       if (!main) return 'no_main';
       var section = main.querySelector('section');
       if (!section) return 'no_section';
-      var btns = section.querySelectorAll('button');
       var hasMessage = false, hasPending = false, hasConnect = false, hasFollow = false, hasMore = false;
+      // Check buttons
+      var btns = section.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {
         var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
         var t = btns[i].innerText.trim().toLowerCase();
@@ -288,6 +296,17 @@ export async function sendConnectionRequest(
         if (a.includes('connect') || a.includes('invite')) hasConnect = true;
         if (a.includes('follow')) hasFollow = true;
         if (a === 'more') hasMore = true;
+      }
+      // Check anchors (LinkedIn Feb 2026 renders Connect/Message as <a> tags)
+      var anchors = section.querySelectorAll('a');
+      for (var j = 0; j < anchors.length; j++) {
+        var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
+        var at = anchors[j].innerText.trim().toLowerCase();
+        var ah = (anchors[j].href || '').toLowerCase();
+        if (aa.includes('message') || at === 'message' || ah.includes('/messaging/compose')) hasMessage = true;
+        if (aa.includes('pending') || at === 'pending') hasPending = true;
+        if (aa.includes('connect') || aa.includes('invite') || at === 'connect' || ah.includes('custom-invite')) hasConnect = true;
+        if (aa.includes('follow') || at === 'follow') hasFollow = true;
       }
       if (hasPending) return 'pending';
       if (hasMessage && !hasConnect && !hasFollow) return 'already_connected';
@@ -307,16 +326,24 @@ export async function sendConnectionRequest(
     return { success: true, status: 'pending' };
   }
 
-  // Direct Connect button
+  // Direct Connect button or anchor
   if (statusCheck === 'can_connect_direct') {
     await d.executeJS(`
       (function() {
         var main = document.querySelector('main');
         var section = main.querySelector('section');
+        // Try buttons first
         var btns = section.querySelectorAll('button');
         for (var i = 0; i < btns.length; i++) {
           var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-          if (a.includes('connect') || a.includes('invite')) { btns[i].click(); return 'clicked'; }
+          if (a.includes('connect') || a.includes('invite')) { btns[i].click(); return 'clicked_btn'; }
+        }
+        // Try anchors (LinkedIn Feb 2026 uses <a> for Connect)
+        var anchors = section.querySelectorAll('a');
+        for (var j = 0; j < anchors.length; j++) {
+          var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
+          var at = anchors[j].innerText.trim().toLowerCase();
+          if (aa.includes('connect') || aa.includes('invite') || at === 'connect') { anchors[j].click(); return 'clicked_anchor'; }
         }
         return 'not_found';
       })()

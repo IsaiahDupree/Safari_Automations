@@ -225,7 +225,23 @@ app.get('/api/linkedin/profile/extract-current', async (_req: Request, res: Resp
             break;
           }
         }
-        return JSON.stringify({ name: name, headline: headline, location: location, connectionDegree: connectionDegree, mutualConnections: mutualConnections, currentPosition: currentPosition, skills: skills, nameIdx: nameIdx, linesCount: lines.length });
+        var canConnect = false; var canMessage = false;
+        var btns = document.querySelectorAll('button');
+        for (var bi = 0; bi < btns.length; bi++) {
+          var bLabel = (btns[bi].getAttribute('aria-label') || '') + ' ' + btns[bi].innerText;
+          if (bLabel.match(/Connect|Invite.*connect/i)) canConnect = true;
+          if (bLabel.match(/^Message/i)) canMessage = true;
+        }
+        var ancs = document.querySelectorAll('a');
+        for (var ai = 0; ai < ancs.length; ai++) {
+          var aLabel = (ancs[ai].getAttribute('aria-label') || '') + ' ' + ancs[ai].innerText.trim();
+          var aHref = ancs[ai].href || '';
+          if (aLabel.match(/Connect|Invite.*connect/i) || aHref.indexOf('custom-invite') !== -1) canConnect = true;
+          if (aLabel.match(/^Message/i) || aHref.indexOf('/messaging/compose') !== -1) canMessage = true;
+        }
+        var isOpenToWork = mainText.indexOf('Open to work') !== -1 || mainText.indexOf('#OpenToWork') !== -1;
+        var isHiring = mainText.indexOf('Hiring') !== -1 || mainText.indexOf('#Hiring') !== -1;
+        return JSON.stringify({ name: name, headline: headline, location: location, connectionDegree: connectionDegree, mutualConnections: mutualConnections, currentPosition: currentPosition, skills: skills, canConnect: canConnect, canMessage: canMessage, isOpenToWork: isOpenToWork, isHiring: isHiring, nameIdx: nameIdx, linesCount: lines.length });
       })()
     `);
     const parsed = JSON.parse(raw || '{}');

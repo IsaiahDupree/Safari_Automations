@@ -91,7 +91,7 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
   const msgsJson = await d.executeJS(`
     (function() {
       var messages = [];
-      var msgEls = document.querySelectorAll('.msg-s-message-list__event, .msg-s-event-listitem');
+      var msgEls = document.querySelectorAll('.msg-s-message-list__event');
 
       var count = 0;
       msgEls.forEach(function(msg) {
@@ -137,24 +137,72 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 
 export async function openConversation(participantName: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
+  const searchName = participantName.toLowerCase().replace(/'/g, "\\'");
 
-  const result = await d.executeJS(`
+  console.log(`[DM] Opening conversation with: ${participantName}`);
+
+  // Find the conversation item's bounding rect by name
+  const posResult = await d.executeJS(`
     (function() {
-      var items = document.querySelectorAll('.msg-conversation-listitem, .msg-conversations-container__conversations-list li');
-      for (var item of items) {
-        var nameEl = item.querySelector('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names');
-        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${participantName.toLowerCase().replace(/'/g, "\\'")}')) {
-          item.click();
-          return 'opened';
+      var items = document.querySelectorAll('.msg-conversation-listitem');
+      for (var i = 0; i < items.length; i++) {
+        var nameEl = items[i].querySelector('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names');
+        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${searchName}')) {
+          items[i].scrollIntoView({block: 'center'});
+          var r = items[i].getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), idx: i});
+          }
         }
       }
       return 'not_found';
     })()
   `);
 
-  if (result === 'opened') {
-    await d.wait(2000);
-    return true;
+  if (posResult === 'not_found') {
+    console.log(`[DM] Conversation not found for: ${participantName}`);
+    return false;
+  }
+
+  try {
+    const pos = JSON.parse(posResult);
+    console.log(`[DM] Found at index ${pos.idx}, viewport (${pos.x}, ${pos.y})`);
+    const clicked = await d.clickAtViewportPosition(pos.x, pos.y);
+    if (!clicked) {
+      console.log(`[DM] Native click failed`);
+      return false;
+    }
+    await d.wait(3000);
+
+    // Verify the thread switched
+    const threadPerson = await d.executeJS(`
+      (function() {
+        var el = document.querySelector('.msg-entity-lockup__entity-title');
+        return el ? el.innerText.trim() : '';
+      })()
+    `);
+    console.log(`[DM] Thread person after click: ${threadPerson}`);
+    if (threadPerson.toLowerCase().includes(participantName.toLowerCase())) {
+      return true;
+    }
+    // Retry once — click slightly left (name area)
+    console.log(`[DM] Retrying with offset click...`);
+    const retryClicked = await d.clickAtViewportPosition(pos.x - 50, pos.y);
+    if (retryClicked) {
+      await d.wait(3000);
+      const retryPerson = await d.executeJS(`
+        (function() {
+          var el = document.querySelector('.msg-entity-lockup__entity-title');
+          return el ? el.innerText.trim() : '';
+        })()
+      `);
+      if (retryPerson.toLowerCase().includes(participantName.toLowerCase())) {
+        return true;
+      }
+    }
+    console.log(`[DM] Thread did not switch (showing: ${threadPerson})`);
+  } catch (e: any) {
+    console.log(`[DM] Error: ${e.message}`);
   }
   return false;
 }
@@ -250,16 +298,36 @@ export async function sendMessageToProfile(
   await d.navigateTo(url);
   await d.humanDelay(2000, 4000);
 
-  // Click Message button on profile
+  // Click Message button or anchor on profile (LinkedIn Feb 2026 uses <a> for Message)
   const msgClicked = await d.executeJS(`
     (function() {
-      var btn = document.querySelector('button[aria-label*="Message"]');
-      if (btn) { btn.click(); return 'clicked'; }
+      var main = document.querySelector('main');
+      if (!main) return 'no_main';
+      var section = main.querySelector('section');
+      var scope = section || main;
+      // Try button first
+      var btns = scope.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+        if (a.includes('message')) { btns[i].click(); return 'clicked_btn'; }
+      }
+      // Try anchor (LinkedIn Feb 2026)
+      var anchors = scope.querySelectorAll('a');
+      for (var j = 0; j < anchors.length; j++) {
+        var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
+        var at = anchors[j].innerText.trim().toLowerCase();
+        var ah = (anchors[j].href || '').toLowerCase();
+        if (aa.includes('message') || at === 'message' || ah.includes('/messaging/compose')) {
+          anchors[j].click();
+          return 'clicked_anchor';
+        }
+      }
       return 'not_found';
     })()
   `);
 
-  if (msgClicked !== 'clicked') {
+  console.log('[DM] Message button click result:', msgClicked);
+  if (msgClicked === 'not_found' || msgClicked === 'no_main') {
     return { success: false, error: 'Message button not found — may not be connected' };
   }
 

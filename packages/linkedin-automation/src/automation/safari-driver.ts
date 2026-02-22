@@ -236,6 +236,110 @@ export class SafariDriver {
     return result === 'clicked';
   }
 
+  /**
+   * OS-level click at viewport coordinates using Quartz mouse events.
+   * Required for Ember.js UIs (like LinkedIn messaging) that ignore JS .click().
+   */
+  async clickAtViewportPosition(viewportX: number, viewportY: number): Promise<boolean> {
+    try {
+      await this.activateSafari();
+      await this.wait(300);
+      const boundsStr = await execAsync(
+        `osascript -e 'tell application "Safari" to get bounds of front window'`
+      );
+      const parts = boundsStr.stdout.trim().split(', ');
+      const winX = parseInt(parts[0]);
+      const winY = parseInt(parts[1]);
+      const winBottom = parseInt(parts[3]);
+      const winHeight = winBottom - winY;
+      // Dynamically calculate toolbar offset from window height vs viewport height
+      const vpHeightStr = await this.executeJS('window.innerHeight.toString()');
+      const vpHeight = parseInt(vpHeightStr) || 800;
+      const toolbarHeight = Math.max(winHeight - vpHeight, 50);
+      console.log(`[SafariDriver] Click: win(${winX},${winY}) toolbar=${toolbarHeight}px vp=(${viewportX},${viewportY})`);
+      const screenX = winX + viewportX;
+      const screenY = winY + toolbarHeight + viewportY;
+      const fs = await import('fs');
+      const tmpFile = '/tmp/_linkedin_click.py';
+      fs.writeFileSync(tmpFile, [
+        'import Quartz, time',
+        `x, y = ${screenX}, ${screenY}`,
+        'move = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventMouseMoved, (x, y), Quartz.kCGMouseButtonLeft)',
+        'Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)',
+        'time.sleep(0.15)',
+        'down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, (x, y), Quartz.kCGMouseButtonLeft)',
+        'Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)',
+        'time.sleep(0.05)',
+        'up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, (x, y), Quartz.kCGMouseButtonLeft)',
+        'Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)',
+        'print("clicked")',
+      ].join('\n'));
+      const result = await execAsync(`python3 ${tmpFile}`);
+      return result.stdout.includes('clicked');
+    } catch (error) {
+      console.error('clickAtViewportPosition error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Find an element by CSS selector and click at its center using OS-level click.
+   */
+  async nativeClickSelector(selector: string): Promise<boolean> {
+    const posResult = await this.executeJS(`
+      (function() {
+        var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (el) {
+          var r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
+          }
+        }
+        return 'not_found';
+      })()
+    `);
+    if (posResult !== 'not_found') {
+      try {
+        const pos = JSON.parse(posResult);
+        return this.clickAtViewportPosition(pos.x, pos.y);
+      } catch {}
+    }
+    return false;
+  }
+
+  /**
+   * Find an element containing text and click at its center using OS-level click.
+   */
+  async nativeClickByText(searchText: string, scope?: string): Promise<boolean> {
+    const scopeSel = scope ? `'${scope.replace(/'/g, "\\'")}'` : 'null';
+    const posResult = await this.executeJS(`
+      (function() {
+        var root = ${scopeSel} ? document.querySelector(${scopeSel}) : document;
+        if (!root) return 'not_found';
+        var all = root.querySelectorAll('li, div, a, span');
+        for (var i = 0; i < all.length; i++) {
+          var nameEls = all[i].querySelectorAll('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names');
+          for (var j = 0; j < nameEls.length; j++) {
+            if (nameEls[j].innerText.trim().toLowerCase().includes('${searchText.toLowerCase().replace(/'/g, "\\'")}')) {
+              var r = all[i].getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
+              }
+            }
+          }
+        }
+        return 'not_found';
+      })()
+    `);
+    if (posResult !== 'not_found') {
+      try {
+        const pos = JSON.parse(posResult);
+        return this.clickAtViewportPosition(pos.x, pos.y);
+      } catch {}
+    }
+    return false;
+  }
+
   async focusElement(selector: string): Promise<boolean> {
     const result = await this.executeJS(`
       (function() {
