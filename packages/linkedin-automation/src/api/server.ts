@@ -138,6 +138,82 @@ app.post('/api/linkedin/navigate/profile', async (req: Request, res: Response) =
 
 // ─── Profile Extraction ──────────────────────────────────────
 
+app.get('/api/linkedin/profile/extract-current', async (_req: Request, res: Response) => {
+  try {
+    const d = getDefaultDriver();
+    const url = await d.getCurrentUrl();
+    const raw = await d.executeJS(`
+      (function() {
+        var mainEl = document.querySelector('main');
+        if (!mainEl) return JSON.stringify({error: 'no main'});
+        var mainText = mainEl.innerText;
+        var NL = String.fromCharCode(10);
+        var h2s = mainEl.querySelectorAll('h2');
+        var name = '';
+        var sectionHeadings = ['activity','experience','education','skills','interests','languages','certifications','recommendations','courses','projects','publications','honors','organizations','volunteering','about'];
+        for (var i = 0; i < h2s.length; i++) {
+          var t = h2s[i].innerText.trim();
+          if (t.length > 2 && t.length < 60 && sectionHeadings.indexOf(t.toLowerCase()) === -1 && t.indexOf('notification') === -1) { name = t; break; }
+        }
+        var lines = mainText.split(NL).map(function(l){return l.trim();}).filter(function(l){return l.length > 0;});
+        var nameIdx = -1;
+        for (var ni = 0; ni < lines.length; ni++) { if (lines[ni] === name) { nameIdx = ni; break; } }
+        var headline = '';
+        var location = '';
+        var connectionDegree = 'out_of_network';
+        var mutualConnections = 0;
+        if (nameIdx >= 0) {
+          for (var li = nameIdx + 1; li < Math.min(nameIdx + 15, lines.length); li++) {
+            var line = lines[li];
+            if (line.match(/[123](?:st|nd|rd)/i) && line.length < 10) { connectionDegree = line.replace(/[^123]/g,'') === '1' ? '1st' : line.replace(/[^123]/g,'') === '2' ? '2nd' : '3rd'; continue; }
+            if (line.toLowerCase() === 'contact info' || line === 'Connect' || line === 'Message' || line === 'Follow') continue;
+            var mutMatch = line.match(/(\\d+).*mutual/i);
+            if (mutMatch) { mutualConnections = parseInt(mutMatch[1]) || 0; continue; }
+            if (line.toLowerCase().indexOf('mutual') !== -1) continue;
+            if (sectionHeadings.indexOf(line.toLowerCase()) !== -1) break;
+            if (line === 'Activity' || line === 'Show all') break;
+            if (!headline && line.length > 5 && line !== name) { headline = line; continue; }
+            if (headline && !location && (line.indexOf(',') !== -1 || line.indexOf('United States') !== -1)) { location = line; continue; }
+          }
+        }
+        var currentPosition = null;
+        for (var eh = 0; eh < h2s.length; eh++) {
+          if (h2s[eh].innerText.trim() === 'Experience') {
+            var expSection = h2s[eh].closest('section') || h2s[eh].parentElement;
+            if (expSection) {
+              var expLis = expSection.querySelectorAll('li');
+              if (expLis.length > 0) {
+                var expLines = expLis[0].innerText.trim().split(NL).map(function(l){return l.trim();}).filter(function(l){return l.length > 0;});
+                if (expLines.length >= 2) { currentPosition = { title: expLines[0], company: expLines[1], duration: expLines.length > 2 ? expLines[2] : '' }; }
+              }
+            }
+            break;
+          }
+        }
+        var skills = [];
+        for (var sh = 0; sh < h2s.length; sh++) {
+          if (h2s[sh].innerText.trim() === 'Skills') {
+            var skillSec = h2s[sh].closest('section') || h2s[sh].parentElement;
+            if (skillSec) {
+              var sLis = skillSec.querySelectorAll('li');
+              for (var si = 0; si < Math.min(10, sLis.length); si++) {
+                var sText = sLis[si].innerText.trim().split(NL)[0];
+                if (sText.length > 1 && sText.length < 60 && sText !== 'Show all') skills.push(sText);
+              }
+            }
+            break;
+          }
+        }
+        return JSON.stringify({ name: name, headline: headline, location: location, connectionDegree: connectionDegree, mutualConnections: mutualConnections, currentPosition: currentPosition, skills: skills, nameIdx: nameIdx, linesCount: lines.length });
+      })()
+    `);
+    const parsed = JSON.parse(raw || '{}');
+    res.json({ url, ...parsed });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/linkedin/profile/:username', async (req: Request, res: Response) => {
   try {
     if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
