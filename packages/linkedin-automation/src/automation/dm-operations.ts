@@ -141,18 +141,38 @@ export async function openConversation(participantName: string, driver?: SafariD
 
   console.log(`[DM] Opening conversation with: ${participantName}`);
 
-  // Find the conversation item's bounding rect by name
-  const posResult = await d.executeJS(`
+  // Step 1: Find and scroll the conversation into view
+  const scrollResult = await d.executeJS(`
     (function() {
       var items = document.querySelectorAll('.msg-conversation-listitem');
       for (var i = 0; i < items.length; i++) {
         var nameEl = items[i].querySelector('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names');
         if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${searchName}')) {
           items[i].scrollIntoView({block: 'center'});
-          var r = items[i].getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
-            return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), idx: i});
-          }
+          return '' + i;
+        }
+      }
+      return 'not_found';
+    })()
+  `);
+
+  if (scrollResult === 'not_found') {
+    console.log(`[DM] Conversation not found for: ${participantName}`);
+    return false;
+  }
+
+  // Wait for scroll reflow before reading bounding rect
+  await d.wait(200);
+
+  // Step 2: Read bounding rect of the scrolled item
+  const posResult = await d.executeJS(`
+    (function() {
+      var items = document.querySelectorAll('.msg-conversation-listitem');
+      var idx = ${scrollResult};
+      if (idx >= 0 && idx < items.length) {
+        var r = items[idx].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), idx: idx});
         }
       }
       return 'not_found';
@@ -264,7 +284,7 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
     (function() {
       var msgs = document.querySelectorAll('.msg-s-event-listitem__body, .msg-s-message-group__text');
       var last = msgs[msgs.length - 1];
-      if (last && last.innerText.trim().includes('${text.substring(0, 30).replace(/'/g, "\\'")}')) return 'verified';
+      var check = '${text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\\'")}';      if (last && last.innerText.trim().includes(check)) return 'verified';
       return 'unverified';
     })()
   `);

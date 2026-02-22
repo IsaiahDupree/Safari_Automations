@@ -395,7 +395,8 @@ export class InstagramDM {
    * Navigate Safari to URL
    */
   private async navigate(url: string): Promise<void> {
-    const script = `tell application "Safari" to set URL of front document to "${url}"`;
+    const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const script = `tell application "Safari" to set URL of front document to "${safeUrl}"`;
     await execAsync(`osascript -e '${script}'`);
     await this.wait(3000); // Wait for page load
   }

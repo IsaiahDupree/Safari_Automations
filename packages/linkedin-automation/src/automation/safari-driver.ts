@@ -35,7 +35,7 @@ export class SafariDriver {
 
   private async executeLocalJS(js: string): Promise<string> {
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}.js`);
+    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
 
@@ -82,8 +82,9 @@ export class SafariDriver {
   async navigateTo(url: string): Promise<boolean> {
     try {
       if (this.config.instanceType === 'local') {
+        const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of front document to "${url}"'`,
+          `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
           { timeout: this.config.timeout }
         );
       } else {

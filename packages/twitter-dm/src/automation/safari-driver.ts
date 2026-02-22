@@ -99,8 +99,9 @@ export class SafariDriver {
   async navigateTo(url: string): Promise<boolean> {
     try {
       if (this.config.instanceType === 'local') {
+        const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of front document to "${url}"'`,
+          `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
           { timeout: this.config.timeout }
         );
       } else {

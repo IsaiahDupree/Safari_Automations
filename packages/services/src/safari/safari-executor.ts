@@ -68,10 +68,11 @@ end tell`;
     
     await this.ensureSafariReady();
 
+    const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `
 tell application "Safari"
     activate
-    set URL of front document to "${url}"
+    set URL of front document to "${safeUrl}"
 end tell`;
 
     const result = await this.runAppleScript(script);

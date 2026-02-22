@@ -390,11 +390,19 @@ export async function runOutreachCycle(
           if (!main) return 'unknown';
           var section = main.querySelector('section');
           if (!section) return 'unknown';
+          // Check buttons
           var btns = section.querySelectorAll('button');
           for (var i = 0; i < btns.length; i++) {
             var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
             if (a.includes('message')) return 'connected';
             if (a.includes('pending')) return 'pending';
+          }
+          // Check anchors (LinkedIn Feb 2026 uses <a> for Message)
+          var anchors = section.querySelectorAll('a');
+          for (var j = 0; j < anchors.length; j++) {
+            var al = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
+            var ah = (anchors[j].href || '').toLowerCase();
+            if (al.includes('message') || ah.indexOf('/messaging/compose') !== -1) return 'connected';
           }
           return 'not_connected';
         })()
@@ -508,11 +516,18 @@ export async function runOutreachCycle(
     try {
       const convos = await listConversations(d);
       for (const p of awaitingReply) {
-        const firstName = (p.name || '').split(' ')[0].toLowerCase();
-        const match = convos.find((c: any) =>
-          c.name?.toLowerCase().includes(firstName) ||
-          c.profileUrl?.includes(p.profileUrl.split('/in/')[1]?.replace(/\/$/, ''))
-        );
+        const fullName = (p.name || '').toLowerCase();
+        const firstName = fullName.split(' ')[0];
+        const profileSlug = p.profileUrl.split('/in/')[1]?.replace(/\/$/, '') || '';
+        const match = convos.find((c: any) => {
+          const cName = (c.participantName || c.name || '').toLowerCase();
+          // Prefer full name match; fall back to firstName + profileUrl slug
+          if (cName.includes(fullName) || fullName.includes(cName)) return true;
+          if (profileSlug && c.profileUrl?.includes(profileSlug)) return true;
+          // Only match firstName if it's 4+ chars (avoid "Jo", "Li", etc.)
+          if (firstName.length >= 4 && cName.includes(firstName)) return true;
+          return false;
+        });
         if (match && match.lastMessage) {
           const lastMsg = match.lastMessage.toLowerCase();
           const ourMessages = p.messagesSent.map(m => m.text.toLowerCase().substring(0, 30));
