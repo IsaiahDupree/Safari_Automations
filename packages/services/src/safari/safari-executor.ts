@@ -202,7 +202,7 @@ end tell`;
    * Execute JavaScript from a file (for longer scripts)
    */
   async executeJSFile(jsCode: string): Promise<JSExecutionResult> {
-    const tempFile = path.join('/tmp', `safari_js_${Date.now()}.js`);
+    const tempFile = path.join('/tmp', `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.js`);
     
     try {
       fs.writeFileSync(tempFile, jsCode);

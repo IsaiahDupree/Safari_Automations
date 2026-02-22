@@ -83,7 +83,8 @@ export class SafariDriver {
    */
   async navigate(url: string): Promise<void> {
     this.log('Navigating to:', url);
-    await this.executeScript(`window.location.href = "${url}"`);
+    const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    await this.executeScript(`window.location.href = "${safeUrl}"`);
     await this.wait(2000);
   }
 

@@ -27,6 +27,7 @@ export class TaskScheduler extends EventEmitter {
   private running: ScheduledTask[] = [];
   private completed: ScheduledTask[] = [];
   private isRunning = false;
+  private isProcessing = false; // Guard against re-entrant processQueue calls
   private startedAt: Date | null = null;
   private intervalId: NodeJS.Timeout | null = null;
   private soraMonitor: SoraCreditMonitor;
@@ -304,20 +305,28 @@ export class TaskScheduler extends EventEmitter {
    * Process the queue
    */
   private async processQueue(): Promise<void> {
-    if (this.running.length >= this.config.maxConcurrentTasks) {
-      return;
+    // Guard against re-entrant calls from setInterval overlapping with long-running tasks
+    if (this.isProcessing) return;
+    this.isProcessing = true;
+
+    try {
+      if (this.running.length >= this.config.maxConcurrentTasks) {
+        return;
+      }
+
+      // Check quiet hours
+      if (this.isQuietHours()) {
+        return;
+      }
+
+      // Find next ready task
+      const task = this.findNextReadyTask();
+      if (!task) return;
+
+      await this.executeTask(task);
+    } finally {
+      this.isProcessing = false;
     }
-
-    // Check quiet hours
-    if (this.isQuietHours()) {
-      return;
-    }
-
-    // Find next ready task
-    const task = this.findNextReadyTask();
-    if (!task) return;
-
-    await this.executeTask(task);
   }
 
   /**
@@ -429,6 +438,10 @@ export class TaskScheduler extends EventEmitter {
     }
     if (task.status === 'completed' || task.status === 'failed') {
       this.completed.push(task);
+      // Cap in-memory completed array to prevent unbounded growth
+      if (this.completed.length > 200) {
+        this.completed = this.completed.slice(-200);
+      }
     }
 
     this.saveState();
@@ -437,6 +450,11 @@ export class TaskScheduler extends EventEmitter {
   /**
    * Run the actual task
    */
+  /** Escape a string for safe interpolation inside double-quoted shell arguments */
+  private shellEscape(s: string): string {
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+  }
+
   private async runTask(task: ScheduledTask): Promise<unknown> {
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
@@ -547,7 +565,7 @@ export class TaskScheduler extends EventEmitter {
 
       case 'meta-ad-library': {
         const malPayload = task.payload as any;
-        const malKeywords = (malPayload.keywords || []).join(',');
+        const malKeywords = this.shellEscape((malPayload.keywords || []).join(','));
         const malMaxAds = malPayload.maxAds || 30;
         const malDownloadTop = malPayload.downloadTop || 5;
         const malCountry = malPayload.country || 'US';
@@ -566,7 +584,7 @@ export class TaskScheduler extends EventEmitter {
 
       case 'market-research': {
         const mrPayload = task.payload as any;
-        const keywords = (mrPayload.keywords || []).join(',');
+        const keywords = this.shellEscape((mrPayload.keywords || []).join(','));
         const maxPosts = mrPayload.maxPosts || 50;
         const downloadTop = mrPayload.downloadTop || 10;
         const searchType = mrPayload.searchType || 'posts';
@@ -585,7 +603,7 @@ export class TaskScheduler extends EventEmitter {
 
       case 'market-research-instagram': {
         const igPayload = task.payload as any;
-        const igKeywords = (igPayload.keywords || []).join(',');
+        const igKeywords = this.shellEscape((igPayload.keywords || []).join(','));
         const igMaxPosts = igPayload.maxPosts || 50;
         const igDownloadTop = igPayload.downloadTop || 10;
         const igSearchType = igPayload.searchType || 'hashtag';
@@ -604,7 +622,7 @@ export class TaskScheduler extends EventEmitter {
 
       case 'ad-brief': {
         const briefPayload = task.payload as any;
-        const briefKeyword = briefPayload.keyword || '';
+        const briefKeyword = this.shellEscape(briefPayload.keyword || '');
         const briefProduct = briefPayload.product || 'mediaposter';
         const briefPlatform = briefPayload.platform || 'facebook';
         const skipScrape = briefPayload.skipScrape ? ' --skip-scrape' : '';
