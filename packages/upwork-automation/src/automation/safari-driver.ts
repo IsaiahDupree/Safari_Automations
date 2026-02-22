@@ -33,7 +33,7 @@ export class SafariDriver {
   }
 
   private async executeLocalJS(js: string): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
@@ -94,11 +94,226 @@ export class SafariDriver {
         await this.executeRemoteJS(`window.location.href = "${url}"`);
       }
       await this.wait(3000);
+
+      // Check for CAPTCHA / "Are you human?" challenge and handle it
+      await this.handleCaptchaIfPresent();
+
       return true;
     } catch (error) {
       if (this.config.verbose) {
         console.error('[SafariDriver:Upwork] Navigation error:', error);
       }
+      return false;
+    }
+  }
+
+  /**
+   * Detect and handle CAPTCHA / human verification challenges.
+   * Upwork uses Cloudflare Turnstile and reCAPTCHA.
+   * Strategy:
+   *   1. Detect challenge page by title, body text, or iframe presence
+   *   2. Try clicking the checkbox/button via JS
+   *   3. If that fails, try OS-level click on the checkbox coordinates
+   *   4. Wait and re-check — if still blocked, log and wait for human
+   */
+  async handleCaptchaIfPresent(maxWaitSec: number = 30): Promise<boolean> {
+    const detection = await this.executeJS(`
+      (function() {
+        var title = document.title.toLowerCase();
+        var body = (document.body ? document.body.innerText : '').toLowerCase().substring(0, 1000);
+
+        var isCaptchaPage =
+          title.includes('just a moment') ||
+          title.includes('attention required') ||
+          title.includes('security check') ||
+          body.includes('verify you are human') ||
+          body.includes('are you human') ||
+          body.includes('checking your browser') ||
+          body.includes('please wait') ||
+          body.includes('one more step') ||
+          !!document.querySelector('iframe[src*="turnstile"]') ||
+          !!document.querySelector('iframe[src*="challenge"]') ||
+          !!document.querySelector('#challenge-running') ||
+          !!document.querySelector('.cf-turnstile') ||
+          !!document.querySelector('[id*="captcha"]');
+
+        if (!isCaptchaPage) return 'clear';
+
+        // Try to find and click the checkbox/button
+        var clicked = false;
+
+        // Cloudflare Turnstile checkbox
+        var turnstile = document.querySelector('.cf-turnstile input[type="checkbox"]') ||
+                        document.querySelector('iframe[src*="turnstile"]');
+        if (turnstile && turnstile.tagName === 'INPUT') {
+          turnstile.click();
+          clicked = true;
+        }
+
+        // Generic verify buttons
+        var buttons = document.querySelectorAll('button, input[type="submit"], [role="button"]');
+        for (var btn of buttons) {
+          var text = (btn.innerText || btn.value || '').toLowerCase();
+          if (text.includes('verify') || text.includes('human') || text.includes('continue') || text.includes('confirm')) {
+            btn.click();
+            clicked = true;
+            break;
+          }
+        }
+
+        // reCAPTCHA checkbox
+        var recaptcha = document.querySelector('.recaptcha-checkbox, #recaptcha-anchor');
+        if (recaptcha) {
+          recaptcha.click();
+          clicked = true;
+        }
+
+        return clicked ? 'clicked' : 'captcha_present';
+      })()
+    `);
+
+    if (detection === 'clear') {
+      return true; // No CAPTCHA
+    }
+
+    if (this.config.verbose) {
+      console.log('[SafariDriver:Upwork] CAPTCHA detected, status:', detection);
+    }
+
+    if (detection === 'clicked') {
+      // Clicked something, wait and see if it resolves
+      await this.wait(3000);
+
+      // Re-check
+      const recheck = await this.executeJS(`
+        (function() {
+          var title = document.title.toLowerCase();
+          var body = (document.body ? document.body.innerText : '').toLowerCase().substring(0, 500);
+          var still = title.includes('just a moment') || title.includes('attention') ||
+                      body.includes('verify you are human') || body.includes('checking your browser');
+          return still ? 'still_blocked' : 'resolved';
+        })()
+      `);
+
+      if (recheck === 'resolved') {
+        if (this.config.verbose) console.log('[SafariDriver:Upwork] CAPTCHA resolved after click');
+        await this.wait(2000);
+        return true;
+      }
+    }
+
+    // Try OS-level click on Turnstile iframe (usually centered or near top)
+    if (this.config.instanceType === 'local') {
+      if (this.config.verbose) console.log('[SafariDriver:Upwork] Trying OS-level click on CAPTCHA...');
+
+      // Get iframe position
+      const posJson = await this.executeJS(`
+        (function() {
+          var iframe = document.querySelector('iframe[src*="turnstile"]') ||
+                       document.querySelector('iframe[src*="challenge"]') ||
+                       document.querySelector('.cf-turnstile iframe') ||
+                       document.querySelector('iframe[title*="challenge"]');
+          if (iframe) {
+            var rect = iframe.getBoundingClientRect();
+            return JSON.stringify({ x: rect.left + 25, y: rect.top + 25, w: rect.width, h: rect.height });
+          }
+          return 'none';
+        })()
+      `);
+
+      if (posJson !== 'none') {
+        try {
+          const pos = JSON.parse(posJson);
+          if (pos.w > 0 && pos.h > 0) {
+            await this.activateSafari();
+            await this.wait(500);
+            // Click in the center of the iframe using OS-level click
+            await this.clickAtViewportPosition(pos.x, pos.y);
+            await this.wait(4000);
+
+            // Check if resolved
+            const afterClick = await this.executeJS(`
+              document.title.toLowerCase().includes('just a moment') ||
+              (document.body.innerText || '').toLowerCase().includes('verify you are human') ? 'blocked' : 'clear'
+            `);
+            if (afterClick === 'clear') {
+              if (this.config.verbose) console.log('[SafariDriver:Upwork] CAPTCHA resolved after OS click');
+              await this.wait(2000);
+              return true;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Wait for human intervention
+    if (this.config.verbose) {
+      console.log(`[SafariDriver:Upwork] ⚠️ CAPTCHA requires human intervention. Waiting up to ${maxWaitSec}s...`);
+    }
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitSec * 1000) {
+      await this.wait(3000);
+      const check = await this.executeJS(`
+        (function() {
+          var title = document.title.toLowerCase();
+          var body = (document.body ? document.body.innerText : '').toLowerCase().substring(0, 500);
+          var blocked = title.includes('just a moment') || title.includes('attention') ||
+                        body.includes('verify you are human') || body.includes('checking your browser');
+          return blocked ? 'blocked' : 'clear';
+        })()
+      `);
+      if (check === 'clear') {
+        if (this.config.verbose) console.log('[SafariDriver:Upwork] CAPTCHA resolved by human');
+        await this.wait(2000);
+        return true;
+      }
+    }
+
+    console.warn('[SafariDriver:Upwork] ⚠️ CAPTCHA not resolved within timeout');
+    return false;
+  }
+
+  /**
+   * Click at a viewport position using OS-level mouse event.
+   * Gets Safari window bounds and adds toolbar offset.
+   */
+  async clickAtViewportPosition(vpX: number, vpY: number): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      // Get Safari window position
+      const { stdout } = await execAsync(
+        `osascript -e 'tell application "Safari" to get bounds of front window'`
+      );
+      const parts = stdout.trim().split(',').map((s: string) => parseInt(s.trim()));
+      const winX = parts[0] || 0;
+      const winY = parts[1] || 0;
+      const toolbarOffset = 75; // Safari toolbar height
+
+      const absX = winX + vpX;
+      const absY = winY + toolbarOffset + vpY;
+
+      // Use cliclick if available, otherwise AppleScript
+      try {
+        await execAsync(`cliclick c:${Math.round(absX)},${Math.round(absY)}`);
+      } catch {
+        // Fallback: Python Quartz click
+        const pyScript = `
+import Quartz
+point = (${Math.round(absX)}, ${Math.round(absY)})
+event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft)
+Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+event = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft)
+Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+`;
+        const tmpPy = `/tmp/safari_click_${Date.now()}.py`;
+        await fs.writeFile(tmpPy, pyScript);
+        await execAsync(`python3 ${tmpPy}`);
+        await fs.unlink(tmpPy).catch(() => {});
+      }
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver:Upwork] OS click error:', error);
       return false;
     }
   }

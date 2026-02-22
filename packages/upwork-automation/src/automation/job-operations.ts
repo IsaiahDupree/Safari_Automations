@@ -78,57 +78,62 @@ export async function searchJobs(
 
   await d.wait(4000);
 
-  // Extract jobs from search results
+  // Extract jobs from search results (selectors verified against live Upwork DOM Feb 2026)
   const jobsJson = await d.executeJS(`
     (function() {
       var jobs = [];
-      var tiles = document.querySelectorAll('[data-test="job-tile"], .job-tile, article[data-ev-label="search_results_impression"]');
-      if (tiles.length === 0) {
-        tiles = document.querySelectorAll('section.up-card-section');
-      }
+      var tiles = document.querySelectorAll('article.job-tile');
 
       tiles.forEach(function(tile) {
         try {
-          var titleEl = tile.querySelector('h2 a, [data-test="job-tile-title"] a, h3 a, a.job-title-link');
+          var titleEl = tile.querySelector('[data-test*="job-tile-title-link"]');
           var title = titleEl ? titleEl.innerText.trim() : '';
           var url = titleEl ? titleEl.href : '';
 
-          var descEl = tile.querySelector('[data-test="description"], .job-description, p[data-test="UpCLineClamp JobDescription"]');
+          var descEl = tile.querySelector('[data-test*="JobDescription"]');
           var description = descEl ? descEl.innerText.trim().substring(0, 500) : '';
 
-          var budgetEl = tile.querySelector('[data-test="budget"], [data-test="is-fixed-price"], .js-budget');
+          var budgetEl = tile.querySelector('[data-test="is-fixed-price"]') ||
+                         tile.querySelector('[data-test="job-type-label"]');
           var budgetText = budgetEl ? budgetEl.innerText.trim() : '';
 
-          var skillEls = tile.querySelectorAll('[data-test="token"], .air3-token, .up-skill-badge');
+          var skillEls = tile.querySelectorAll('[data-test="token"]');
           var skills = [];
           skillEls.forEach(function(s) { skills.push(s.innerText.trim()); });
 
-          var proposalEl = tile.querySelector('[data-test="proposals"], .js-proposals');
+          var proposalEl = tile.querySelector('[data-test="proposals-tier"]');
           var proposalText = proposalEl ? proposalEl.innerText.trim() : '';
           var proposalMatch = proposalText.match(/(\\d+)/);
           var proposals = proposalMatch ? parseInt(proposalMatch[1]) : 0;
 
-          var postedEl = tile.querySelector('[data-test="posted-on"], .js-posted, time');
+          var postedEl = tile.querySelector('[data-test="job-pubilshed-date"]');
           var posted = postedEl ? postedEl.innerText.trim() : '';
 
-          var levelEl = tile.querySelector('[data-test="experience-level"], .js-experience-level');
+          var levelEl = tile.querySelector('[data-test="experience-level"]');
           var level = levelEl ? levelEl.innerText.trim() : '';
 
-          var clientEls = tile.querySelectorAll('[data-test="client-info"] li, .client-info span');
-          var clientInfo = {};
-          clientEls.forEach(function(c) {
-            var text = c.innerText.trim();
-            if (text.includes('$')) clientInfo.totalSpent = text;
-            if (text.includes('%')) clientInfo.hireRate = text;
-            if (text.includes('Payment')) clientInfo.paymentVerified = text.includes('verified');
-          });
+          var spentEl = tile.querySelector('[data-test="total-spent"]');
+          var ratingEl = tile.querySelector('[data-test*="feedback-rating"]');
+          var locEl = tile.querySelector('[data-test="location"]');
+          var verifiedEl = tile.querySelector('[data-test="payment-verified"]');
+
+          var clientInfo = {
+            totalSpent: spentEl ? spentEl.innerText.trim().split(String.fromCharCode(10))[0] : '',
+            reviewScore: ratingEl ? ratingEl.innerText.trim().match(/[\\d.]+/) ? parseFloat(ratingEl.innerText.trim().match(/[\\d.]+/)[0]) : 0 : 0,
+            location: locEl ? locEl.innerText.trim().replace('Location ', '') : '',
+            paymentVerified: !!verifiedEl,
+          };
+
+          // Extract job ID from URL pattern: _~NNNNN/
+          var idMatch = url.match(/~(\\d+)/);
+          var jobId = idMatch ? idMatch[1] : Date.now().toString();
 
           if (title) {
             jobs.push(JSON.stringify({
-              id: url.split('/').pop() || Date.now().toString(),
+              id: jobId,
               title: title,
               description: description,
-              url: url,
+              url: url.split('?')[0],
               budget: { text: budgetText },
               skills: skills,
               experienceLevel: level,

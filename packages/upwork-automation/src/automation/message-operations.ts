@@ -33,31 +33,36 @@ export async function navigateToMessages(driver?: SafariDriver): Promise<Navigat
 export async function listConversations(driver?: SafariDriver): Promise<UpworkConversation[]> {
   const d = driver || getDefaultDriver();
 
+  // Selectors verified against live Upwork messaging DOM (Feb 2026)
   const convoJson = await d.executeJS(`
     (function() {
       var conversations = [];
-      var items = document.querySelectorAll('.thread-list-item, [data-test="conversation"], .msg-conversations-container li');
+      var items = document.querySelectorAll('a.room-list-item');
 
       items.forEach(function(item) {
         try {
-          var nameEl = item.querySelector('.user-name, [data-test="participant-name"], strong, h4');
+          var nameEl = item.querySelector('.item-title');
           var name = nameEl ? nameEl.innerText.trim() : '';
 
-          var jobEl = item.querySelector('.job-title, [data-test="job-title"], small, .text-muted');
+          var jobEl = item.querySelector('.item-subtitle');
           var jobTitle = jobEl ? jobEl.innerText.trim() : '';
 
-          var msgEl = item.querySelector('.last-message, [data-test="last-message"], p');
+          var msgEl = item.querySelector('.room-list-item-story, .last-message');
           var lastMsg = msgEl ? msgEl.innerText.trim().substring(0, 100) : '';
 
-          var timeEl = item.querySelector('time, .timestamp, [data-test="timestamp"]');
+          var timeEl = item.querySelector('.timestamp, time, [class*="date"]');
           var time = timeEl ? timeEl.innerText.trim() : '';
 
-          var unread = item.classList.contains('unread') ||
-                       !!item.querySelector('.unread-badge, .badge-unread, [data-test="unread"]');
+          var unread = item.classList.contains('is-unread') ||
+                       !!item.querySelector('.unread-badge, .badge-count');
+
+          var roomUrl = item.href || '';
+          var roomMatch = roomUrl.match(/rooms\\/(room_[a-f0-9]+)/);
+          var roomId = roomMatch ? roomMatch[1] : '';
 
           if (name) {
             conversations.push(JSON.stringify({
-              id: item.getAttribute('data-thread-id') || item.getAttribute('data-test-id') || Date.now().toString(),
+              id: roomId || Date.now().toString(),
               clientName: name,
               jobTitle: jobTitle,
               lastMessage: lastMsg,
@@ -84,33 +89,47 @@ export async function listConversations(driver?: SafariDriver): Promise<UpworkCo
 export async function readMessages(limit: number = 20, driver?: SafariDriver): Promise<UpworkMessage[]> {
   const d = driver || getDefaultDriver();
 
+  // Selectors verified against live Upwork messaging DOM (Feb 2026)
   const msgsJson = await d.executeJS(`
     (function() {
       var messages = [];
-      var msgEls = document.querySelectorAll('.msg-list-item, [data-test="message"], .message-row, .air3-msg');
+      var storyItems = document.querySelectorAll('.up-d-story-item');
 
       var count = 0;
-      msgEls.forEach(function(msg) {
+      storyItems.forEach(function(item) {
         if (count >= ${limit}) return;
         try {
-          var textEl = msg.querySelector('.message-text, [data-test="message-text"], .msg-body, p');
-          var text = textEl ? textEl.innerText.trim() : '';
+          var fullText = item.innerText.trim();
+          if (!fullText || fullText.length < 3) return;
 
-          var senderEl = msg.querySelector('.sender-name, [data-test="sender"], .user-name');
-          var sender = senderEl ? senderEl.innerText.trim() : '';
+          // Parse sender + time from the story item header
+          // Format: "SenderName HH:MM AM/PM message text"
+          var headerEl = item.querySelector('.story-header, .up-d-story-header');
+          var sender = '';
+          var time = '';
+          if (headerEl) {
+            sender = headerEl.innerText.trim();
+          } else {
+            // Try to parse from full text
+            var match = fullText.match(/^(.+?)\\s+(\\d{1,2}:\\d{2}\\s*(?:AM|PM))/);
+            if (match) {
+              sender = match[1];
+              time = match[2];
+            }
+          }
 
-          var timeEl = msg.querySelector('time, .timestamp, [data-test="timestamp"]');
-          var time = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText.trim()) : '';
+          // Get message body (everything after sender/time)
+          var bodyEl = item.querySelector('.up-d-story-body, .story-body, .rr-mask');
+          var body = bodyEl ? bodyEl.innerText.trim() : fullText;
 
-          var isOutbound = msg.classList.contains('outbound') ||
-                           msg.classList.contains('sent') ||
-                           !!msg.querySelector('.sent-indicator');
+          // Determine if outbound (from current user - typically "Isaiah Dupree" or "You:")
+          var isOutbound = fullText.startsWith('Isaiah') || fullText.startsWith('You:');
 
-          if (text) {
+          if (body) {
             messages.push(JSON.stringify({
               id: 'msg_' + count,
-              from: sender,
-              content: text.substring(0, 500),
+              from: sender || 'unknown',
+              content: body.substring(0, 500),
               timestamp: time,
               isOutbound: isOutbound,
               isRead: true,
@@ -138,9 +157,9 @@ export async function openConversation(clientName: string, driver?: SafariDriver
 
   const result = await d.executeJS(`
     (function() {
-      var items = document.querySelectorAll('.thread-list-item, [data-test="conversation"], .msg-conversations-container li');
+      var items = document.querySelectorAll('a.room-list-item');
       for (var item of items) {
-        var nameEl = item.querySelector('.user-name, [data-test="participant-name"], strong, h4');
+        var nameEl = item.querySelector('.item-title');
         if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${clientName.toLowerCase().replace(/'/g, "\\'")}')) {
           item.click();
           return 'opened';
@@ -162,19 +181,19 @@ export async function openConversation(clientName: string, driver?: SafariDriver
 export async function sendMessage(text: string, driver?: SafariDriver): Promise<SendMessageResult> {
   const d = driver || getDefaultDriver();
 
-  // Focus message input
+  // Focus message input — Upwork uses TipTap/ProseMirror contenteditable
   const focused = await d.executeJS(`
     (function() {
       var selectors = [
-        '[data-test="message-input"]',
-        '.msg-composer textarea',
-        'textarea[placeholder*="message" i]',
-        'textarea[placeholder*="type" i]',
-        '[contenteditable="true"]',
+        '.composer .tiptap.ProseMirror',
+        '.composer [contenteditable="true"]',
+        '.composer-container [contenteditable="true"]',
+        '.up-d-composer [contenteditable="true"]',
+        '[role="textbox"][contenteditable="true"]',
       ];
       for (var sel of selectors) {
         var el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) {
+        if (el) {
           el.focus();
           el.click();
           return 'focused';
@@ -198,14 +217,14 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
   await d.wait(500);
 
-  // Click send button
+  // Click send button — Upwork uses air3-btn-circle in the composer
   const sent = await d.executeJS(`
     (function() {
       var selectors = [
-        '[data-test="send-message"]',
+        '.up-d-composer button.air3-btn-circle',
+        '.composer-container button.air3-btn-circle',
         'button[aria-label*="Send"]',
-        'button.msg-form__send-button',
-        'button[type="submit"]',
+        '.up-d-composer button',
       ];
       for (var sel of selectors) {
         var btn = document.querySelector(sel);
@@ -226,13 +245,13 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
     await d.wait(1500);
   }
 
-  // Verify message was sent
+  // Verify message was sent by checking last story item
   const verified = await d.executeJS(`
     (function() {
-      var messages = document.querySelectorAll('.message-text, [data-test="message-text"], .msg-body p');
-      var lastMsg = messages[messages.length - 1];
-      if (lastMsg) {
-        var text = lastMsg.innerText.trim();
+      var items = document.querySelectorAll('.up-d-story-item');
+      var lastItem = items[items.length - 1];
+      if (lastItem) {
+        var text = lastItem.innerText.trim();
         if (text.includes('${text.substring(0, 30).replace(/'/g, "\\'")}')) return 'verified';
       }
       return 'unverified';
@@ -252,10 +271,12 @@ export async function getUnreadCount(driver?: SafariDriver): Promise<number> {
 
   const countStr = await d.executeJS(`
     (function() {
-      var badge = document.querySelector('[data-test="unread-count"], .unread-count, .nav-notifications-count');
-      if (badge) return badge.innerText.trim();
+      // Check nav badge
+      var navBadge = document.querySelector('.nav-messages .badge-count, .nav-messages .count');
+      if (navBadge) return navBadge.innerText.trim();
 
-      var unread = document.querySelectorAll('.thread-list-item.unread, [data-test="conversation"].unread');
+      // Count unread room-list-items
+      var unread = document.querySelectorAll('a.room-list-item.is-unread');
       return String(unread.length);
     })()
   `);

@@ -35,6 +35,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Enable verbose logging for debugging
+getDefaultDriver().setConfig({ verbose: true });
+
 // Rate limiting state
 let actionCount = 0;
 let lastActionReset = Date.now();
