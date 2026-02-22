@@ -15,7 +15,7 @@ import { videoRouter } from './routes/video.js';
 import { jobsRouter } from './routes/jobs.js';
 import { healthRouter } from './routes/health.js';
 import { commandsRouter } from './routes/commands.js';
-import { focusApp, focusSafari, focusChrome, getFrontmostApp, ensureAppFocused, exclusiveFocus, focusSafariWindow } from './utils/focus.js';
+import { focusApp, focusSafari, focusChrome, getFrontmostApp, ensureAppFocused, exclusiveFocus, focusSafariWindow, getSafariState } from './utils/focus.js';
 import { JobManager } from './services/job-manager.js';
 import { logger } from './utils/logger.js';
 import { resolve, dirname } from 'path';
@@ -229,6 +229,115 @@ const server = createServer(async (req, res) => {
       matched = true;
     }
 
+    // Safari automation — direct synchronous endpoints (no command queue)
+    else if (path === '/v1/safari/focus' && method === 'POST') {
+      const body = await parseBody(req);
+      const success = focusSafari();
+      // If URL provided, navigate via gateway
+      if (body?.url) {
+        try {
+          await fetch(`${process.env.GATEWAY_URL || 'http://localhost:3000'}/gateway/safari/focus`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: body.url }),
+            signal: AbortSignal.timeout(10000),
+          });
+        } catch {}
+      }
+      const state = getSafariState();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success, ...state, timestamp: new Date().toISOString() }));
+      matched = true;
+    }
+    else if (path === '/v1/safari/state' && method === 'GET') {
+      const state = getSafariState();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...state, timestamp: new Date().toISOString() }));
+      matched = true;
+    }
+    else if (path === '/v1/safari/navigate' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!body?.url) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'url required' }));
+      } else {
+        focusSafari();
+        try {
+          const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
+          const r = await fetch(`${gwUrl}/gateway/safari/focus`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: body.url }),
+            signal: AbortSignal.timeout(15000),
+          });
+          const data = await r.json();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+        } catch (e: any) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+        }
+      }
+      matched = true;
+    }
+    else if (path === '/v1/safari/prepare' && method === 'POST') {
+      const body = await parseBody(req);
+      try {
+        const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
+        const r = await fetch(`${gwUrl}/gateway/safari/prepare`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            holder: body?.holder || `actp-direct-${Date.now()}`,
+            platform: body?.platform || null,
+            task: body?.task || 'actp-direct',
+            url: body?.url,
+            timeoutMs: body?.timeoutMs || 60000,
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const data = await r.json();
+        res.writeHead(r.ok ? 200 : 502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (e: any) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+      }
+      matched = true;
+    }
+    else if (path === '/v1/safari/release' && method === 'POST') {
+      const body = await parseBody(req);
+      try {
+        const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
+        const r = await fetch(`${gwUrl}/gateway/lock/release`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ holder: body?.holder }),
+          signal: AbortSignal.timeout(5000),
+        });
+        const data = await r.json();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (e: any) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+      }
+      matched = true;
+    }
+    else if (path === '/v1/safari/dashboard' && method === 'GET') {
+      try {
+        const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
+        const r = await fetch(`${gwUrl}/gateway/dashboard`, { signal: AbortSignal.timeout(10000) });
+        const data = await r.json();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (e: any) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+      }
+      matched = true;
+    }
+
     if (!matched) {
       res.error('Not found', 404);
     }
@@ -300,6 +409,19 @@ server.listen(CONTROL_PORT, HOST, () => {
   logger.info(`  GET  /api/v1/jobs/{id}     - Check job status`);
   logger.info(`  GET  /api/v1/jobs/{id}/download - Download processed video`);
   logger.info(`  GET  /health               - Health check`);
+  logger.info('');
+  logger.info('Safari Automation (direct):');
+  logger.info(`  POST /v1/safari/focus      - Focus Safari (+ optional url)`);
+  logger.info(`  GET  /v1/safari/state      - Safari running/frontmost/url`);
+  logger.info(`  POST /v1/safari/navigate   - Focus + navigate to url`);
+  logger.info(`  POST /v1/safari/prepare    - Lock + focus + navigate`);
+  logger.info(`  POST /v1/safari/release    - Release Safari lock`);
+  logger.info(`  GET  /v1/safari/dashboard  - Full system dashboard`);
+  logger.info('');
+  logger.info('Safari Automation (ACTP commands):');
+  logger.info(`  POST /v1/commands {type:"safari.focus"}    - Async focus`);
+  logger.info(`  POST /v1/commands {type:"safari.prepare"}  - Async lock+focus`);
+  logger.info(`  POST /v1/commands {type:"safari.route"}    - Proxy to service`);
 });
 
 export { server, wss };

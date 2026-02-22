@@ -35,11 +35,74 @@ export function focusApp(appName: FocusableApp | string): boolean {
 }
 
 /**
- * Bring Safari to the foreground specifically.
- * Opens Safari if not already running.
+ * Bring Safari to the foreground using robust multi-step activation.
+ * Steps: activate → set frontmost → AXRaise → open -a fallback
  */
 export function focusSafari(): boolean {
-  return focusApp('Safari');
+  try {
+    execSync(`osascript -e '
+tell application "Safari" to activate
+delay 0.2
+tell application "System Events"
+    set frontmost of process "Safari" to true
+    try
+        perform action "AXRaise" of front window of process "Safari"
+    end try
+end tell'`, { timeout: 5000, stdio: 'pipe' });
+    logger.info('[focus] Safari activated (robust multi-step)');
+    return true;
+  } catch {
+    // Fallback: open -a Safari
+    try {
+      execSync('open -a Safari', { timeout: 5000, stdio: 'pipe' });
+      logger.info('[focus] Safari activated via open -a fallback');
+      return true;
+    } catch (err: any) {
+      logger.warn(`[focus] Failed to focus Safari: ${err.message}`);
+      return false;
+    }
+  }
+}
+
+/**
+ * Get Safari browser state: running, frontmost, window count, current URL, page title.
+ */
+export function getSafariState(): {
+  running: boolean;
+  frontmost: boolean;
+  windowCount: number;
+  currentUrl: string;
+  pageTitle: string;
+} {
+  try {
+    const result = execSync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+    set isRunning to exists process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`,
+      { timeout: 5000, stdio: 'pipe' }
+    ).toString().trim();
+    const parts = result.split('|');
+    return {
+      running: parts[0] === 'true',
+      frontmost: parts[1] === 'true',
+      windowCount: parseInt(parts[2]) || 0,
+      currentUrl: parts[3] || '',
+      pageTitle: parts[4] || '',
+    };
+  } catch {
+    return { running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '' };
+  }
 }
 
 /**

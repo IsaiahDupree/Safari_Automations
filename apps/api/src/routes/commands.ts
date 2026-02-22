@@ -240,6 +240,137 @@ function parseMetric(str: string | undefined): number {
   return isNaN(num) ? 0 : num;
 }
 
+// ─── Safari Automation Executor ──────────────────────────────────────────────
+
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3000';
+
+async function executeSafari(command: Command): Promise<void> {
+  const subType = command.type.replace('safari.', '');
+  const { payload } = command;
+
+  logger.info(`[commands] Executing safari.${subType}`);
+
+  command.status = 'RUNNING';
+  command.started_at = new Date().toISOString();
+
+  try {
+    let endpoint = '';
+    let method = 'POST';
+    let body: any = undefined;
+
+    switch (subType) {
+      case 'focus':
+        endpoint = '/gateway/safari/focus';
+        body = { url: payload.url };
+        break;
+
+      case 'state':
+        endpoint = '/gateway/safari/state';
+        method = 'GET';
+        break;
+
+      case 'prepare':
+        endpoint = '/gateway/safari/prepare';
+        body = {
+          holder: payload.holder || `actp-${command.id.substring(0, 8)}`,
+          platform: payload.platform || null,
+          task: payload.task || 'actp-command',
+          url: payload.url,
+          timeoutMs: payload.timeoutMs || 60000,
+        };
+        break;
+
+      case 'release':
+        endpoint = '/gateway/lock/release';
+        body = { holder: payload.holder || `actp-${command.id.substring(0, 8)}` };
+        break;
+
+      case 'navigate':
+        // Focus Safari then navigate to URL
+        endpoint = '/gateway/safari/focus';
+        body = { url: payload.url };
+        break;
+
+      case 'route':
+        // Proxy any request to a downstream service through the gateway
+        endpoint = '/gateway/route';
+        body = {
+          platform: payload.platform,
+          method: payload.method || 'GET',
+          path: payload.path,
+          body: payload.body,
+          acquireLock: payload.acquireLock !== false,
+        };
+        break;
+
+      case 'dashboard':
+        endpoint = '/gateway/dashboard';
+        method = 'GET';
+        break;
+
+      case 'services':
+        endpoint = '/gateway/services';
+        method = 'GET';
+        break;
+
+      case 'lock.status':
+        endpoint = '/gateway/lock';
+        method = 'GET';
+        break;
+
+      case 'lock.acquire':
+        endpoint = '/gateway/lock/acquire';
+        body = {
+          holder: payload.holder || `actp-${command.id.substring(0, 8)}`,
+          platform: payload.platform,
+          task: payload.task || 'actp-command',
+          timeoutMs: payload.timeoutMs || 60000,
+          waitMs: payload.waitMs || 15000,
+        };
+        break;
+
+      case 'lock.release':
+        endpoint = '/gateway/lock/release';
+        body = { holder: payload.holder || `actp-${command.id.substring(0, 8)}` };
+        break;
+
+      case 'lock.force-release':
+        endpoint = '/gateway/lock/force-release';
+        break;
+
+      default:
+        throw new Error(`Unknown safari command: safari.${subType}`);
+    }
+
+    const fetchOpts: any = {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(30000),
+    };
+    if (body && method !== 'GET') {
+      fetchOpts.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(`${GATEWAY_URL}${endpoint}`, fetchOpts);
+    const data = await response.json() as Record<string, any>;
+
+    if (!response.ok) {
+      throw new Error(data.error || `Gateway returned ${response.status}`);
+    }
+
+    command.status = 'SUCCEEDED';
+    command.result = data;
+    command.completed_at = new Date().toISOString();
+
+    logger.info(`[commands] safari.${subType} complete`);
+  } catch (err: any) {
+    command.status = 'FAILED';
+    command.error = err.message;
+    command.completed_at = new Date().toISOString();
+    logger.error(`[commands] safari.${subType} failed: ${err.message}`);
+  }
+}
+
 // ─── Upload Executor ─────────────────────────────────────────────────────────
 
 async function executeUpload(command: Command): Promise<void> {
@@ -309,6 +440,8 @@ export const commandsRouter = {
       try {
         if (type.startsWith('research.')) {
           await executeResearch(command);
+        } else if (type.startsWith('safari.')) {
+          await executeSafari(command);
         } else if (type.startsWith('upload.')) {
           await executeUpload(command);
         } else {
