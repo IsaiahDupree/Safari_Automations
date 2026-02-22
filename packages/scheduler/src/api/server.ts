@@ -851,6 +851,120 @@ app.get('/api/publish/status', async (req: Request, res: Response) => {
   }
 });
 
+// === UPWORK JOB SCANNING ===
+
+app.post('/api/upwork/scan', (req: Request, res: Response) => {
+  try {
+    const {
+      keywords = ['TypeScript', 'React'],
+      preferredSkills = ['TypeScript', 'React', 'Node.js', 'Python'],
+      minBudget = 500,
+      availableConnects = 100,
+      tab,
+      filters = {},
+      priority = 2,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'upwork-job-scan' as TaskType,
+      name: `Upwork Scan: ${tab || keywords.join(', ')}`,
+      platform: 'upwork' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'upwork' as Platform, safariExclusive: true },
+      payload: { keywords, preferredSkills, minBudget, availableConnects, tab, filters },
+    });
+
+    res.json({ success: true, taskId, message: `Upwork job scan scheduled` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/upwork/scan/recurring', (req: Request, res: Response) => {
+  try {
+    const {
+      keywords = ['TypeScript', 'React'],
+      preferredSkills = ['TypeScript', 'React', 'Node.js', 'Python'],
+      minBudget = 500,
+      availableConnects = 100,
+      tab,
+      filters = {},
+      intervalHours = 4,
+      count = 6,
+      priority = 3,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskIds: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const scheduledFor = new Date(Date.now() + i * intervalHours * 60 * 60 * 1000);
+      const taskId = s.schedule({
+        type: 'upwork-job-scan' as TaskType,
+        name: `Upwork Scan #${i + 1}: ${tab || keywords.join(', ')}`,
+        platform: 'upwork' as Platform,
+        priority: priority as TaskPriority,
+        scheduledFor,
+        resourceRequirements: { platform: 'upwork' as Platform, safariExclusive: true },
+        payload: { keywords, preferredSkills, minBudget, availableConnects, tab, filters },
+      });
+      taskIds.push(taskId);
+    }
+
+    res.json({
+      success: true,
+      taskIds,
+      message: `Scheduled ${count} Upwork scans every ${intervalHours}h`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/upwork/apply', (req: Request, res: Response) => {
+  try {
+    const { jobUrl, highlightSkills, customInstructions, priority = 2 } = req.body;
+    if (!jobUrl) return res.status(400).json({ error: 'jobUrl required' });
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'upwork-apply' as TaskType,
+      name: `Upwork Apply: ${jobUrl.substring(0, 50)}`,
+      platform: 'upwork' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'upwork' as Platform, safariExclusive: true },
+      payload: { jobUrl, highlightSkills, customInstructions },
+    });
+
+    res.json({ success: true, taskId, message: `Upwork apply task scheduled` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === LINKEDIN OUTREACH ===
+
+app.post('/api/linkedin/outreach', (req: Request, res: Response) => {
+  try {
+    const { action = 'search', searchConfig, profileUrl, note, priority = 3 } = req.body;
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'linkedin-outreach' as TaskType,
+      name: `LinkedIn ${action}`,
+      platform: 'linkedin' as Platform,
+      priority: priority as TaskPriority,
+      resourceRequirements: { platform: 'linkedin' as Platform, safariExclusive: true },
+      payload: { action, searchConfig, profileUrl, note },
+    });
+
+    res.json({ success: true, taskId });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Start server
 const PORT = parseInt(process.env.SCHEDULER_PORT || process.env.PORT || '3010');
 
@@ -878,6 +992,10 @@ export function startServer(port: number = PORT): void {
     console.log(`   IGResearch:  POST /api/research/instagram/search`);
     console.log(`   AdBrief:     POST /api/research/ad-brief`);
     console.log(`   ResStatus:   GET  /api/research/status`);
+    console.log(`   UpworkScan:  POST /api/upwork/scan`);
+    console.log(`   UpworkRecur: POST /api/upwork/scan/recurring`);
+    console.log(`   UpworkApply: POST /api/upwork/apply`);
+    console.log(`   LinkedIn:    POST /api/linkedin/outreach`);
   });
 }
 

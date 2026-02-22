@@ -49,7 +49,7 @@ export class TaskScheduler extends EventEmitter {
   }
 
   private initializePlatforms(): void {
-    const platforms: Platform[] = ['tiktok', 'instagram', 'twitter', 'sora', 'youtube'];
+    const platforms: Platform[] = ['tiktok', 'instagram', 'twitter', 'sora', 'youtube', 'upwork', 'linkedin'];
     for (const platform of platforms) {
       this.platformStatus.set(platform, {
         platform,
@@ -618,6 +618,88 @@ export class TaskScheduler extends EventEmitter {
         });
         console.log(`[SCHEDULER] 💡 Brief output:\n${briefResult.stdout}`);
         return { stdout: briefResult.stdout, stderr: briefResult.stderr };
+      }
+
+      case 'upwork-job-scan': {
+        const upPayload = task.payload as any;
+        const upKeywords = (upPayload.keywords || ['TypeScript', 'React']).join(' ');
+        const upSkills = (upPayload.preferredSkills || ['TypeScript', 'React', 'Node.js']).join(',');
+        const upMinBudget = upPayload.minBudget || 500;
+        const upTab = upPayload.tab || '';
+        const upFilters = upPayload.filters ? JSON.stringify(upPayload.filters) : '{}';
+
+        // Step 1: Search or browse tab
+        let scanCmd: string;
+        if (upTab) {
+          scanCmd = `curl -s -X POST http://localhost:3104/api/upwork/jobs/tab -H "Content-Type: application/json" -d '{"tab":"${upTab}"}'`;
+        } else {
+          scanCmd = `curl -s -X POST http://localhost:3104/api/upwork/jobs/search -H "Content-Type: application/json" -d '${JSON.stringify({ keywords: upPayload.keywords || ['TypeScript', 'React'], ...upPayload.filters })}'`;
+        }
+        console.log(`[SCHEDULER] 🏢 Upwork job scan: ${scanCmd.substring(0, 80)}...`);
+
+        const scanResult = await execAsync(scanCmd, { timeout: 60 * 1000 });
+        const scanData = JSON.parse(scanResult.stdout);
+        console.log(`[SCHEDULER] 🏢 Found ${scanData.count || scanData.jobs?.length || 0} jobs`);
+
+        // Step 2: Batch score
+        if (scanData.jobs?.length > 0) {
+          const scoreCmd = `curl -s -X POST http://localhost:3104/api/upwork/jobs/score-batch -H "Content-Type: application/json" -d '${JSON.stringify({
+            jobs: scanData.jobs,
+            preferredSkills: upPayload.preferredSkills || ['TypeScript', 'React', 'Node.js'],
+            minBudget: upMinBudget,
+            availableConnects: upPayload.availableConnects || 100,
+          })}'`;
+
+          const scoreResult = await execAsync(scoreCmd, { timeout: 30 * 1000 });
+          const scores = JSON.parse(scoreResult.stdout);
+          console.log(`[SCHEDULER] 🏢 Scored: ${scores.applyCount} apply, ${scores.maybeCount} maybe, ${scores.skipCount} skip`);
+          return { jobs: scanData.jobs.length, scores };
+        }
+
+        return { jobs: 0 };
+      }
+
+      case 'upwork-apply': {
+        // Placeholder — will integrate with proposal submission automation
+        const applyPayload = task.payload as any;
+        const jobUrl = applyPayload.jobUrl;
+        if (!jobUrl) throw new Error('jobUrl required for upwork-apply');
+
+        // Step 1: Extract detail
+        const detailCmd = `curl -s "http://localhost:3104/api/upwork/jobs/detail?url=${encodeURIComponent(jobUrl)}"`;
+        const detailResult = await execAsync(detailCmd, { timeout: 60 * 1000 });
+        const detail = JSON.parse(detailResult.stdout);
+        console.log(`[SCHEDULER] 🏢 Upwork apply: ${detail.title} (${detail.connectsCost} connects)`);
+
+        // Step 2: Generate proposal
+        const proposalCmd = `curl -s -X POST http://localhost:3104/api/upwork/proposals/generate -H "Content-Type: application/json" -d '${JSON.stringify({
+          job: detail,
+          highlightSkills: applyPayload.highlightSkills,
+          customInstructions: applyPayload.customInstructions,
+        })}'`;
+        const proposalResult = await execAsync(proposalCmd, { timeout: 30 * 1000 });
+        const proposal = JSON.parse(proposalResult.stdout);
+        console.log(`[SCHEDULER] 🏢 Proposal generated (${proposal.coverLetter?.length || 0} chars, AI: ${proposal.aiGenerated})`);
+
+        return { detail, proposal };
+      }
+
+      case 'linkedin-outreach': {
+        const lnPayload = task.payload as any;
+        const lnAction = lnPayload.action || 'search';
+
+        let lnCmd: string;
+        if (lnAction === 'search') {
+          lnCmd = `curl -s -X POST http://localhost:3105/api/linkedin/search -H "Content-Type: application/json" -d '${JSON.stringify(lnPayload.searchConfig || {})}'`;
+        } else if (lnAction === 'connect') {
+          lnCmd = `curl -s -X POST http://localhost:3105/api/linkedin/connect -H "Content-Type: application/json" -d '${JSON.stringify({ profileUrl: lnPayload.profileUrl, note: lnPayload.note })}'`;
+        } else {
+          lnCmd = `curl -s http://localhost:3105/api/linkedin/status`;
+        }
+
+        console.log(`[SCHEDULER] 💼 LinkedIn ${lnAction}: ${lnCmd.substring(0, 80)}...`);
+        const lnResult = await execAsync(lnCmd, { timeout: 60 * 1000 });
+        return JSON.parse(lnResult.stdout);
       }
 
       case 'publish': {
