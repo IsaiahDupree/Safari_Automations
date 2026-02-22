@@ -965,6 +965,82 @@ app.post('/api/linkedin/outreach', (req: Request, res: Response) => {
   }
 });
 
+// === CONTENT PACKAGING ===
+
+app.post('/api/content/package', async (req: Request, res: Response) => {
+  try {
+    const { platforms, keywords, minEngagement, topN = 50, formats, sendTo } = req.body;
+
+    // Dynamically import the packager (cross-package, resolved at runtime)
+    const packagerPath = require('path').resolve(__dirname, '..', '..', '..', '..', 'content-packager', 'src', 'packager.ts');
+    const { packageResearchData, enrichWithAdBriefs, saveBatch } = await import(packagerPath);
+
+    let batch = packageResearchData({
+      platforms: platforms || ['facebook', 'instagram', 'meta_ad_library'],
+      keywords,
+      minEngagementScore: minEngagement || 0,
+      topN,
+      contentFormats: formats,
+    });
+
+    batch = enrichWithAdBriefs(batch);
+    const outputFile = saveBatch(batch);
+
+    let sendResult = null;
+    if (sendTo) {
+      try {
+        const resp = await fetch(`${sendTo}/api/packages/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batch),
+        });
+        sendResult = { sent: true, status: resp.status, ok: resp.ok };
+      } catch (e: any) {
+        sendResult = { sent: false, error: e.message };
+      }
+    }
+
+    res.json({
+      success: true,
+      batchId: batch.id,
+      totalPackages: batch.summary.totalPackages,
+      byPlatform: batch.summary.byPlatform,
+      topPerformers: batch.summary.topPerformers,
+      outputFile,
+      sendResult,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/content/package/send', async (req: Request, res: Response) => {
+  try {
+    const { batchFile, serverUrl } = req.body;
+    if (!batchFile || !serverUrl) {
+      return res.status(400).json({ error: 'batchFile and serverUrl required' });
+    }
+
+    const fs = await import('fs');
+    const batch = JSON.parse(fs.readFileSync(batchFile, 'utf-8'));
+
+    const resp = await fetch(`${serverUrl}/api/packages/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batch),
+    });
+
+    res.json({
+      success: resp.ok,
+      status: resp.status,
+      batchId: batch.id,
+      packageCount: batch.packages?.length || 0,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Start server
 const PORT = parseInt(process.env.SCHEDULER_PORT || process.env.PORT || '3010');
 
@@ -996,6 +1072,8 @@ export function startServer(port: number = PORT): void {
     console.log(`   UpworkRecur: POST /api/upwork/scan/recurring`);
     console.log(`   UpworkApply: POST /api/upwork/apply`);
     console.log(`   LinkedIn:    POST /api/linkedin/outreach`);
+    console.log(`   ContentPkg:  POST /api/content/package`);
+    console.log(`   ContentSend: POST /api/content/package/send`);
   });
 }
 

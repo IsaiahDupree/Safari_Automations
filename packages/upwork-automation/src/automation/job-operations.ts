@@ -839,6 +839,272 @@ export async function saveJob(jobUrl: string, driver?: SafariDriver): Promise<bo
   return result === 'saved';
 }
 
+// ─── Proposal Submission ─────────────────────────────────────
+
+export interface ProposalSubmission {
+  jobUrl: string;
+  coverLetter: string;
+  hourlyRate?: number;         // e.g. 75 for $75/hr (hourly jobs only)
+  fixedPrice?: number;         // e.g. 2000 for $2000 (fixed-price jobs only)
+  screeningAnswers?: string[]; // answers in order of questions shown
+  boostConnects?: number;      // additional connects for boosting (0 = no boost)
+  dryRun?: boolean;            // if true, fills form but does NOT click submit
+}
+
+export interface ProposalResult {
+  success: boolean;
+  submitted: boolean;
+  jobTitle: string;
+  connectsCost: number;
+  bidAmount: string;
+  coverLetterLength: number;
+  questionsAnswered: number;
+  error?: string;
+  dryRun: boolean;
+}
+
+export async function submitProposal(
+  submission: ProposalSubmission,
+  driver?: SafariDriver
+): Promise<ProposalResult> {
+  const d = driver || getDefaultDriver();
+  const result: ProposalResult = {
+    success: false,
+    submitted: false,
+    jobTitle: '',
+    connectsCost: 0,
+    bidAmount: '',
+    coverLetterLength: submission.coverLetter.length,
+    questionsAnswered: 0,
+    dryRun: submission.dryRun ?? false,
+  };
+
+  try {
+    // Step 1: Navigate to job detail page
+    const nav = await navigateToJob(submission.jobUrl, d);
+    if (!nav.success) {
+      result.error = 'Failed to navigate to job';
+      return result;
+    }
+    await d.wait(3000);
+
+    // Get job title
+    result.jobTitle = await d.executeJS(`
+      (function() {
+        var h = document.querySelector('h4') || document.querySelector('h1');
+        return h ? h.innerText.trim() : '';
+      })()
+    `);
+
+    // Step 2: Click "Apply now" button
+    const clickResult = await d.executeJS(`
+      (function() {
+        var btn = document.querySelector('button.air3-btn-primary[aria-label="Apply now"]') ||
+                  document.querySelector('button.air3-btn-primary');
+        if (btn && btn.innerText.trim().toLowerCase().includes('apply')) {
+          btn.click();
+          return 'clicked';
+        }
+        // Check if already on proposal page
+        if (window.location.href.includes('/apply')) return 'already_on_apply';
+        return 'not_found';
+      })()
+    `);
+
+    if (clickResult === 'not_found') {
+      result.error = 'Apply button not found — job may be closed or already applied';
+      return result;
+    }
+
+    await d.wait(4000);
+
+    // Check if we landed on the proposal form
+    const onProposalPage = await d.executeJS(`
+      window.location.href.includes('/apply') || 
+      document.title.includes('Submit a Proposal') ? 'yes' : 'no'
+    `);
+
+    if (onProposalPage !== 'yes') {
+      // Might have hit a CAPTCHA
+      await (d as any).handleCaptchaIfPresent?.();
+      await d.wait(3000);
+    }
+
+    // Step 3: Set hourly rate or fixed price
+    if (submission.hourlyRate) {
+      await d.executeJS(`
+        (function() {
+          var input = document.getElementById('step-rate');
+          if (!input) return 'no_rate_input';
+          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSet.call(input, '${submission.hourlyRate.toFixed(2)}');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'set';
+        })()
+      `);
+      result.bidAmount = `$${submission.hourlyRate}/hr`;
+      await d.wait(500);
+    }
+
+    if (submission.fixedPrice) {
+      await d.executeJS(`
+        (function() {
+          // Fixed-price jobs use a different input — look for bid/amount input
+          var input = document.getElementById('step-rate') ||
+                      document.querySelector('input[id*="bid"], input[id*="amount"], input[id*="price"]');
+          if (!input) return 'no_price_input';
+          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSet.call(input, '${submission.fixedPrice.toFixed(2)}');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'set';
+        })()
+      `);
+      result.bidAmount = `$${submission.fixedPrice} fixed`;
+      await d.wait(500);
+    }
+
+    // Step 4: Fill cover letter (first textarea)
+    const coverLetterEscaped = submission.coverLetter
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\n/g, '\\n');
+
+    await d.executeJS(`
+      (function() {
+        var textareas = document.querySelectorAll('textarea');
+        if (textareas.length === 0) return 'no_textarea';
+        var ta = textareas[0]; // First textarea is cover letter
+        var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        nativeSet.call(ta, '${coverLetterEscaped}');
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        ta.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'filled';
+      })()
+    `);
+    await d.wait(500);
+
+    // Step 5: Answer screening questions (second+ textareas)
+    if (submission.screeningAnswers && submission.screeningAnswers.length > 0) {
+      for (let i = 0; i < submission.screeningAnswers.length; i++) {
+        const answerEscaped = submission.screeningAnswers[i]
+          .replace(/\\/g, '\\\\')
+          .replace(/'/g, "\\'")
+          .replace(/\n/g, '\\n');
+
+        const answerResult = await d.executeJS(`
+          (function() {
+            var textareas = document.querySelectorAll('textarea');
+            var idx = ${i + 1}; // Skip first (cover letter)
+            if (idx >= textareas.length) return 'no_textarea_' + idx;
+            var ta = textareas[idx];
+            var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            nativeSet.call(ta, '${answerEscaped}');
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'answered';
+          })()
+        `);
+        if (answerResult === 'answered') result.questionsAnswered++;
+        await d.wait(300);
+      }
+    }
+
+    // Step 6: Set boost connects (optional, 0 = no boost)
+    if (submission.boostConnects !== undefined) {
+      await d.executeJS(`
+        (function() {
+          var input = document.querySelector('input[type="number"]');
+          if (!input) return 'no_boost_input';
+          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSet.call(input, '${submission.boostConnects}');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'set';
+        })()
+      `);
+      await d.wait(300);
+    }
+
+    // Step 7: Read the final connects cost from the submit button
+    const submitInfo = await d.executeJS(`
+      (function() {
+        var btn = document.querySelector('button.air3-btn-primary');
+        if (!btn) return JSON.stringify({ text: '', disabled: true });
+        return JSON.stringify({
+          text: btn.innerText.trim(),
+          disabled: btn.disabled,
+        });
+      })()
+    `);
+
+    try {
+      const info = JSON.parse(submitInfo);
+      const connectsMatch = info.text.match(/(\d+)\s*Connects/i);
+      if (connectsMatch) result.connectsCost = parseInt(connectsMatch[1]);
+    } catch {}
+
+    // Step 8: Submit (unless dry run)
+    if (submission.dryRun) {
+      result.success = true;
+      result.submitted = false;
+      console.log(`[Upwork] DRY RUN — proposal filled but NOT submitted (${result.connectsCost} connects)`);
+      return result;
+    }
+
+    // Click Submit
+    const submitResult = await d.executeJS(`
+      (function() {
+        var btn = document.querySelector('button.air3-btn-primary');
+        if (!btn) return 'no_button';
+        if (btn.disabled) return 'disabled';
+        var text = btn.innerText.trim().toLowerCase();
+        if (!text.includes('send') && !text.includes('submit')) return 'wrong_button: ' + btn.innerText.trim();
+        btn.click();
+        return 'submitted';
+      })()
+    `);
+
+    if (submitResult !== 'submitted') {
+      result.error = `Submit failed: ${submitResult}`;
+      return result;
+    }
+
+    await d.wait(5000);
+
+    // Step 9: Verify submission
+    const verification = await d.executeJS(`
+      (function() {
+        var url = window.location.href;
+        var title = document.title;
+        var body = document.body.innerText.substring(0, 500);
+        
+        // Check for success indicators
+        if (url.includes('/proposals/') && !url.includes('/apply')) return 'success_url';
+        if (body.includes('submitted') || body.includes('Proposal sent') || title.includes('Proposals')) return 'success_text';
+        if (body.includes('error') || body.includes('Error')) return 'error: ' + body.substring(0, 100);
+        
+        return 'unknown: ' + title + ' | ' + url.substring(0, 60);
+      })()
+    `);
+
+    if (verification.startsWith('success')) {
+      result.success = true;
+      result.submitted = true;
+    } else {
+      result.error = `Verification: ${verification}`;
+      result.submitted = true; // Button was clicked, outcome unclear
+    }
+
+    return result;
+
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error);
+    return result;
+  }
+}
+
 // ─── Application Status ──────────────────────────────────────
 
 export async function getApplications(driver?: SafariDriver): Promise<any[]> {

@@ -22,6 +22,7 @@ import {
   scoreJob,
   recommendConnects,
   saveJob,
+  submitProposal,
   getApplications,
   navigateToMessages,
   listConversations,
@@ -258,6 +259,43 @@ app.post('/api/upwork/jobs/:id/save', async (req: Request, res: Response) => {
     const jobUrl = `https://www.upwork.com/jobs/${req.params.id}`;
     const saved = await saveJob(jobUrl);
     res.json({ success: saved });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Proposal Submission ────────────────────────────────────
+
+app.post('/api/upwork/proposals/submit', async (req: Request, res: Response) => {
+  try {
+    if (!checkRateLimit()) {
+      return res.status(429).json({ error: 'Application rate limit reached' });
+    }
+
+    const {
+      jobUrl,
+      coverLetter,
+      hourlyRate,
+      fixedPrice,
+      screeningAnswers,
+      boostConnects,
+      dryRun = true, // Default to dry run for safety
+    } = req.body;
+
+    if (!jobUrl) return res.status(400).json({ error: 'jobUrl required' });
+    if (!coverLetter) return res.status(400).json({ error: 'coverLetter required' });
+
+    const result = await submitProposal({
+      jobUrl,
+      coverLetter,
+      hourlyRate,
+      fixedPrice,
+      screeningAnswers,
+      boostConnects,
+      dryRun,
+    });
+
+    res.json(result);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
