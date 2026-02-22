@@ -34,7 +34,7 @@ export class SafariDriver {
 
   private async executeLocalJS(js: string): Promise<string> {
     const cleanJS = js.trim();
-    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}.js`);
+    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
 

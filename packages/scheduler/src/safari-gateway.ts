@@ -198,12 +198,14 @@ class SafariLockManager {
   }
 
   private processQueue(): void {
-    if (this.queue.length === 0 || this.isLocked()) return;
-    const next = this.queue.shift()!;
-    clearTimeout(next.timer);
-    if (this.acquire(next.holder, next.platform, next.taskDescription, next.timeoutMs)) {
-      next.resolve(true);
-    } else {
+    while (this.queue.length > 0 && !this.isLocked()) {
+      const next = this.queue.shift()!;
+      clearTimeout(next.timer);
+      if (this.acquire(next.holder, next.platform, next.taskDescription, next.timeoutMs)) {
+        next.resolve(true);
+        return; // Lock is now held, stop processing
+      }
+      // Acquire failed unexpectedly — resolve false and try next in queue
       next.resolve(false);
     }
   }

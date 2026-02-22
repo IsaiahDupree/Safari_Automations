@@ -226,9 +226,9 @@ export class InstagramDriver {
    * Reused from packages/services/src/safari/safari-executor.ts
    */
   private async typeViaClipboard(text: string): Promise<boolean> {
-    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
     // Use printf instead of echo -n to avoid -n appearing in output on some shells
-    await execAsync(`printf '%s' "${escaped}" | pbcopy`).catch(() => null);
+    await execAsync(`printf "%s" "${escaped}" | pbcopy`).catch(() => null);
     await this.wait(200);
     
     const script = `

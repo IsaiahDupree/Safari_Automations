@@ -238,15 +238,27 @@ export async function getConnectionStatus(profileUrl: string, driver?: SafariDri
 
   const statusJson = await d.executeJS(`
     (function() {
-      var connected = !!document.querySelector('button[aria-label*="Message"]') &&
-                      !document.querySelector('button[aria-label*="Connect"]');
-      var pending = !!document.querySelector('button[aria-label*="Pending"]');
-      var canConnect = !!document.querySelector('button[aria-label*="Connect"], button[aria-label*="Invite"]');
-      var canMessage = !!document.querySelector('button[aria-label*="Message"]');
-      var following = !!document.querySelector('button[aria-label*="Following"]');
+      var canMessage = false, canConnect = false, pending = false, following = false;
+      // Check buttons
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+        if (a.indexOf('message') !== -1) canMessage = true;
+        if (a.indexOf('connect') !== -1 || a.indexOf('invite') !== -1) canConnect = true;
+        if (a.indexOf('pending') !== -1) pending = true;
+        if (a.indexOf('following') !== -1) following = true;
+      }
+      // Check anchors (LinkedIn Feb 2026 uses <a> for Connect/Message)
+      var anchors = document.querySelectorAll('a');
+      for (var j = 0; j < anchors.length; j++) {
+        var al = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
+        var ah = (anchors[j].href || '').toLowerCase();
+        if (al.indexOf('message') !== -1 || ah.indexOf('/messaging/compose') !== -1) canMessage = true;
+        if (al.indexOf('connect') !== -1 || al.indexOf('invite') !== -1 || ah.indexOf('custom-invite') !== -1) canConnect = true;
+      }
 
       var status = 'not_connected';
-      if (connected && canMessage) status = 'connected';
+      if (canMessage && !canConnect) status = 'connected';
       else if (pending) status = 'pending_sent';
       else if (following) status = 'following';
 
