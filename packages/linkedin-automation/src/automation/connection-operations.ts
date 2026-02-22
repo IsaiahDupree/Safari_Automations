@@ -518,7 +518,7 @@ export async function acceptRequest(profileUrl: string, driver?: SafariDriver): 
       var cards = document.querySelectorAll('.invitation-card, .mn-invitation-list li');
       for (var card of cards) {
         var link = card.querySelector('a[href*="/in/"]');
-        if (link && link.href.includes('${profileUrl.replace(/'/g, "\\'")}')) {
+        if (link && link.href.includes('${profileUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')) {
           var btn = card.querySelector('button[aria-label*="Accept"]');
           if (btn) { btn.click(); return 'accepted'; }
         }

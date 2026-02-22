@@ -69,7 +69,16 @@ export class TikTokDriver {
       const { stdout } = await execAsync(`osascript -e 'tell application "Safari" to get URL of current tab of front window'`);
       const currentUrl = stdout.trim();
       const isOnTikTok = currentUrl.includes('tiktok.com');
-      const loginCheck = await this.executeJS(`(function() { return document.querySelector('[data-e2e="comment-input"]') ? 'logged_in' : 'unknown'; })();`);
+      // Check for login indicators that work on any TikTok page, not just video pages
+      const loginCheck = await this.executeJS(`
+        (function() {
+          if (document.querySelector('[data-e2e="upload-icon"]')) return 'logged_in';
+          if (document.querySelector('a[href*="/upload"]')) return 'logged_in';
+          if (document.querySelector('[data-e2e="comment-input"]')) return 'logged_in';
+          if (document.querySelector('button[id="header-login-button"]')) return 'not_logged_in';
+          return 'unknown';
+        })();
+      `);
       return { isOnTikTok, isLoggedIn: loginCheck === 'logged_in', currentUrl };
     } catch { return { isOnTikTok: false, isLoggedIn: false, currentUrl: '' }; }
   }
@@ -95,22 +104,40 @@ export class TikTokDriver {
     try { return JSON.parse(result); } catch { return []; }
   }
 
-  async postComment(text: string): Promise<{ success: boolean; commentId?: string; error?: string }> {
+  private async typeViaClipboard(text: string): Promise<boolean> {
+    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+    try {
+      await execAsync(`printf "%s" "${escaped}" | pbcopy`);
+      await new Promise(r => setTimeout(r, 200));
+      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      await new Promise(r => setTimeout(r, 200));
+      await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+      return true;
+    } catch { return false; }
+  }
+
+  async postComment(text: string): Promise<{ success: boolean; commentId?: string; error?: string; verified?: boolean }> {
     try {
       const rateCheck = this.checkRateLimit();
       if (!rateCheck.allowed) return { success: false, error: rateCheck.reason };
 
-      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'");
-      const typeResult = await this.executeJS(`
+      // Focus the comment input
+      const focusResult = await this.executeJS(`
         (function() {
           var input = document.querySelector('[data-e2e="comment-input"]');
-          if (input) { input.focus(); input.innerText = '${escaped}'; input.dispatchEvent(new InputEvent('input', { bubbles: true })); return 'typed'; }
+          if (input) { input.focus(); input.click(); return 'focused'; }
           return 'not_found';
         })();
       `);
-      if (typeResult !== 'typed') return { success: false, error: 'Comment input not found' };
+      if (focusResult !== 'focused') return { success: false, error: 'Comment input not found' };
+      await new Promise(r => setTimeout(r, 300));
 
-      await new Promise(r => setTimeout(r, 500));
+      // Type via clipboard (innerText doesn't trigger React state updates reliably)
+      const typed = await this.typeViaClipboard(text);
+      if (!typed) return { success: false, error: 'Failed to type comment via clipboard' };
+      await new Promise(r => setTimeout(r, 800));
+
+      // Submit
       const submitResult = await this.executeJS(`
         (function() {
           var btn = document.querySelector('[data-e2e="comment-post"]');
@@ -118,10 +145,23 @@ export class TikTokDriver {
           return 'not_found';
         })();
       `);
-      if (submitResult !== 'clicked') return { success: false, error: 'Submit button not found' };
+      if (submitResult !== 'clicked') return { success: false, error: 'Submit button not found or disabled' };
+
+      // Verify comment was posted
+      await new Promise(r => setTimeout(r, 3000));
+      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const verified = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[data-e2e="comment-item"]');
+          for (var i = 0; i < items.length; i++) {
+            if ((items[i].innerText || '').includes('${snippet}')) return 'verified';
+          }
+          return 'not_found';
+        })();
+      `);
 
       this.commentLog.push({ timestamp: new Date() });
-      return { success: true, commentId: `tt_${Date.now()}` };
+      return { success: true, commentId: `tt_${Date.now()}`, verified: verified === 'verified' };
     } catch (error) { return { success: false, error: String(error) }; }
   }
 

@@ -61,6 +61,7 @@ export const DEFAULT_CONFIG: InstagramConfig = {
 export interface CommentResult {
   success: boolean;
   commentId?: string;
+  verified?: boolean;
   error?: string;
 }
 
@@ -188,12 +189,13 @@ export class InstagramDriver {
     const result = await this.executeJS(`
       (function() {
         var comments = [];
-        var commentEls = document.querySelectorAll('ul li');
+        // Scope to article to avoid matching navigation ul>li items
+        var commentEls = document.querySelectorAll('article ul li');
         
         for (var i = 0; i < Math.min(commentEls.length, ${limit}); i++) {
           var el = commentEls[i];
           
-          var userLink = el.querySelector('a[href^="/"]');
+          var userLink = el.querySelector('a[href^="/"]:not([href*="/p/"])');
           var username = userLink ? userLink.href.split('/').filter(Boolean).pop() : '';
           
           var textEl = el.querySelector('span');
@@ -202,7 +204,8 @@ export class InstagramDriver {
           var timeEl = el.querySelector('time');
           var timestamp = timeEl ? timeEl.getAttribute('datetime') : '';
           
-          if (username && text && text.length > 0) {
+          // Require username + text + reasonable length to filter non-comment items
+          if (username && text && text.length > 2 && username.length < 40) {
             comments.push({
               username: username,
               text: text.substring(0, 500),
@@ -340,7 +343,22 @@ end tell`;
         return { success: false, error: 'Submit button not found or disabled' };
       }
 
-      await this.wait(2000);
+      await this.wait(3000);
+
+      // Step 5: Verify comment was posted
+      console.log(`[Instagram] Step 5: Verifying...`);
+      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const verifyResult = await this.executeJS(`
+        (function() {
+          var els = document.querySelectorAll('article ul li span, article span');
+          for (var i = 0; i < els.length; i++) {
+            if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
+          }
+          return 'not_found';
+        })();
+      `);
+      const verified = verifyResult === 'verified';
+      console.log(`[Instagram]   Verified: ${verified}`);
 
       // Log the comment
       this.commentLog.push({ timestamp: new Date() });
@@ -348,7 +366,7 @@ end tell`;
       const commentId = `ig_${Date.now()}`;
       console.log(`[Instagram] ✅ Comment posted: ${commentId}`);
 
-      return { success: true, commentId };
+      return { success: true, commentId, verified };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }

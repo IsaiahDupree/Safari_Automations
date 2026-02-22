@@ -95,26 +95,54 @@ export class TwitterDriver {
     try { return JSON.parse(result); } catch { return []; }
   }
 
-  async postComment(text: string): Promise<{ success: boolean; commentId?: string; error?: string }> {
+  private async typeViaClipboard(text: string): Promise<boolean> {
+    const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+    try {
+      await execAsync(`printf "%s" "${escaped}" | pbcopy`);
+      await new Promise(r => setTimeout(r, 200));
+      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      await new Promise(r => setTimeout(r, 200));
+      await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+      return true;
+    } catch { return false; }
+  }
+
+  async postComment(text: string): Promise<{ success: boolean; commentId?: string; error?: string; verified?: boolean }> {
     try {
       const rateCheck = this.checkRateLimit();
       if (!rateCheck.allowed) return { success: false, error: rateCheck.reason };
 
-      // Click reply button first
-      await this.executeJS(`(function() { var btn = document.querySelector('[data-testid="reply"]'); if (btn) btn.click(); })();`);
-      await new Promise(r => setTimeout(r, 1000));
+      // Click the reply button on the MAIN tweet (first tweet on page)
+      const clickResult = await this.executeJS(`
+        (function() {
+          var tweets = document.querySelectorAll('[data-testid="tweet"]');
+          if (tweets.length === 0) return 'no_tweets';
+          var mainTweet = tweets[0];
+          var replyBtn = mainTweet.querySelector('[data-testid="reply"]');
+          if (replyBtn) { replyBtn.click(); return 'clicked'; }
+          return 'no_reply_btn';
+        })();
+      `);
+      if (clickResult !== 'clicked') return { success: false, error: 'Reply button not found on main tweet' };
+      await new Promise(r => setTimeout(r, 1500));
 
-      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'");
-      const typeResult = await this.executeJS(`
+      // Focus the reply input
+      const focusResult = await this.executeJS(`
         (function() {
           var input = document.querySelector('[data-testid="tweetTextarea_0"]');
-          if (input) { input.focus(); document.execCommand('insertText', false, '${escaped}'); return 'typed'; }
+          if (input) { input.focus(); input.click(); return 'focused'; }
           return 'not_found';
         })();
       `);
-      if (typeResult !== 'typed') return { success: false, error: 'Reply input not found' };
+      if (focusResult !== 'focused') return { success: false, error: 'Reply input not found' };
+      await new Promise(r => setTimeout(r, 300));
 
+      // Type via clipboard (execCommand is deprecated and fails silently)
+      const typed = await this.typeViaClipboard(text);
+      if (!typed) return { success: false, error: 'Failed to type comment via clipboard' };
       await new Promise(r => setTimeout(r, 500));
+
+      // Submit
       const submitResult = await this.executeJS(`
         (function() {
           var btn = document.querySelector('[data-testid="tweetButtonInline"]');
@@ -122,10 +150,23 @@ export class TwitterDriver {
           return 'not_found';
         })();
       `);
-      if (submitResult !== 'clicked') return { success: false, error: 'Reply button not found' };
+      if (submitResult !== 'clicked') return { success: false, error: 'Reply submit button not found or disabled' };
+
+      // Verify comment was posted
+      await new Promise(r => setTimeout(r, 3000));
+      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const verified = await this.executeJS(`
+        (function() {
+          var tweets = document.querySelectorAll('[data-testid="tweetText"]');
+          for (var i = 0; i < tweets.length; i++) {
+            if (tweets[i].innerText.includes('${snippet}')) return 'verified';
+          }
+          return 'not_found';
+        })();
+      `);
 
       this.commentLog.push({ timestamp: new Date() });
-      return { success: true, commentId: `tw_${Date.now()}` };
+      return { success: true, commentId: `tw_${Date.now()}`, verified: verified === 'verified' };
     } catch (error) { return { success: false, error: String(error) }; }
   }
 

@@ -301,6 +301,7 @@ export const DEFAULT_CONFIG: ThreadsConfig = {
 export interface CommentResult {
   success: boolean;
   commentId?: string;
+  verified?: boolean;
   error?: string;
 }
 
@@ -766,13 +767,28 @@ end tell`;
       // Wait for comment to post
       await this.wait(3000);
 
+      // Verify comment was posted
+      console.log(`[Threads] Step 6: Verifying...`);
+      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const verifyResult = await this.executeJS(`
+        (function() {
+          var els = document.querySelectorAll('div[data-pressable-container] span, p span, div span');
+          for (var i = 0; i < els.length; i++) {
+            if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
+          }
+          return 'not_found';
+        })();
+      `);
+      const verified = verifyResult === 'verified';
+      console.log(`[Threads]   Verified: ${verified}`);
+
       // Log the comment
       this.commentLog.push({ timestamp: new Date() });
 
       const commentId = `th_${Date.now()}`;
       console.log(`[Threads] ✅ Comment posted: ${commentId}`);
 
-      return { success: true, commentId };
+      return { success: true, commentId, verified };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }

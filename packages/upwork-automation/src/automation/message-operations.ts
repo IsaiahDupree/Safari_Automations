@@ -160,7 +160,7 @@ export async function openConversation(clientName: string, driver?: SafariDriver
       var items = document.querySelectorAll('a.room-list-item');
       for (var item of items) {
         var nameEl = item.querySelector('.item-title');
-        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${clientName.toLowerCase().replace(/'/g, "\\'")}')) {
+        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${clientName.toLowerCase().replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')) {
           item.click();
           return 'opened';
         }

@@ -137,7 +137,7 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 
 export async function openConversation(participantName: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
-  const searchName = participantName.toLowerCase().replace(/'/g, "\\'");
+  const searchName = participantName.toLowerCase().replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
   console.log(`[DM] Opening conversation with: ${participantName}`);
 
