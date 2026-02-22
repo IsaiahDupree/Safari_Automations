@@ -31,4 +31,4 @@ export interface SelectorValidation {
   warnings: string[];
 }
 
-export type Platform = 'instagram' | 'tiktok' | 'threads' | 'twitter';
+export type Platform = 'instagram' | 'tiktok' | 'threads' | 'twitter' | 'facebook';

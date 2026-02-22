@@ -6,3 +6,4 @@ export { instagramSelectors } from './platforms/instagram';
 export { tiktokSelectors } from './platforms/tiktok';
 export { threadsSelectors } from './platforms/threads';
 export { twitterSelectors } from './platforms/twitter';
+export { facebookSelectors } from './platforms/facebook';

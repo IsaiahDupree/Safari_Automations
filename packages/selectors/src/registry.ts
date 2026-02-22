@@ -3,6 +3,7 @@ import { instagramSelectors } from './platforms/instagram';
 import { tiktokSelectors } from './platforms/tiktok';
 import { threadsSelectors } from './platforms/threads';
 import { twitterSelectors } from './platforms/twitter';
+import { facebookSelectors } from './platforms/facebook';
 
 export class SelectorNotFoundError extends Error {
   constructor(path: string) {
@@ -65,6 +66,7 @@ export class SelectorRegistry {
     this.loadPlatformSelectors('tiktok', tiktokSelectors);
     this.loadPlatformSelectors('threads', threadsSelectors);
     this.loadPlatformSelectors('twitter', twitterSelectors);
+    this.loadPlatformSelectors('facebook', facebookSelectors);
   }
 
   private loadPlatformSelectors(
