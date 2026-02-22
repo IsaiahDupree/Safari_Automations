@@ -262,34 +262,37 @@ export class CommentLogger {
   /**
    * Get stats for a platform
    */
-  async getStats(platform: string = 'threads'): Promise<{
+  async getStats(platform: string = 'instagram'): Promise<{
     total: number;
     successful: number;
     failed: number;
     todayCount: number;
   }> {
     try {
-      // Get total counts
-      const totalUrl = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&select=id,success,created_at`;
-      const response = await fetch(totalUrl, {
-        headers: {
-          'apikey': this.supabaseKey,
-          'Authorization': `Bearer ${this.supabaseKey}`,
-        },
-      });
-
-      if (!response.ok) {
-        return { total: 0, successful: 0, failed: 0, todayCount: 0 };
-      }
-
-      const data = await response.json() as Array<{ success: boolean; created_at: string }>;
+      const headers = {
+        'apikey': this.supabaseKey,
+        'Authorization': `Bearer ${this.supabaseKey}`,
+        'Prefer': 'count=exact',
+      };
+      const base = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&select=id`;
       const today = new Date().toISOString().split('T')[0];
-      
+
+      // Use HEAD requests with count=exact to avoid fetching all rows
+      const [totalRes, successRes, todayRes] = await Promise.all([
+        fetch(`${base}`, { headers, method: 'HEAD' }),
+        fetch(`${base}&success=eq.true`, { headers, method: 'HEAD' }),
+        fetch(`${base}&created_at=gte.${today}T00:00:00`, { headers, method: 'HEAD' }),
+      ]);
+
+      const total = parseInt(totalRes.headers.get('content-range')?.split('/')[1] || '0');
+      const successful = parseInt(successRes.headers.get('content-range')?.split('/')[1] || '0');
+      const todayCount = parseInt(todayRes.headers.get('content-range')?.split('/')[1] || '0');
+
       return {
-        total: data.length,
-        successful: data.filter(r => r.success).length,
-        failed: data.filter(r => !r.success).length,
-        todayCount: data.filter(r => r.created_at.startsWith(today)).length,
+        total,
+        successful,
+        failed: total - successful,
+        todayCount,
       };
     } catch (error) {
       console.error('[DB] Error getting stats:', error);

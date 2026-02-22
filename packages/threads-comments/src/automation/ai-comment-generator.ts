@@ -301,57 +301,79 @@ Output ONLY the comment text:`;
   }
 
   private async generateWithOpenAI(prompt: string): Promise<string> {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a social media engagement expert. Generate authentic, contextual comments that sound natural. Never be generic or spammy.',
-          },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: 100,
-        temperature: this.config.temperature,
-      }),
-    });
+    const fallback = { mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral' as const, topics: ['general'], tone: 'neutral' };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a social media engagement expert. Generate authentic, contextual comments that sound natural. Never be generic or spammy.',
+            },
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: 100,
+          temperature: this.config.temperature,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!response.ok) {
-      console.error('OpenAI error, falling back to local');
-      return this.generateLocalComment({ mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral', topics: ['general'], tone: 'neutral' });
+      if (!response.ok) {
+        console.error('OpenAI error, falling back to local');
+        return this.generateLocalComment(fallback);
+      }
+
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      return data.choices?.[0]?.message?.content?.trim() || this.generateLocalComment(fallback);
+    } catch (error) {
+      clearTimeout(timeout);
+      console.error('OpenAI request failed:', error instanceof Error ? error.message : error);
+      return this.generateLocalComment(fallback);
     }
-
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    return data.choices?.[0]?.message?.content?.trim() || this.generateLocalComment({ mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral', topics: ['general'], tone: 'neutral' });
   }
 
   private async generateWithAnthropic(prompt: string): Promise<string> {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey!,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: this.config.model ?? 'claude-3-haiku-20240307',
-        max_tokens: 100,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    const fallback = { mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral' as const, topics: ['general'], tone: 'neutral' };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey!,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.config.model ?? 'claude-3-haiku-20240307',
+          max_tokens: 100,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!response.ok) {
-      console.error('Anthropic error, falling back to local');
-      return this.generateLocalComment({ mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral', topics: ['general'], tone: 'neutral' });
+      if (!response.ok) {
+        console.error('Anthropic error, falling back to local');
+        return this.generateLocalComment(fallback);
+      }
+
+      const data = await response.json() as { content?: { text?: string }[] };
+      return data.content?.[0]?.text?.trim() || this.generateLocalComment(fallback);
+    } catch (error) {
+      clearTimeout(timeout);
+      console.error('Anthropic request failed:', error instanceof Error ? error.message : error);
+      return this.generateLocalComment(fallback);
     }
-
-    const data = await response.json() as { content?: { text?: string }[] };
-    return data.content?.[0]?.text?.trim() || this.generateLocalComment({ mainPost: '', username: '', replies: [], hasImage: false, hasVideo: false, sentiment: 'neutral', topics: ['general'], tone: 'neutral' });
   }
 
   /**
