@@ -178,7 +178,7 @@ async function scrapeInstagramFeed(page: any, maxItems: number, query: string): 
 
   try {
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await new Promise(r => setTimeout(r, 3000));
 
     const postData = await page.evaluate((max: number) => {
       const posts: any[] = [];

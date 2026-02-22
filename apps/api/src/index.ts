@@ -139,6 +139,13 @@ const server = createServer(async (req, res) => {
       matched = true;
     }
 
+    // Readiness check
+    else if (path === '/ready' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, timestamp: new Date().toISOString() }));
+      matched = true;
+    }
+
     // Video processing
     else if (path === '/api/v1/video/process' && method === 'POST') {
       const body = await parseBody(req);

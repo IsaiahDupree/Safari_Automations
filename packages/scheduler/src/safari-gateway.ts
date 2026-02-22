@@ -11,6 +11,10 @@
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -296,6 +300,183 @@ app.post('/gateway/lock/force-release', (_req: Request, res: Response) => {
 
 app.get('/gateway/lock', (_req: Request, res: Response) => {
   res.json({ lock: lockManager.getLock(), queueLength: lockManager.getQueueLength() });
+});
+
+// ─── Safari Focus & Window Management ───────────────────────
+
+/**
+ * Robust Safari focus — ensures Safari is the frontmost app on macOS.
+ * Uses multiple strategies because a single `activate` can fail if:
+ *  - Another app is in fullscreen
+ *  - System dialogs are blocking
+ *  - macOS is in a focus mode
+ * 
+ * Strategies (in order):
+ * 1. AppleScript `activate` — standard method
+ * 2. Set `frontmost` property — forces frontmost even if activate is ignored
+ * 3. Raise front window via `AXRaise` — handles minimized windows
+ * 4. Open Safari via `open -a` — last resort, ensures Safari is launched
+ */
+async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Promise<{
+  success: boolean;
+  frontmost: boolean;
+  windowCount: number;
+  currentUrl: string;
+  error?: string;
+}> {
+  try {
+    // Step 1: Activate Safari (bring to front)
+    await execAsync(`osascript -e '
+tell application "Safari"
+    activate
+end tell'`);
+    await new Promise(r => setTimeout(r, 300));
+
+    // Step 2: Force frontmost via System Events
+    await execAsync(`osascript -e '
+tell application "System Events"
+    set frontmost of process "Safari" to true
+end tell'`).catch(() => null);
+    await new Promise(r => setTimeout(r, 200));
+
+    // Step 3: Ensure at least one window exists
+    if (opts?.ensureWindow !== false) {
+      const windowCheck = await execAsync(`osascript -e '
+tell application "Safari"
+    set wc to count of windows
+    if wc = 0 then
+        make new document
+    end if
+    return wc
+end tell'`).catch(() => ({ stdout: '0' }));
+
+      // Step 3b: Raise the front window (un-minimize)
+      await execAsync(`osascript -e '
+tell application "System Events"
+    tell process "Safari"
+        try
+            perform action "AXRaise" of front window
+        end try
+    end tell
+end tell'`).catch(() => null);
+    }
+
+    // Step 4: Navigate to URL if provided
+    if (opts?.url) {
+      const safeUrl = opts.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`);
+    }
+
+    await new Promise(r => setTimeout(r, 300));
+
+    // Verify state
+    const stateResult = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    try
+        set u to URL of front document
+    end try
+end tell
+return (isFront as text) & "|" & (wc as text) & "|" & u'`);
+
+    const parts = stateResult.stdout.trim().split('|');
+    const frontmost = parts[0] === 'true';
+    const windowCount = parseInt(parts[1]) || 0;
+    const currentUrl = parts[2] || '';
+
+    return { success: true, frontmost, windowCount, currentUrl };
+  } catch (e: any) {
+    // Last resort: open -a Safari
+    try {
+      await execAsync('open -a Safari');
+      await new Promise(r => setTimeout(r, 1000));
+      return { success: true, frontmost: true, windowCount: 1, currentUrl: '', error: 'Used open -a fallback' };
+    } catch {
+      return { success: false, frontmost: false, windowCount: 0, currentUrl: '', error: e.message };
+    }
+  }
+}
+
+/**
+ * Pre-automation preparation — focus Safari, verify session, acquire lock.
+ * One-call setup before any automation task.
+ */
+async function prepareSafari(holder: string, platform: Platform | null, task: string, opts?: {
+  url?: string;
+  timeoutMs?: number;
+}): Promise<{
+  ready: boolean;
+  lockAcquired: boolean;
+  focused: boolean;
+  error?: string;
+}> {
+  // 1. Acquire lock
+  const timeoutMs = opts?.timeoutMs || 60000;
+  const acquired = await lockManager.acquireAsync(holder, platform, task, timeoutMs, 15000);
+  if (!acquired) {
+    return { ready: false, lockAcquired: false, focused: false, error: 'Could not acquire Safari lock' };
+  }
+
+  // 2. Focus Safari
+  const focus = await focusSafari({ ensureWindow: true, url: opts?.url });
+  if (!focus.success) {
+    lockManager.release(holder);
+    return { ready: false, lockAcquired: true, focused: false, error: focus.error || 'Failed to focus Safari' };
+  }
+
+  return { ready: true, lockAcquired: true, focused: focus.frontmost };
+}
+
+// API: Focus Safari (no lock required — just bring it to front)
+app.post('/gateway/safari/focus', async (req: Request, res: Response) => {
+  const { url } = req.body || {};
+  const result = await focusSafari({ ensureWindow: true, url });
+  res.json(result);
+});
+
+// API: Get Safari window state
+app.get('/gateway/safari/state', async (_req: Request, res: Response) => {
+  try {
+    const stateResult = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+    set isRunning to exists process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+
+    const parts = stateResult.stdout.trim().split('|');
+    res.json({
+      running: parts[0] === 'true',
+      frontmost: parts[1] === 'true',
+      windowCount: parseInt(parts[2]) || 0,
+      currentUrl: parts[3] || '',
+      pageTitle: parts[4] || '',
+    });
+  } catch (e: any) {
+    res.json({ running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '', error: e.message });
+  }
+});
+
+// API: Full pre-automation setup (focus + lock + optional navigate)
+app.post('/gateway/safari/prepare', async (req: Request, res: Response) => {
+  const { holder, platform, task, url, timeoutMs } = req.body;
+  if (!holder) return res.status(400).json({ error: 'holder required' });
+
+  const result = await prepareSafari(holder, platform || null, task || 'prepare', { url, timeoutMs });
+  res.json(result);
 });
 
 // ─── Sessions ───────────────────────────────────────────────
