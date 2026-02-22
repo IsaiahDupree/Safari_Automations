@@ -15,6 +15,7 @@ import { videoRouter } from './routes/video.js';
 import { jobsRouter } from './routes/jobs.js';
 import { healthRouter } from './routes/health.js';
 import { commandsRouter } from './routes/commands.js';
+import { focusApp, focusSafari, focusChrome, getFrontmostApp, ensureAppFocused, exclusiveFocus, focusSafariWindow } from './utils/focus.js';
 import { JobManager } from './services/job-manager.js';
 import { logger } from './utils/logger.js';
 import { resolve, dirname } from 'path';
@@ -185,6 +186,46 @@ const server = createServer(async (req, res) => {
     else if (path.startsWith('/v1/commands/') && method === 'GET') {
       const commandId = path.split('/')[3];
       await commandsRouter.getCommand(req, res, commandId);
+      matched = true;
+    }
+
+    // Focus API — bring apps to foreground for automation
+    else if (path === '/v1/focus' && method === 'POST') {
+      const body = await parseBody(req);
+      const app = body?.app || 'Safari';
+      const mode = body?.mode || 'activate'; // activate | ensure | exclusive | window
+      let success = false;
+
+      switch (mode) {
+        case 'ensure':
+          success = ensureAppFocused(app);
+          break;
+        case 'exclusive':
+          success = exclusiveFocus(app);
+          break;
+        case 'window':
+          success = focusSafariWindow(body?.window_index || 1);
+          break;
+        default:
+          success = focusApp(app);
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success,
+        app,
+        mode,
+        frontmost: getFrontmostApp(),
+        timestamp: new Date().toISOString(),
+      }));
+      matched = true;
+    }
+    else if (path === '/v1/focus' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        frontmost: getFrontmostApp(),
+        timestamp: new Date().toISOString(),
+      }));
       matched = true;
     }
 

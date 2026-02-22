@@ -13,6 +13,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils/logger.js';
+import { focusApp, getFrontmostApp } from '../utils/focus.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,10 +84,21 @@ async function scrapePublicFeed(platform: string, maxItems: number, query: strin
   // Attempt to use Puppeteer for real browser scraping
   try {
     const puppeteer = await import('puppeteer');
+
+    // Remember current frontmost app to restore later
+    const previousApp = getFrontmostApp();
+
+    const useHeadless = process.env.PUPPETEER_HEADLESS !== 'false';
     const browser = await puppeteer.default.launch({
-      headless: true,
+      headless: useHeadless ? 'shell' : false,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
+
+    // Focus the browser so macOS gives it full priority
+    if (!useHeadless) {
+      focusApp('Chromium') || focusApp('Google Chrome');
+    }
+
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
@@ -106,6 +118,12 @@ async function scrapePublicFeed(platform: string, maxItems: number, query: strin
     }
 
     await browser.close();
+
+    // Restore previous frontmost app if we changed focus
+    if (!useHeadless && previousApp) {
+      focusApp(previousApp);
+    }
+
     return items;
   } catch (err: any) {
     logger.warn(`[commands] Puppeteer scrape failed, using API fallback: ${err.message}`);
