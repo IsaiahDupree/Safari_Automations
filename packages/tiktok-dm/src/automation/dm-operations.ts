@@ -603,7 +603,7 @@ async function _sendAndVerify(
 
   // Post-send verification
   await driver.wait(2000);
-  const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+  const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const postCheck = await driver.executeScript(`
     (function() { return document.body.innerText.includes('${snippet}') ? 'yes' : 'no'; })()
   `);

@@ -81,14 +81,14 @@ export class SafariDriver {
 
   async navigateTo(url: string): Promise<boolean> {
     try {
+      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         await execAsync(
           `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
           { timeout: this.config.timeout }
         );
       } else {
-        await this.executeRemoteJS(`window.location.href = "${url}"`);
+        await this.executeRemoteJS(`window.location.href = "${safeUrl}"`);
       }
       // LinkedIn loads slower — extra wait
       await this.wait(4000);

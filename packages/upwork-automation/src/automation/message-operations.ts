@@ -246,13 +246,14 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
   }
 
   // Verify message was sent by checking last story item
+  const snippet = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const verified = await d.executeJS(`
     (function() {
       var items = document.querySelectorAll('.up-d-story-item');
       var lastItem = items[items.length - 1];
       if (lastItem) {
-        var text = lastItem.innerText.trim();
-        if (text.includes('${text.substring(0, 30).replace(/'/g, "\\'")}')) return 'verified';
+        var content = lastItem.innerText.trim();
+        if (content.includes('${snippet}')) return 'verified';
       }
       return 'unverified';
     })()

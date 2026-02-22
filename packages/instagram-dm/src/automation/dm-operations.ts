@@ -230,7 +230,7 @@ export async function sendDMToThread(
   if (result.success) {
     // Post-send verification: check message text appeared in conversation
     await d.wait(2000);
-    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const verified = await d.executeJS(`
       (function() {
         return document.body.innerText.includes('${snippet}') ? 'yes' : 'no';
@@ -566,7 +566,7 @@ export async function sendDMFromProfile(
   
   if (result.success) {
     await d.wait(2000);
-    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const verified = await d.executeJS(`
       (function() {
         return document.body.innerText.includes('${snippet}') ? 'yes' : 'no';

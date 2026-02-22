@@ -464,7 +464,7 @@ export async function sendDMByUsername(
     
     // Post-send verification: check message text appeared in conversation
     await d.wait(2000);
-    const snippet = message.substring(0, 30).replace(/'/g, "\\'");
+    const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const verifyResult = await d.executeJS(`
       (function() {
         var body = document.body.innerText;
