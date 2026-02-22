@@ -1,0 +1,181 @@
+{
+  "generatedAt": "2026-02-11T23:30:00.000Z",
+  "character": "@isaiahdupree",
+  "theme": "February 2026 TikTok/Reels Trends",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "totalMovies": 7,
+  "totalVideos": 15,
+  "movies": [
+    {
+      "id": 1,
+      "title": "ASKING THE UNIVERSE FOR A SIGN",
+      "trend": "AI Sky Trend",
+      "format": "single",
+      "theme": "Creators film themselves looking up, then reveal AI-manipulated clouds spelling out a message",
+      "bestPlatform": "TikTok, Reels",
+      "captionIdea": "Asked the universe for a sign about what to do next weekend… 🌤️",
+      "soundtrack": "Tavares — Heaven Must Be Missing an Angel",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Sign",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree standing on a city rooftop at golden hour, wearing a casual hoodie and gold chain, looking up at the sky with a hopeful, searching expression. Cinematic 4K, warm amber light, camera slowly tilts up from his face toward the sky. The clouds above begin to form into the words \"BUILD THE APP\" in bold natural cloud formations. Dramatic lighting, soft lens flare, aspirational mood."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "REALITY TV CREATOR",
+      "trend": "Reality TV Edit",
+      "format": "trilogy",
+      "theme": "Mundane daily creator life edited with reality TV dramatic music, confessional cuts, and cliffhangers",
+      "bestPlatform": "TikTok",
+      "captionIdea": "Day in the Life of a Creator — but make it reality TV 🎬",
+      "seriesIdea": "3-part 'reality show' about debugging at 2am. Confessional: 'I trusted the process… and the process betrayed me.'",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Setup",
+          "stage": "Setup — Dramatic Discovery",
+          "prompt": "@isaiahdupree sitting in a modern home office with multiple monitors, dramatic shadows, cinematic camera slowly pushing in on his face as he stares at code on screen. Expression shifts from focused to shocked. Moody lighting, over-the-top dramatic atmosphere like a reality TV confessional."
+        },
+        {
+          "part": 2,
+          "title": "The Cliffhanger",
+          "stage": "Cliffhanger — Freeze Frame",
+          "prompt": "@isaiahdupree standing in a sleek kitchen, mid-conversation, suddenly freezes mid-sentence. Camera zooms in dramatically on his face. Freeze frame. Warm tones, reality TV aesthetic, text overlay space at bottom. Cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "The Confessional",
+          "stage": "Confessional — Breaking the Fourth Wall",
+          "prompt": "@isaiahdupree sitting in a chair against a plain background, speaking directly to camera with exaggerated serious energy, hands gesturing emphatically. Soft studio lighting, documentary interview style, confessional booth aesthetic."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "EUPHORIA GLAM TRANSITION",
+      "trend": "Aesthetic Transition Trend",
+      "format": "single",
+      "theme": "Bare-face to full Euphoria-inspired glam with glitter, cinematic vibes",
+      "bestPlatform": "Reels, TikTok",
+      "captionIdea": "The glow up hit different at 2am 💜",
+      "soundtrack": "Labrinth — Left Behind",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Glow Up",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree in a dark room with neon purple and blue lighting, looking down. He slowly raises his head to reveal his face with dramatic lighting — editorial glow, subtle shimmer on cheekbones, intense eye contact. Euphoria TV show aesthetic, moody, beautiful chaos. Camera pulls back slowly. 4K cinematic, shallow depth of field, hazy atmospheric lighting."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "WHAT YEAR WERE YOU BORN",
+      "trend": "Generational Humor Trend",
+      "format": "trilogy",
+      "theme": "Ask people their birth year, then paste them into dinosaur edits (pre-2000) or baby edits (post-2000)",
+      "bestPlatform": "TikTok",
+      "captionIdea": "When they said '2003' I aged 40 years instantly 🦕👶",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Question",
+          "stage": "Setup — The Ask",
+          "prompt": "@isaiahdupree in a modern office, casually pointing at camera with a questioning expression, vibrant colors, natural lighting, energetic and playful mood. Quick camera movement, social media style."
+        },
+        {
+          "part": 2,
+          "title": "The Dinosaur",
+          "stage": "Reaction — Pre-2000 Edit",
+          "prompt": "@isaiahdupree wearing a prehistoric caveman outfit in a Jurassic-style jungle landscape, confused expression, dramatic lighting, cinematic comedy. Dinosaurs visible in the background. Absurd and humorous tone."
+        },
+        {
+          "part": 3,
+          "title": "The Baby",
+          "stage": "Reaction — Post-2000 Edit",
+          "prompt": "@isaiahdupree as a giant baby in an oversized crib, wearing a bonnet, comedic and exaggerated, soft pastel colors, nursery setting, playful and absurd. 4K, warm lighting."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "THE AUTOMATION FLEX",
+      "trend": "Serialized Content + AI Mainstream",
+      "format": "trilogy",
+      "theme": "Serialized content with recurring characters — AI-generated content going mainstream is THE 2026 story",
+      "bestPlatform": "All platforms",
+      "captionIdea": "When the automation hits and everything just... works ✅🔥 — Part 1/3",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Hook",
+          "stage": "Hook — Entering the Future",
+          "prompt": "@isaiahdupree walking through a futuristic corridor filled with floating holographic screens and data visualizations, wearing a hoodie and gold chain. He pauses, touches one of the holograms, and it expands. Cool blue and white lighting, sci-fi tech aesthetic, cinematic camera tracking shot. Confident energy."
+        },
+        {
+          "part": 2,
+          "title": "The Build",
+          "stage": "Build — Creating the System",
+          "prompt": "@isaiahdupree sitting at a sleek glass desk, holographic interfaces floating around him, hands moving through the air manipulating code and schedules. Intense focus, dramatic lighting shifts from cool blue to warm gold. Fast camera movement, montage energy. Futuristic workspace."
+        },
+        {
+          "part": 3,
+          "title": "The Payoff",
+          "stage": "Payoff — Everything Works",
+          "prompt": "@isaiahdupree leaning back in his chair with a satisfied smile as all the holographic screens around him turn green with checkmarks. He folds his arms and nods. Golden hour lighting floods the room. Camera slowly pulls back to reveal the massive scale of the operation. Triumphant, aspirational mood, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "GROUP CONSENSUS",
+      "trend": "Friend Group Debate Trend",
+      "format": "single",
+      "theme": "3 people enter frame in slow-mo giving wildly different takes on the same situation",
+      "bestPlatform": "TikTok, Reels",
+      "captionIdea": "Should you learn to code in 2026?",
+      "soundtrack": "Joan Jett — I Love Rock N Roll",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Take",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree entering frame from the left in slow motion, dramatic lighting, wearing a casual hoodie and gold chain. He points at camera with intense conviction while speaking. Modern minimalist background. Cinematic slow motion, 0.5x speed, confident energy, stylish and bold. 4K portrait format."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "BUILDERS LEGACY",
+      "trend": "Black History Month + Authenticity",
+      "format": "trilogy",
+      "theme": "February = Black History Month. Authentic storytelling and creator-led narratives — building on the foundation of innovation",
+      "bestPlatform": "All platforms",
+      "captionIdea": "They built the foundation. We build the future. 🖤✊ #BlackHistoryMonth #BuildersLegacy",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Foundation",
+          "stage": "Reverence — Honoring the Past",
+          "prompt": "@isaiahdupree standing in front of a wall of vintage photographs and newspaper clippings about Black innovators and inventors. He reaches out and touches one photo. The photo comes to life with golden light emanating from it. Warm tones, reverent and powerful mood, cinematic documentary style. 4K, shallow depth of field."
+        },
+        {
+          "part": 2,
+          "title": "The Connection",
+          "stage": "Parallel — Same Energy, Different Eras",
+          "prompt": "@isaiahdupree sitting at a workstation building something, intercut with split-screen showing historical Black inventors and creators working on their inventions. Same energy, different eras. Warm golden lighting, powerful montage, aspirational and emotional. Cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "The Future",
+          "stage": "Forward — Walking Into Tomorrow",
+          "prompt": "@isaiahdupree looking directly at camera, a confident knowing smile. Behind him, a timeline of innovation stretches into the future with glowing nodes. He turns and walks toward the future. Dramatic lighting, golden and blue tones, epic and inspiring mood. Camera follows him from behind as he walks forward."
+        }
+      ]
+    }
+  ]
+}

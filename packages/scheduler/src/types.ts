@@ -2,8 +2,8 @@
  * Safari Task Scheduler Types
  */
 
-export type TaskType = 'sora' | 'dm' | 'comment' | 'discovery' | 'sync';
-export type Platform = 'tiktok' | 'instagram' | 'twitter' | 'sora';
+export type TaskType = 'sora' | 'sora-generate' | 'sora-daily-pipeline' | 'queue-drain' | 'dm' | 'comment' | 'discovery' | 'sync' | 'publish' | 'market-research' | 'market-research-instagram' | 'ad-brief' | 'meta-ad-library' | 'daily-research';
+export type Platform = 'tiktok' | 'instagram' | 'twitter' | 'sora' | 'youtube';
 export type TaskStatus = 'pending' | 'scheduled' | 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type TaskPriority = 1 | 2 | 3 | 4 | 5; // 1 = highest
 

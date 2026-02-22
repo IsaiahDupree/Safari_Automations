@@ -1,0 +1,250 @@
+{
+  "generatedAt": "2026-02-12T02:23:00.000Z",
+  "character": "@isaiahdupree",
+  "theme": "DB-Generated Scripts — Live Trends + Internal + Brand Ideas",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "totalMovies": 10,
+  "totalVideos": 20,
+  "movies": [
+    {
+      "id": 1,
+      "title": "WORKSPACE TECH GLOW UP",
+      "trend": "Tech Transformation",
+      "format": "trilogy",
+      "theme": "Before/after workspace transformation with dramatic tech upgrade reveal",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "You gotta see the before to appreciate the after 😂📉 #WorkspaceGlowUp",
+      "dbId": "bef34ef2-bff3-4519-bbb4-c987070ef17f",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Before",
+          "stage": "Setup — Old cluttered workspace",
+          "prompt": "@isaiahdupree stands in his old, cluttered workspace, wearing a casual hoodie and gold chain, humorously reacting to outdated tech. Camera pans across messy cables and old monitors. Warm but dim lighting, comedic energy. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "The Process",
+          "stage": "Build — Setting up new tech",
+          "prompt": "@isaiahdupree showcases the transformation process, wearing a hoodie and gold chain. Camera captures him setting up new tech: a sleek monitor, wireless keyboard, RGB lighting. Fast-paced montage energy, bright lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "The Reveal",
+          "stage": "Payoff — Dream workspace reveal",
+          "prompt": "@isaiahdupree reveals the final look of his upgraded workspace, wearing a casual hoodie and gold chain. Camera smoothly glides through the space, spotlighting the clean setup with ambient RGB lighting. Triumphant, aspirational mood. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "AI ART ADVENTURE",
+      "trend": "AI Art Challenge",
+      "format": "trilogy",
+      "theme": "Creating AI art from viewer suggestions — challenge format",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Kicking off the AI Art Challenge 🎨🤖 Drop your theme suggestions below! #AIArt",
+      "dbId": "d860fb85-68d7-4db0-bd02-349e90c215a7",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Challenge",
+          "stage": "Hook — Introducing the AI Art Challenge",
+          "prompt": "@isaiahdupree introduces the AI Art Challenge in his vibrant, tech-themed room. He wears a casual hoodie and gold chain, with AI-generated art displayed on screens behind him. Camera pushes in on his excited expression. Energetic, colorful lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "The Creation",
+          "stage": "Build — Creating art from suggestions",
+          "prompt": "@isaiahdupree shares the process of creating AI art based on viewer suggestions. Wearing a hoodie and gold chain, he clicks through different AI tools, reacting to wild outputs. Split screen showing his face and the art generation. Dynamic lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "The Reveal",
+          "stage": "Payoff — Final artwork reveal",
+          "prompt": "@isaiahdupree reveals the final AI artwork with an excited expression, wearing a casual hoodie and gold chain. Camera captures stunning visuals of the finished digital art displayed on a large screen. Dramatic reveal lighting, awe-inspiring mood. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "UNPLUGGED ADVENTURES",
+      "trend": "Digital Detox Diaries",
+      "format": "single",
+      "theme": "Finding peace away from screens in nature",
+      "bestPlatform": "Instagram",
+      "captionIdea": "Finding peace away from the screens 🌿🧘🏾‍♂️ #DigitalDetox",
+      "dbId": "6f7e1e74-d449-498e-b18b-1aa070f4fb97",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Digital Detox",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree in a serene outdoor setting, wearing a casual hoodie and gold chain, looking relaxed and reflective. Camera captures wide shots of nature scenery intercut with close-ups of his peaceful expression. Golden hour lighting, warm tones, meditative mood. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "QUICK TECH HACKS",
+      "trend": "Tech Tips & Tricks",
+      "format": "trilogy",
+      "theme": "Fast-paced tech tips that blow your mind",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Hack your way to efficiency! 📱💡 #TechTips",
+      "dbId": "e1f817de-5d4e-41ab-b7c9-26cef37dd3d5",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Phone Hack",
+          "stage": "Tip 1 — Phone trick",
+          "prompt": "@isaiahdupree demonstrates a quick tech tip using his phone, wearing a casual hoodie and gold chain. Camera zooms in to show the phone screen clearly. Lighting is bright and focused for clarity. Mood is informative and upbeat. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Laptop Hack",
+          "stage": "Tip 2 — Laptop trick",
+          "prompt": "@isaiahdupree shows another tech trick using a laptop, wearing his trademark hoodie and gold chain. Camera captures the keyboard and screen interaction. Lighting highlights the tech details. Mood is engaging and educational. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Mind Blown",
+          "stage": "Tip 3 — Unexpected hack",
+          "prompt": "@isaiahdupree wraps up the series with a fun, unexpected tech hack. He wears his casual hoodie and gold chain, with the camera capturing his reaction as the hack succeeds. Lighting is bright and cheerful. Mood is surprising and joyful. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "VR BEYOND REALITY",
+      "trend": "Virtual Reality Experiences",
+      "format": "single",
+      "theme": "Diving into VR gaming — reactions and immersion",
+      "bestPlatform": "YouTube Shorts",
+      "captionIdea": "Diving into another world with VR! 🌌🎮 #VirtualReality",
+      "dbId": "aef2afbb-218e-42b7-9349-77969c4bfdf9",
+      "videos": [
+        {
+          "part": 1,
+          "title": "VR Dive",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree experiences a virtual reality game, wearing a casual hoodie and gold chain, VR headset on. Camera captures his gestures and reactions, mixing real-world and in-game footage. Lighting is ambient and immersive. Mood is adventurous and curious. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "TECH ENTREPRENEURS MORNING ROUTINE",
+      "trend": "Morning Routine Videos",
+      "format": "trilogy",
+      "theme": "Day in the life of a tech entrepreneur — morning edition",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Rise and grind! ☀️ Starting my day with a fresh brew and fresh ideas. #TechLife",
+      "dbId": "4577128e-48e0-468e-ae72-169b6eb440bf",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Rise and Brew",
+          "stage": "Morning — Coffee and ideas",
+          "prompt": "@isaiahdupree wakes up in his stylish urban apartment, sunlight streaming through the window. He wears a casual hoodie and gold chain as he smiles at the camera. Transition from a close-up of Isaiah's face to a wide shot of him making coffee. The camera follows him with smooth movements, capturing the warm, cozy morning vibe. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Automation Station",
+          "stage": "Work — Setting up the system",
+          "prompt": "@isaiahdupree at his sleek home office, still in his casual hoodie and gold chain. The camera captures him setting up his workstation, focusing on his laptop and smartphone with automation tools. Bright lighting highlights his focused expression as he smiles, ready to tackle the day. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Recharge",
+          "stage": "Balance — Rest and reflect",
+          "prompt": "@isaiahdupree unwinding after a productive morning, lounging on his couch with a book about personal branding in hand. His casual hoodie and gold chain catch the warm ambient lighting, creating a relaxed atmosphere. The camera slowly zooms out, capturing the serenity and satisfaction on his face. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "AI-ENHANCED CONTENT CREATION",
+      "trend": "AI Tools in Daily Life",
+      "format": "single",
+      "theme": "Showcasing AI tools that level up content creation",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Level up your content game with AI! 🤩 Tech just got fun. #AIInnovation",
+      "dbId": "91c0738c-1b9a-4f36-8ec8-f2853eba7ca6",
+      "videos": [
+        {
+          "part": 1,
+          "title": "AI Showcase",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree excitedly showcases the latest AI tool on his smartphone, explaining its features with animated hand gestures. He's in his home studio, wearing a casual hoodie and gold chain, under cool, dynamic lighting. The camera pans smoothly from his energetic expression to the app interface, highlighting its capabilities. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "FINDING YOUR UNIQUE VOICE",
+      "trend": "Personal Branding Tips",
+      "format": "trilogy",
+      "theme": "Building an authentic personal brand — storytelling, strategy, reflection",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Storytelling is at the heart of a strong brand. 📖 What's your story? #BrandBuilding",
+      "dbId": "7ad35588-ca58-4cfe-b582-daeb993f1460",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Story",
+          "stage": "Foundation — Storytelling",
+          "prompt": "@isaiahdupree in a cozy reading nook, engrossed in a book about storytelling, while soft lighting casts a thoughtful mood. His casual hoodie and gold chain add a touch of personal style. The camera moves in a slow arc, highlighting his genuine interest and the inviting ambiance. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "The Strategy",
+          "stage": "Build — Brand pillars",
+          "prompt": "@isaiahdupree stands confidently in front of a whiteboard filled with diagrams of branding strategies. Wearing his casual hoodie and gold chain, he gestures animatedly as he explains. Bright, clear lighting illuminates his face and expressive movements. The camera captures both his enthusiasm and the clarity of his ideas. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "The Reflection",
+          "stage": "Payoff — Own your journey",
+          "prompt": "@isaiahdupree relaxing on a rooftop terrace as the sun sets, reflecting on his entrepreneurial journey. He's in his usual casual hoodie and gold chain, with the cityscape as a backdrop. The camera smoothly transitions from a close-up of his contemplative expression to a wide shot of the vibrant evening sky. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "AUTOMATION FLEX",
+      "trend": "Set It and Forget It",
+      "format": "single",
+      "theme": "Content pipeline running automatically while you relax",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Just set it and forget it, while the tech does the work! 😎☕️ #AutomationFlex",
+      "dbId": "10d52ad8-7d8d-4a00-9bf6-384297cff3b2",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Set It and Forget It",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree lounges on a comfy couch, wearing his signature casual hoodie and gold chain, while sipping coffee. The camera pans around him, revealing screens displaying his content pipeline automating smoothly. Sunlight gently streams through the window, casting a relaxing vibe. Isaiah glances at the camera, grins, and gives a thumbs-up. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "SCREEN TIME REIMAGINED",
+      "trend": "Screen Time Report Flip",
+      "format": "single",
+      "theme": "Flipping the screen time report to show productive hours — coding and automation dashboards",
+      "bestPlatform": "TikTok, Instagram, YouTube Shorts",
+      "captionIdea": "Redefining screen time with purpose 💻✨ #ProductiveHours #TechSavvy",
+      "dbId": "643f00dc-05a7-4c2f-b657-f1e873a2e98b",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Productive Hours",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree stands in his modern workspace, wearing a casual hoodie and gold chain. The camera zooms in on his phone screen, showing a screen time report filled with hours dedicated to coding and reviewing automation dashboards. Isaiah looks at the camera, nods proudly, and gestures towards his screen with a playful wink. Bright, energetic lighting fills the room. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    }
+  ]
+}

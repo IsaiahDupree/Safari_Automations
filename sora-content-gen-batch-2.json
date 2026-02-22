@@ -1,0 +1,129 @@
+{
+  "generatedAt": "2026-02-19T02:10:00Z",
+  "character": "@isaiahdupree",
+  "theme": "Content Gen Batch 2 — AI Art, Tech Hacks, Brand, Reality TV, Valentine's",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "niches": [
+    "AI Art",
+    "Tech Tips",
+    "Brand/Offer",
+    "Comedy/Relatable",
+    "Valentine's Day"
+  ],
+  "movies": [
+    {
+      "id": 1,
+      "title": "AI ART MAGIC: FROM PROMPT TO MASTERPIECE",
+      "trend": "AI Art Showcase (Feb 2026)",
+      "niche": "AI Art",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Let's see the magic unfold 🌟 #AIArt #TechMagic",
+      "videos": [
+        {
+          "part": 1,
+          "title": "AI Art Magic From Prompt to Masterpiece Part 1",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree stands in a modern loft, wearing his casual hoodie and gold chain, setting up his laptop..."
+        },
+        {
+          "part": 2,
+          "title": "AI Art Magic From Prompt to Masterpiece Part 2",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree watches in amazement as the AI transforms his prompt into art..."
+        },
+        {
+          "part": 3,
+          "title": "AI Art Magic From Prompt to Masterpiece Part 3",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree shares tips on how to use AI art generators effectively..."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "QUICK TECH HACKS FOR BUSY MINDS",
+      "trend": "Tech Tips in 60 Seconds (Feb 2026)",
+      "niche": "Tech Tips",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Make life easier with this tech hack! 🤖 #TechTip #Automation",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Quick Tech Hacks for Busy Minds",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree stands in his home office, casually dressed in a hoodie and gold chain..."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "AUTOMATE YOUR HUSTLE",
+      "trend": "Brand/Offer (Feb 2026)",
+      "niche": "Brand/Offer",
+      "format": "single",
+      "bestPlatform": "YouTube Shorts, TikTok, Instagram Reels",
+      "captionIdea": "Ready to automate your hustle? Let tech do the heavy lifting 🚀 #AutomationNation",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Automate Your Hustle",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree starts by typing furiously on a sleek laptop in a modern, glass-walled office..."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "YOUR BRAND, YOUR STAGE",
+      "trend": "Brand/Offer (Feb 2026)",
+      "niche": "Brand/Offer",
+      "format": "single",
+      "bestPlatform": "YouTube Shorts, TikTok, Instagram Reels",
+      "captionIdea": "Your brand is your stage. Own it! 🎤✨ #BrandBoss",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Your Brand Your Stage",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree stands in a stylish, well-lit studio filled with high-tech gadgets and artistic decor..."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "REALITY TV CREATOR — THE CLIFFHANGER",
+      "trend": "Reality TV Edit (Feb 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Coming up... does Isaiah ship the feature? ⏸️ #RealityTVEdit",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Reality TV Creator the Cliffhanger Part 1",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree standing in a sleek kitchen, mid-conversation, suddenly freezes mid-sentence..."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "VALENTINE'S — MY ONE TRUE LOVE",
+      "trend": "Valentine's Day Content (Feb 2026)",
+      "niche": "Valentine's Day",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "My valentine never crashes (okay, sometimes) 💻❤️ #ValentinesDay",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Valentine s My One True Love",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree sitting at a candlelit dinner table for two, dressed up nicely with gold chain visible..."
+        }
+      ]
+    }
+  ]
+}

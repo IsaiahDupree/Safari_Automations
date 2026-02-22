@@ -1,0 +1,165 @@
+{
+  "generatedAt": "2026-02-20T02:32:10.775Z",
+  "character": "@isaiahdupree",
+  "theme": "Content Gen Batch 4 — Auto-generated",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "niches": [
+    "AI Art Showcases",
+    "Behind-the-Scenes Tech",
+    "Reality TV Edit",
+    "Black History Month — Authentic Storytelling",
+    "Tech Tips in 60 Seconds",
+    "Brand/Offer"
+  ],
+  "movies": [
+    {
+      "id": 1,
+      "title": "ART MEETS AI",
+      "trend": "AI Art Showcases (February 2026)",
+      "niche": "AI Art Showcases",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Welcome to the future of creativity! 🎨✨ #AIArt #DigitalInnovation",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Art Meets AI Part 1",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree stands in a dimly lit studio, wearing his signature casual hoodie and gold chain. The camera slowly zooms in as vibrant AI-generated art pieces are projected onto the walls around him. I"
+        },
+        {
+          "part": 2,
+          "title": "Art Meets AI Part 2",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree walks through a virtual gallery filled with AI art. His casual hoodie and gold chain catch subtle light as he shares insights on how AI art is transforming personal branding. The camera "
+        },
+        {
+          "part": 3,
+          "title": "Art Meets AI Part 3",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree sits at a digital art workstation, showcasing how he uses AI tools to create unique pieces. His casual hoodie and gold chain gleam under the bright task lighting. Isaiah humorously narra"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "JOURNEY INSIDE TECH",
+      "trend": "Behind-the-Scenes Tech (February 2026)",
+      "niche": "Behind-the-Scenes Tech",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Step inside my tech world! 🛠️✨ Get ready for some behind-the-scenes magic. #InnovateWithIsaiah",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Journey Inside Tech Part 1",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree invites viewers into his tech workshop. Wearing his casual hoodie and gold chain, he warmly greets the audience before the camera glides over various tech tools and projects. He introduc"
+        },
+        {
+          "part": 2,
+          "title": "Journey Inside Tech Part 2",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree demonstrates the initial steps of his tech project, explaining his process as the camera catches close-ups of his hands at work. His casual hoodie and gold chain move as he gestures expr"
+        },
+        {
+          "part": 3,
+          "title": "Journey Inside Tech Part 3",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree wraps up the project, showcasing the final product. The camera captures his genuine smile and the excitement in his eyes, highlighted by his casual hoodie and gold chain. He reflects on "
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "REALITY TV CREATOR — THE CLIFFHANGER",
+      "trend": "Reality TV Edit (February 2026)",
+      "niche": "Reality TV Edit",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "\"Coming up... does Isaiah ship the feature?\" ⏸️",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Reality TV Creator — The Cliffhanger Part 1",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree standing in a sleek kitchen, mid-conversation, suddenly freezes mid-sentence. Camera zooms in dramatically on his face. Freeze frame. Warm tones, reality TV aesthetic, text overlay space"
+        },
+        {
+          "part": 1,
+          "title": "Reality TV Creator — The Confessional Part 1",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree sitting in a chair against a plain background, speaking directly to camera with exaggerated serious energy, hands gesturing emphatically. Soft studio lighting, documentary interview styl"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "BUILDER'S LEGACY — THE FOUNDATION",
+      "trend": "Black History Month — Authentic Storytelling (February 2026)",
+      "niche": "Black History Month — Authentic Storytelling",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "They built the foundation. We build the future. 🖤✊ — Part 1/3",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Builder's Legacy — The Foundation",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree standing in front of a wall of vintage photographs and newspaper clippings about Black innovators and inventors. He reaches out and touches one photo. The photo comes to life with golden"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "QUICK TECH TIPS WITH ISAIAH",
+      "trend": "Tech Tips in 60 Seconds (February 2026)",
+      "niche": "Tech Tips in 60 Seconds",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Level up your tech game in 60 seconds! 📲💡 #TechTips #Automation",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Quick Tech Tips with Isaiah",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree is in his cozy home office, rocking his casual hoodie and gold chain. The camera rapidly cuts from one tech gadget to another, while Isaiah shares quick, witty tech tips with playful ene"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "AUTOMATION GAME STRONG",
+      "trend": "Brand/Offer (February 2026)",
+      "niche": "Brand/Offer",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Turning hustle into automation! 💻✨ Let tech do the heavy lifting while you focus on the vision! #Te",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Automation Game Strong",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree standing confidently in front of a sleek, modern desk filled with multiple screens displaying analytics and content creation dashboards. He's wearing his signature casual hoodie and gold"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "BRAND YOU, ELEVATED",
+      "trend": "Brand/Offer (February 2026)",
+      "niche": "Brand/Offer",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Your brand is your story. Make it unforgettable! 💡📈 #PersonalBranding #BeYourOwnBoss",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Brand You, Elevated",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree in a stylish studio setting, surrounded by digital content creation gear. He’s seated comfortably, exuding confidence and aspiration, wearing his casual hoodie and signature gold chain. "
+        }
+      ]
+    }
+  ]
+}

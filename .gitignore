@@ -28,6 +28,11 @@ sessions/
 
 # Database
 *.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 *.sqlite
 *.sqlite3
 

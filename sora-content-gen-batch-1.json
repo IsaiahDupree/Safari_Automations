@@ -1,0 +1,82 @@
+{
+  "generatedAt": "2026-02-18T02:59:37Z",
+  "character": "@isaiahdupree",
+  "theme": "Content Gen Batch 1 — Trends + Offers + Curated Mix",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "niches": [
+    "Tech Tips",
+    "Brand/Offer",
+    "AI/Automation",
+    "Interactive Content"
+  ],
+  "movies": [
+    {
+      "id": 1,
+      "title": "TECH TIPS IN 60 SECONDS",
+      "trend": "Tech Tips in 60 Seconds (Feb 2026)",
+      "niche": "Tech Tips",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Slow Wi-Fi got you feeling stuck? 🐢 Boost your internet speed with this quick tweak! 🌐✨ #WiFiHack #SpeedBoost",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Tech Tips in 60 Seconds",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree wraps up the series with a tip on maximizing Wi-Fi speed at home. The camera tilts to capture his playful experimentation with various devices, making the session both informative and light-hearted. The lighting is dynamic, matching the energetic and humorous mood. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "POLL YOUR PREFERENCES",
+      "trend": "Interactive Polls and Quizzes (Feb 2026)",
+      "niche": "Interactive Content",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Which gadget could you not live without? 🤔 Vote now! #TechPoll #GadgetLove",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Poll Your Preferences",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree stands in a cozy corner of his home, wearing a casual hoodie and gold chain. He eagerly engages his audience with a fun tech-related poll about favorite gadgets. The camera moves to capture his animated expressions and the interactive quiz on screen. The lighting is bright and engaging, creating a warm, personable mood. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "AUTOMATE YOUR CONTENT HUSTLE",
+      "trend": "Brand Content / Content Automation (Feb 2026)",
+      "niche": "Brand/Offer",
+      "format": "single",
+      "bestPlatform": "YouTube Shorts, TikTok, Instagram Reels",
+      "captionIdea": "Ever wondered how to maximize your content game? Let tech do the heavy lifting! 🚀✨ #AutomationNation #ContentCreator",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Automate Your Content Hustle",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree strides confidently into a modern tech workspace filled with screens displaying various dashboards. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "AUTOMATION FLEX — THE DISCOVERY",
+      "trend": "Serialized AI Content (Feb 2026)",
+      "niche": "AI/Automation",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "When the automation hits and everything just... works ✅🔥",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Automation Flex The Discovery",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree walking through a futuristic corridor filled with floating holographic screens and data visualizations. Portrait 9:16, 4K."
+        }
+      ]
+    }
+  ]
+}

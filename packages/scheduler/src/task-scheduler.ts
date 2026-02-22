@@ -49,7 +49,7 @@ export class TaskScheduler extends EventEmitter {
   }
 
   private initializePlatforms(): void {
-    const platforms: Platform[] = ['tiktok', 'instagram', 'twitter', 'sora'];
+    const platforms: Platform[] = ['tiktok', 'instagram', 'twitter', 'sora', 'youtube'];
     for (const platform of platforms) {
       this.platformStatus.set(platform, {
         platform,
@@ -474,6 +474,181 @@ export class TaskScheduler extends EventEmitter {
       case 'sync': {
         console.log(`[SCHEDULER] Running sync task`);
         return { message: 'Sync completed' };
+      }
+
+      case 'sora-generate': {
+        const mode = task.payload.mode || 'mix';
+        const genCount = task.payload.count || 5;
+        const shouldGenerate = task.payload.generate !== false;
+
+        const genCmd = `npx tsx scripts/sora-content-generator.ts --mode ${mode} --count ${genCount}${shouldGenerate ? ' --generate' : ' --save'}`;
+        console.log(`[SCHEDULER] 🎬 Content generation: ${genCmd}`);
+
+        const genResult = await execAsync(genCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 30 * 60 * 1000, // 30 min (Sora generation is slow)
+        });
+        console.log(`[SCHEDULER] 🎬 Generation output:\n${genResult.stdout}`);
+        return { stdout: genResult.stdout, stderr: genResult.stderr };
+      }
+
+      case 'sora-daily-pipeline': {
+        const pMode = task.payload.mode || 'mix';
+        const pCount = task.payload.count || 6;
+        const queueCount = task.payload.queueCount || 4;
+        const platforms = task.payload.platforms || 'youtube';
+        const skipGenerate = task.payload.skipGenerate ? ' --skip-generate' : '';
+        const skipDrain = task.payload.skipDrain ? ' --skip-drain' : '';
+        const generateOnly = task.payload.generateOnly ? ' --generate-only' : '';
+        const drainOnly = task.payload.drainOnly ? ' --drain-only' : '';
+
+        const pipelineCmd = `npx tsx scripts/sora-daily-pipeline.ts --mode ${pMode} --count ${pCount} --queue-count ${queueCount} --platforms ${platforms}${skipGenerate}${skipDrain}${generateOnly}${drainOnly}`;
+        console.log(`[SCHEDULER] 🚀 Daily pipeline: ${pipelineCmd}`);
+
+        const pipelineResult = await execAsync(pipelineCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 60 * 60 * 1000, // 60 min (generation + drain)
+        });
+        console.log(`[SCHEDULER] 🚀 Pipeline output:\n${pipelineResult.stdout}`);
+        return { stdout: pipelineResult.stdout, stderr: pipelineResult.stderr };
+      }
+
+      case 'queue-drain': {
+        const maxPublished = task.payload.maxPublished || 10;
+        const maxRounds = task.payload.maxRounds || 15;
+        const wait = task.payload.wait || 120;
+        const batchSize = task.payload.batchSize || 4;
+        const persistent = task.payload.persistent ? ' --persistent' : '';
+
+        const drainCmd = `npx tsx scripts/queue-drain.ts --max-published ${maxPublished} --max-rounds ${maxRounds} --wait ${wait} --batch-size ${batchSize}${persistent}`;
+        console.log(`[SCHEDULER] 📤 Queue drain: ${drainCmd}`);
+
+        const drainResult = await execAsync(drainCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 45 * 60 * 1000, // 45 min
+        });
+        console.log(`[SCHEDULER] 📤 Drain output:\n${drainResult.stdout}`);
+        return { stdout: drainResult.stdout, stderr: drainResult.stderr };
+      }
+
+      case 'daily-research': {
+        const drPayload = task.payload as any;
+        const drMaxAds = drPayload.maxAds || 30;
+        const drSkipScrape = drPayload.skipScrape ? ' --skip-scrape' : '';
+        const drCmd = `python3 python/market_research/daily_research.py --max-ads ${drMaxAds}${drSkipScrape}`;
+        console.log(`[SCHEDULER] 🔬 Daily Research: ${drCmd}`);
+        const drResult = await execAsync(drCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 45 * 60 * 1000,
+        });
+        console.log(`[SCHEDULER] 🔬 Daily Research output:\n${drResult.stdout}`);
+        return { stdout: drResult.stdout, stderr: drResult.stderr };
+      }
+
+      case 'meta-ad-library': {
+        const malPayload = task.payload as any;
+        const malKeywords = (malPayload.keywords || []).join(',');
+        const malMaxAds = malPayload.maxAds || 30;
+        const malDownloadTop = malPayload.downloadTop || 5;
+        const malCountry = malPayload.country || 'US';
+        const malAllStatus = malPayload.allStatus ? ' --all-status' : '';
+
+        const malCmd = `python3 python/market_research/meta_ad_library_cli.py batch --keywords "${malKeywords}" --max-per-keyword ${malMaxAds} --download-top ${malDownloadTop} --country ${malCountry}${malAllStatus}`;
+        console.log(`[SCHEDULER] 📚 Meta Ad Library: ${malCmd}`);
+
+        const malResult = await execAsync(malCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 30 * 60 * 1000,
+        });
+        console.log(`[SCHEDULER] 📚 Ad Library output:\n${malResult.stdout}`);
+        return { stdout: malResult.stdout, stderr: malResult.stderr };
+      }
+
+      case 'market-research': {
+        const mrPayload = task.payload as any;
+        const keywords = (mrPayload.keywords || []).join(',');
+        const maxPosts = mrPayload.maxPosts || 50;
+        const downloadTop = mrPayload.downloadTop || 10;
+        const searchType = mrPayload.searchType || 'posts';
+        const dateFilter = mrPayload.dateFilter ? ` --date ${mrPayload.dateFilter}` : '';
+
+        const mrCmd = `python3 python/market_research/run_facebook.py batch --keywords "${keywords}" --max-per-keyword ${maxPosts} --download-top ${downloadTop} --type ${searchType}${dateFilter}`;
+        console.log(`[SCHEDULER] 🔍 Facebook research: ${mrCmd}`);
+
+        const mrResult = await execAsync(mrCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 30 * 60 * 1000,
+        });
+        console.log(`[SCHEDULER] 🔍 Research output:\n${mrResult.stdout}`);
+        return { stdout: mrResult.stdout, stderr: mrResult.stderr };
+      }
+
+      case 'market-research-instagram': {
+        const igPayload = task.payload as any;
+        const igKeywords = (igPayload.keywords || []).join(',');
+        const igMaxPosts = igPayload.maxPosts || 50;
+        const igDownloadTop = igPayload.downloadTop || 10;
+        const igSearchType = igPayload.searchType || 'hashtag';
+        const igDetail = igPayload.detail ? ' --detail' : '';
+
+        const igCmd = `python3 python/market_research/run_instagram.py batch --keywords "${igKeywords}" --max-per-keyword ${igMaxPosts} --download-top ${igDownloadTop} --type ${igSearchType}${igDetail}`;
+        console.log(`[SCHEDULER] 📸 Instagram research: ${igCmd}`);
+
+        const igResult = await execAsync(igCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 30 * 60 * 1000,
+        });
+        console.log(`[SCHEDULER] 📸 IG Research output:\n${igResult.stdout}`);
+        return { stdout: igResult.stdout, stderr: igResult.stderr };
+      }
+
+      case 'ad-brief': {
+        const briefPayload = task.payload as any;
+        const briefKeyword = briefPayload.keyword || '';
+        const briefProduct = briefPayload.product || 'mediaposter';
+        const briefPlatform = briefPayload.platform || 'facebook';
+        const skipScrape = briefPayload.skipScrape ? ' --skip-scrape' : '';
+
+        const briefCmd = `python3 python/market_research/run_ad_intelligence.py brief "${briefKeyword}" --product ${briefProduct} --platform ${briefPlatform}`;
+        console.log(`[SCHEDULER] 💡 Ad brief: ${briefCmd}`);
+
+        const briefResult = await execAsync(briefCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 10 * 60 * 1000,
+        });
+        console.log(`[SCHEDULER] 💡 Brief output:\n${briefResult.stdout}`);
+        return { stdout: briefResult.stdout, stderr: briefResult.stderr };
+      }
+
+      case 'publish': {
+        const count = task.payload.count || 4;
+        const platform = task.payload.platform || 'youtube';
+
+        // Step 1: Run daily orchestrator to generate UGC + select Sora videos + queue
+        const orchestratorCmd = task.payload.command as string ||
+          `npx tsx scripts/daily-orchestrator.ts --ugc-count 2 --sora-count ${count} --platforms ${platform}`;
+        console.log(`[SCHEDULER] 📺 Step 1: Running orchestrator: ${orchestratorCmd}`);
+
+        const { stdout, stderr } = await execAsync(orchestratorCmd, {
+          cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation',
+          timeout: 5 * 60 * 1000, // 5 min timeout
+        });
+        console.log(`[SCHEDULER] 📺 Orchestrator output:\n${stdout}`);
+
+        // Step 2: Trigger Blotato queue processor to actually publish queued items
+        console.log(`[SCHEDULER] 📺 Step 2: Triggering Blotato queue processor...`);
+        try {
+          const processResp = await fetch('http://localhost:5555/api/publish-controls/process/batch?max_items=5', {
+            method: 'POST',
+            signal: AbortSignal.timeout(5 * 60 * 1000),
+          });
+          const processResult = await processResp.json();
+          console.log(`[SCHEDULER] 📺 Queue processor result: ${JSON.stringify(processResult)}`);
+          return { stdout, stderr, processResult };
+        } catch (processErr) {
+          console.log(`[SCHEDULER] ⚠️ Queue processor failed (items still queued): ${processErr}`);
+          return { stdout, stderr, processError: String(processErr) };
+        }
       }
 
       default:

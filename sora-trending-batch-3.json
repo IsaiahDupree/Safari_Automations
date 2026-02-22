@@ -1,0 +1,576 @@
+{
+  "generatedAt": "2026-02-16T00:55:00Z",
+  "character": "@isaiahdupree",
+  "theme": "Trending Batch 3 \u2014 Real Feb 2026 Trends Across Niches",
+  "characterDescription": "Isaiah, a charismatic Black man in his late 20s with a warm smile, wearing a casual hoodie and gold chain, expressive and humorous",
+  "niches": [
+    "TikTok Viral",
+    "Fitness/Wellness",
+    "Finance/Side Hustle",
+    "AI/Tech",
+    "Lifestyle",
+    "Entrepreneur",
+    "Comedy/Relatable"
+  ],
+  "movies": [
+    {
+      "id": 1,
+      "title": "TAKING CARE OF BUSINESS",
+      "trend": "Taking Care of Business Audio (Feb 16 2026)",
+      "niche": "TikTok Viral",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "But you're on your phone\u2026 no, I'm taking care of business \ud83d\udcbc\ud83d\udcf1 #TakingCareOfBusiness",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Taking Care of Business",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree sits on a modern couch scrolling his phone, wearing casual hoodie and gold chain. Someone off-camera gestures accusingly. He smirks confidently, then camera flips to show his phone filled with code, analytics dashboards, and scheduling apps. Dramatic lighting shift from warm to cool blue tech glow. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "REALITY TV EDIT: MY CODING LIFE",
+      "trend": "Reality TV Edit Trend (Feb 9 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Previously on 'The Real Developers of Atlanta'\u2026 \ud83c\udfac\ud83d\ude2d #RealityTVEdit #DevLife",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 The Setup",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree walks into a cluttered home office wearing hoodie and gold chain. Dramatic reality TV music. Camera does aggressive zoom-ins on his face staring at red error messages on laptop. A chyron appears: '3 hours earlier\u2026' He picks up a coffee mug with a defeated look. Moody confessional-style lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Drama",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree paces dramatically while screen shows failing tests. Cut to confessional-style talking head where he looks directly at camera explaining the bug with intense hand gestures. His casual hoodie and gold chain catch dramatic side-lighting. Quick cuts between stressed face, screen, and hands typing furiously. Reality TV freeze-frames and pauses. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Resolution",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree types one final line of code and hits enter. Green check marks cascade across screen. He stands, arms raised in triumph. His casual hoodie and gold chain gleam in bright celebration lighting. Dramatic victory music swells. Freeze frame with text 'Coming up next season\u2026' Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "ASKING THE UNIVERSE FOR A SIGN",
+      "trend": "AI Sky Sign Trend (Feb 9 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "I asked the universe for a sign and it said 'build the app' \u2601\ufe0f\ud83d\udcbb #UniverseSign #Manifestation",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Universe Sign",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree stands outside looking up at a beautiful blue sky, wearing hoodie and gold chain. Expression is searching and hopeful. Camera tilts up to reveal clouds magically forming into a laptop and code symbols. Warm golden hour lighting on his face. He nods with satisfaction and pulls out his phone. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "PRIMADONNA GLOW-UP",
+      "trend": "Primadonna Girl Glow Up Carousel (Feb 16 2026)",
+      "niche": "Lifestyle",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Primadonna boy \u2014 all I ever wanted was the world \ud83c\udf0d\u2728 #GlowUp #Primadonna",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Primadonna Glow-Up",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree first appears in a dimly lit room with a basic laptop, looking determined but scrappy in a plain t-shirt. Flash transition \u2014 now in a sleek modern office wearing signature hoodie and gold chain, surrounded by multiple monitors showing dashboards. Posture shifts from hunched to confident. Cinematic lighting from cold to warm golden. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "GLASS HALF FULL: TECH EDITION",
+      "trend": "Glass Half Full/Half Empty (Feb 16 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Pessimist: 'it has bugs.' Optimist: 'it compiles.' Founder: 'ship it.' \ud83d\ude02 #GlassHalfFull #DevHumor",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Pessimist",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree in dark hoodie, arms crossed, looking disappointed at a laptop showing half-finished app. Text overlay 'The Pessimist.' Shakes head, pointing out bugs with dramatic frowns. Moody blue lighting. Gold chain catches minimal light. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 Optimist",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree transforms energy \u2014 same laptop but now smiling in a colorful hoodie, gold chain shining. Text overlay 'The Optimist.' Gestures enthusiastically at working features. Warm golden lighting fills the room. Double thumbs up to camera. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 The Founder",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree appears with sunglasses, hoodie and gold chain, radiating CEO energy. Text overlay 'The Founder.' Barely glances at screen, waves dismissively, walks away confidently grabbing car keys. Dramatic red and purple lighting with lens flares. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "RUCKING: FITNESS TREND TAKEOVER",
+      "trend": "Rucking Vest Trend (Feb 2026 TikTok)",
+      "niche": "Fitness/Wellness",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Rucking is the new running and I'm about that life \ud83c\udf92\ud83d\udcaa #Rucking #FitnessTrend",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Discovery",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree on couch in hoodie and gold chain, discovers rucking videos on phone. Eyes widen. Stands up, opens package revealing a weighted rucking vest. Holds it up excitedly to camera. Bright living room with natural sunlight. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Walk",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree walks on a scenic outdoor trail wearing weighted rucking vest over hoodie. Camera captures multiple angles \u2014 side profile, front showing effort, overhead of the path. Morning golden hour through trees. Sweat on forehead. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Results",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree back home, exhausted but proud, drops vest on floor and collapses on couch. Grins at camera, gives thumbs up, grabs protein shake and takes a victorious sip. Warm afternoon lighting. Hoodie slightly disheveled, gold chain still on. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "INTERVAL WALKING CHALLENGE",
+      "trend": "Japanese Interval Walking (Fastest-Growing Fitness 2026)",
+      "niche": "Fitness/Wellness",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Japanese interval walking is the simplest hack \ud83d\udeb6\u200d\u2642\ufe0f\u26a1 #IntervalWalking #FitTok",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Interval Walking",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree walks on a tree-lined sidewalk in athletic gear with gold chain. Alternates between power-walking with arms pumping and casual strolling. Speed ramps match pace changes. Fitness tracker glows on wrist. Morning light creates long shadows. Checks watch approvingly. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "SIDE HUSTLE STACK 2026",
+      "trend": "Side Hustle Economy Boom (Forbes Feb 2026)",
+      "niche": "Finance/Side Hustle",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "My side hustle stack makes my 9-5 look like pocket change \ud83d\udcb0\ud83d\udd25 #SideHustle #2026Money",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 The Problem",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree at desk in hoodie and gold chain, looking at bills on laptop showing red numbers. Rubs temples stressed. Dim moody lighting. Opens notes app and starts brainstorming. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Build",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree works energetically across multiple screens \u2014 Shopify store, social analytics, app code. Quick cuts between screens, focused face, hands typing. Energetic blue and purple lighting. Time-lapse day to night. Hoodie and gold chain consistent. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 The Results",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree leans back satisfied, screens showing green profit numbers and growing charts. Pulls up phone showing payment notifications stacking. Warm golden light. His casual hoodie and gold chain catch the glow. Knowing nod at camera. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "CLAP IF YOU'RE AGAINST IT",
+      "trend": "Clap If Youre Against It Audio (Feb 16 2026)",
+      "niche": "TikTok Viral",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Clap if you're against subscription fatigue \ud83d\udc4f\ud83d\udc80 #ClapIfYoureAgainstIt",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Clap Against It",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree in modern living room, hoodie and gold chain, casual but mischievous. Speaks to camera with a knowing grin making a bold statement about subscription apps. Reacts with exaggerated shock and satisfaction as if hearing thunderous applause. Eyes go wide, nods emphatically. Dynamic lighting with punchy shadows. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "GROUP CONSENSUS: TECH DEBATE",
+      "trend": "Group Consensus \u2014 Joan Jett Audio (Feb 2 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "When the squad can't agree on what language to learn \ud83d\ude02\ud83d\udcbb #GroupConsensus #CodeLife",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Voice of Reason",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree walks into frame in slow motion from the left, hoodie and gold chain, looking serious. Delivers a measured logical tech take with calm gestures. Clean minimal workspace background. Slow-motion at 0.5 speed makes him look dramatically serious. Cool professional lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Enabler",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree enters from right in slow motion, different colored hoodie, same gold chain. Encouraging and excited, hyping up camera with big gestures and nodding. The enabler who agrees with whatever chaos is coming. Slow-mo makes enthusiasm hilariously intense. Warm energetic lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Agent of Chaos",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree slides into frame in slow motion wearing sunglasses, hoodie and gold chain. Delivers a wildcard tech take with maximum swagger \u2014 arms wide, head tilted, zero self-doubt. Absurd but sold completely. Dramatic red and purple lighting. Every gesture looks like a movie scene. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "SORA AI MEETS REAL LIFE",
+      "trend": "AI Video Generation Virality (Sora + Disney Feb 2026)",
+      "niche": "AI/Tech",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "When AI turns your imagination into reality \ud83e\udd16\ud83c\udfac #SoraAI #AIVideo",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 The Vision",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree sketches ideas on a notepad at his desk, hoodie and gold chain. Deep creative thought. Camera over his shoulder at concept art and storyboards. Soft warm desk lamp glow. Looks up with an excited 'watch this' expression. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 Generation",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree types a prompt into a glowing AI interface. Camera captures focused face illuminated by blue screen light, hoodie and gold chain visible. Digital particles swirl around screen as AI processes. Eyes reflect screen glow. Futuristic blue and purple lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 The Result",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree watches as stunning AI-generated video plays on screen \u2014 his sketch brought to life. Jaw drops, leans back in amazement, breaks into huge smile. Turns to camera with pure excitement. Hoodie and gold chain glow in colorful screen light. Room fills with vibrant reflections. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "ANTI-HUSTLE MORNING ROUTINE",
+      "trend": "Anti-Hustle Movement (Feb 2026)",
+      "niche": "Lifestyle",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "My anti-hustle morning that still makes money \ud83c\udf05\ud83d\udcb0 #AntiHustle #MorningRoutine",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Slow Morning",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree wakes naturally, stretching peacefully in bed. Gold chain on nightstand. Soft morning sunlight through curtains. No rush. Makes pour-over coffee slowly, savoring it. Warm golden morning light. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 Intentional Work",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree at workspace in hoodie and gold chain, coffee in hand. Opens one focused task. Works calmly, efficiently \u2014 no multitasking. Takes a mindful break looking out window. Natural daylight. Peaceful but productive. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Freedom",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree closes laptop at noon with satisfied smile. Phone shows completed tasks and revenue notifications. Puts on hoodie, heads outside for a walk in sunshine. Relaxed, fulfilled expression. Made money and has his afternoon free. Bright warm outdoor lighting. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "BIOHACKING MY FOCUS",
+      "trend": "Citicoline/Nootropics Trend (Feb 2026)",
+      "niche": "Fitness/Wellness",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Biohacking my brain for 10x coding focus \ud83e\udde0\u26a1 #Biohacking #Focus #Nootropics",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Biohacking Focus",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree in clean kitchen, hoodie and gold chain, examining supplement bottles on counter. Picks one up, reads label curiously, takes it with water. Quick cut to desk \u2014 split screen of 'before' distracted scrolling vs 'after' laser-focused coding. Bright clinical lighting transitions to focused blue. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "LIVE SOCIAL SHOPPING HOST",
+      "trend": "Live Shopping Side Hustle (Forbes Feb 2026)",
+      "niche": "Finance/Side Hustle",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Live shopping host is the side hustle nobody talks about \ud83d\udecd\ufe0f\ud83d\udcb8 #TikTokShop #LiveShopping",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Live Shopping",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree sets up ring light and phone tripod, hoodie and gold chain. Goes live, transforms into energetic shopping host \u2014 holding up tech gadgets, demonstrating features with big personality. Phone screen shows viewers and comments flooding in. Dynamic ring light lighting. Checks sale notifications with excited reactions. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "SUPER BOWL PARTY TECH SETUP",
+      "trend": "Super Bowl Content Prep (Feb 2 2026)",
+      "niche": "Lifestyle",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "The tech bro Super Bowl setup nobody asked for \ud83c\udfc8\ud83d\udcfa #SuperBowl #TechSetup",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 The Plan",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree walks into empty living room in hoodie and gold chain. Pulls out phone showing mood board of ultimate tech watch party. Gestures at room mapping placement. Bright daytime lighting. Excited planning energy. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Build",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree mounts a massive TV, sets up surround sound speakers, arranges smart lights. Hoodie and gold chain. Time-lapse of the room transforming with snack stations and screens. He tests the sound system with a big bass hit, flinching then grinning. Energetic montage lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Game Time",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree sits back on the couch surrounded by the fully set up tech paradise \u2014 massive screen, LED strips glowing team colors, surround sound, snack spread. Hoodie and gold chain. He picks up a controller for the pre-game, surrounded by friends arriving. Warm party lighting with colored LED accents. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "SNACK-SIZED WORKOUT",
+      "trend": "Snack-Sized Workouts (Cosmopolitan Wellness 2026)",
+      "niche": "Fitness/Wellness",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "5-min micro workouts between coding sessions \ud83d\udcaa\ud83d\udda5\ufe0f #SnackSizedWorkout #DeskFitness",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Snack-Sized Workout",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree at his desk coding, then suddenly stands up for a quick 5-minute micro workout \u2014 push-ups against the desk, squats, stretches. Hoodie and gold chain. Quick energetic cuts between exercises. Returns to desk refreshed and re-energized. Split lighting between workspace warm and exercise cool. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "CREATOR ECONOMY MONEY BREAKDOWN",
+      "trend": "How Creators Make Money 2026 (The Next Tech)",
+      "niche": "Finance/Side Hustle",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "How I actually make money as a tech creator in 2026 \ufffd\ufffd\ud83d\udcca #CreatorEconomy #MoneyBreakdown",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Revenue Streams",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree at a whiteboard in hoodie and gold chain, drawing out revenue stream diagram. Markers in hand, breaking down income sources \u2014 sponsorships, digital products, SaaS. Camera captures the whiteboard filling up. Clean bright lighting. Teaching energy. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Numbers",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree at his computer pulling up real dashboards showing earnings. Quick cuts between Stripe, analytics, and affiliate platforms. Hoodie and gold chain. Expression shifts from casual to impressed at certain numbers. Screen glow illuminates his face. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 The Strategy",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree back at whiteboard circling the top earners. Points at camera explaining the strategy with confidence. Hoodie and gold chain catch the light. Draws arrows connecting revenue streams. Steps back to reveal the full master plan on the board. Bright motivated lighting. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "MESH WIFI ROUTER UPGRADE",
+      "trend": "Mesh WiFi Router Trend (Feb 2026 TikTok)",
+      "niche": "AI/Tech",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Upgrading to mesh WiFi changed my whole automation setup \ud83d\udcf6\ud83c\udfe0 #MeshWifi #SmartHome #TechUpgrade",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Mesh WiFi Upgrade",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree unboxes sleek mesh WiFi routers at his desk, hoodie and gold chain. Sets them up around the house \u2014 one in office, one in living room, one upstairs. Camera shows speed test before (slow) vs after (blazing fast). His reaction goes from frustrated to ecstatic. Clean tech-focused lighting. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "GRAMMYS TECH-FIT TIER LIST",
+      "trend": "2026 Grammys Commentary (Feb 2 2026)",
+      "niche": "TikTok Viral",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Rating Grammys outfits but only through a tech bro lens \ud83d\udc54\ud83c\udfc6 #Grammys2026 #TierList #FashionTech",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Grammys Tier List",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree sits in front of his desk in hoodie and gold chain, reacting to Grammy outfits on his screen. Makes exaggerated faces \u2014 impressed, shocked, confused. Holds up number cards rating each look. Quick cuts between outfits and his animated reactions. Bright colorful lighting matching Grammy energy. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "SHUT UP MOM: CODING EDITION",
+      "trend": "Key & Peele Audio Trend (Feb 9 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Me at 12 when my mom said 'get off the computer' and I was learning to code \ud83d\udcbb\ud83e\udd2b #ShutUpMom #KeyAndPeele #CodingKid",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Shut Up Mom",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree lip-syncs with full bratty teenager energy in his hoodie and gold chain. Eye rolls, dismissive hand gestures, dramatic turn away from camera. On-screen text: 'me at 12 when my mom told me to stop playing on the computer but I was actually learning HTML.' Commits fully to the petulant delivery. Warm bedroom-style lighting with nostalgic color grade. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "THERMOSTAT GAME: CODE TEMPERATURE",
+      "trend": "Thermostat Game Dance (Feb 2 2026)",
+      "niche": "Comedy/Relatable",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Guess the temperature of my codebase \ud83c\udf21\ufe0f\ud83d\udc83 #ThermostatGame #CodeQuality",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Thermostat Game",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree does a playful dance in his room wearing hoodie and gold chain. He reveals a 'code quality thermostat' on screen that goes from 'freezing cold spaghetti code' to 'fire clean architecture.' His dance intensity matches the temperature reading. Fun colorful lighting that shifts with the thermostat. Energetic and silly. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "EUPHORIA GLAM: TECH EDITION",
+      "trend": "Euphoria Glam Transition (Feb 2 2026)",
+      "niche": "Lifestyle",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "The coding-to-going-out transition that took 5 minutes \ud83c\udf1f\u2728 #EuphoriaGlam #Transition #GetReady",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Euphoria Glam Transition",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree starts in his workspace looking tired in a plain hoodie, eyes heavy from coding. Flash transition \u2014 he's now styled up with gold chain gleaming, fresh outfit, confidence radiating, walking out the door. The transition is smooth and cinematic with sparkle effects and dramatic lighting change from blue screen glow to warm golden going-out lighting. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "PRODUCTIVITY CYCLES HACK",
+      "trend": "Cycle Syncing Productivity (WhoWhatWear Wellness 2026)",
+      "niche": "Fitness/Wellness",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Working WITH your energy cycles, not against them \ud83d\udd04\u26a1 #ProductivityCycles #EnergyManagement",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Low Energy Day",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree at desk in hoodie and gold chain, clearly low energy. Moves slowly, stares at screen. Instead of forcing deep work, he does light admin \u2014 emails, organizing files. Camera captures the intentional rest. Soft muted lighting matching the low-key mood. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 Peak Energy Day",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree at same desk but radiating energy. Hoodie and gold chain. Typing fast, switching between apps, building features. Camera shows rapid productivity with energetic cuts. Bright dynamic lighting. He's in flow state, barely looking away from screen. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 The System",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree at a whiteboard drawing his energy cycle calendar. Hoodie and gold chain. Maps out which tasks go on which energy days. Steps back revealing the full system. Points at camera with a knowing smile. Clean bright teaching lighting. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "title": "AI DIGITAL COLLECTIBLES HUSTLE",
+      "trend": "Collectibles Side Hustle (Entrepreneur Feb 2026)",
+      "niche": "Finance/Side Hustle",
+      "format": "single",
+      "bestPlatform": "TikTok, Instagram Reels",
+      "captionIdea": "Using AI to create and sell digital collectibles is insane \ufffd\ufffd\ud83d\udcb0 #DigitalCollectibles #AIArt #SideHustle",
+      "videos": [
+        {
+          "part": 1,
+          "title": "AI Collectibles",
+          "stage": "Full Video",
+          "prompt": "@isaiahdupree at his desk in hoodie and gold chain, generating digital art collectibles with AI on his screen. Camera shows the creation process \u2014 typing prompts, watching art generate, curating a collection. He holds up his phone showing a marketplace listing with sales notifications. Expression shifts from creative focus to excited at the numbers. Colorful screen-lit workspace. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "title": "FULL BODY SCAN EXPERIENCE",
+      "trend": "TikTok-Viral Full-Body Scan (WhoWhatWear Feb 2026)",
+      "niche": "Fitness/Wellness",
+      "format": "trilogy",
+      "bestPlatform": "TikTok, Instagram Reels, YouTube Shorts",
+      "captionIdea": "Got the viral full-body scan and the results were wild \ud83d\udd2c\ud83e\uddec #FullBodyScan #Biohacking #HealthTech",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Part 1 \u2014 Arriving",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree walks into a sleek modern health clinic wearing his hoodie and gold chain. Camera captures the high-tech interior with scanning equipment. He looks around impressed and slightly nervous. Clean clinical white and blue lighting. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Part 2 \u2014 The Scan",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree lies on a futuristic scanning bed as technology moves around him. Hoodie and gold chain visible. Blue scanning lights pass over his body. His expression shifts between curiosity and awe. The room glows with medical tech lighting. Camera captures the high-tech equipment in motion. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 3,
+          "title": "Part 3 \u2014 Results",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree sits with a doctor looking at scan results on a tablet. Hoodie and gold chain. His face shows surprise, relief, and determination as he sees the data. He nods, stands up confidently, walks out into sunlight. The lighting transitions from clinical blue to warm hopeful golden outdoor light. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    }
+  ],
+  "totalMovies": 25,
+  "totalVideos": 47
+}

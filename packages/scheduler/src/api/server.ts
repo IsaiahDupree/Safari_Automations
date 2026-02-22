@@ -9,7 +9,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { TaskScheduler } from '../task-scheduler.js';
 import { SoraCreditMonitor } from '../sora-credit-monitor.js';
-import type { Platform, TaskPriority } from '../types.js';
+import type { Platform, TaskPriority, TaskType } from '../types.js';
 
 const app = express();
 app.use(cors());
@@ -379,18 +379,505 @@ app.get('/api/comments/status', async (req: Request, res: Response) => {
   }
 });
 
+// === DAILY CONTENT PUBLISHING ===
+
+app.post('/api/publish/daily', (req: Request, res: Response) => {
+  try {
+    const { count = 4, platform = 'youtube', startTime, priority } = req.body;
+    
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'publish' as TaskType,
+      name: `Daily Content Pipeline: ${count} videos → ${platform}`,
+      platform: platform as Platform,
+      priority: (priority || 2) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      payload: { count, platform },
+    });
+    
+    res.json({ 
+      success: true, 
+      taskId, 
+      message: `Scheduled daily publish: ${count} videos to ${platform}` 
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/publish/daily/recurring', (req: Request, res: Response) => {
+  try {
+    const { 
+      count = 4, 
+      platform = 'youtube', 
+      hour = 10,
+      days = 7,
+      priority = 2 
+    } = req.body;
+    
+    const s = getScheduler();
+    const taskIds: string[] = [];
+    
+    for (let d = 0; d < days; d++) {
+      const scheduledFor = new Date();
+      scheduledFor.setDate(scheduledFor.getDate() + d);
+      scheduledFor.setHours(hour, 0, 0, 0);
+      
+      // Skip if time has passed today
+      if (d === 0 && scheduledFor < new Date()) {
+        scheduledFor.setDate(scheduledFor.getDate() + 1);
+      }
+      
+      const taskId = s.schedule({
+        type: 'publish' as TaskType,
+        name: `Daily Publish (Day ${d + 1}): ${count} videos → ${platform}`,
+        platform: platform as Platform,
+        priority: priority as TaskPriority,
+        scheduledFor,
+        payload: { count, platform, dayNumber: d + 1 },
+      });
+      taskIds.push(taskId);
+    }
+    
+    res.json({ 
+      success: true, 
+      taskIds, 
+      message: `Scheduled ${days} days of daily publishing: ${count} videos/day to ${platform} at ${hour}:00` 
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === SORA CONTENT GENERATION ===
+
+app.post('/api/sora/generate', (req: Request, res: Response) => {
+  try {
+    const { mode = 'mix', count = 5, generate = true, startTime, priority } = req.body;
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'sora-generate' as TaskType,
+      name: `Sora Content Gen: ${count} ${mode} videos`,
+      platform: 'sora' as Platform,
+      priority: (priority || 2) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      resourceRequirements: { soraCredits: count, safariExclusive: true },
+      payload: { mode, count, generate },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled Sora content generation: ${count} ${mode} videos${generate ? ' + Safari generation' : ' (prompts only)'}`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === SORA DAILY PIPELINE (full: generate → catalog → queue → drain) ===
+
+app.post('/api/sora/daily-pipeline', (req: Request, res: Response) => {
+  try {
+    const {
+      mode = 'mix', count = 6, queueCount = 4, platforms = 'youtube',
+      skipGenerate = false, skipDrain = false, generateOnly = false, drainOnly = false,
+      startTime, priority,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'sora-daily-pipeline' as TaskType,
+      name: `Sora Daily Pipeline: ${mode} × ${count} → ${platforms}`,
+      platform: 'sora' as Platform,
+      priority: (priority || 2) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      resourceRequirements: { soraCredits: skipGenerate || drainOnly ? 0 : count, safariExclusive: !skipGenerate && !drainOnly },
+      payload: { mode, count, queueCount, platforms, skipGenerate, skipDrain, generateOnly, drainOnly },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled Sora Daily Pipeline: ${mode} × ${count}, queue ${queueCount} to ${platforms}`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Schedule recurring daily pipeline
+app.post('/api/sora/daily-pipeline/recurring', (req: Request, res: Response) => {
+  try {
+    const {
+      mode = 'mix', count = 6, queueCount = 4, platforms = 'youtube',
+      hour = 10, days = 7, skipGenerate = false, priority,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskIds: string[] = [];
+
+    for (let d = 0; d < days; d++) {
+      const runAt = new Date();
+      runAt.setDate(runAt.getDate() + d);
+      runAt.setHours(hour, 0, 0, 0);
+      if (runAt <= new Date()) continue;
+
+      const taskId = s.schedule({
+        type: 'sora-daily-pipeline' as TaskType,
+        name: `Daily Pipeline Day ${d + 1}: ${mode} × ${count}`,
+        platform: 'sora' as Platform,
+        priority: (priority || 2) as TaskPriority,
+        scheduledFor: runAt,
+        resourceRequirements: { soraCredits: skipGenerate ? 0 : count, safariExclusive: !skipGenerate },
+        payload: { mode, count, queueCount, platforms, skipGenerate },
+      });
+      taskIds.push(taskId);
+    }
+
+    res.json({
+      success: true,
+      taskIds,
+      message: `Scheduled ${taskIds.length} daily pipeline runs at ${hour}:00 for ${days} days`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === QUEUE DRAIN ===
+
+app.post('/api/queue/drain', (req: Request, res: Response) => {
+  try {
+    const {
+      maxPublished = 10, maxRounds = 15, wait = 120, batchSize = 4,
+      persistent = false, startTime, priority,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskId = s.schedule({
+      type: 'queue-drain' as TaskType,
+      name: `Queue Drain: max ${maxPublished} publishes`,
+      platform: 'youtube' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: startTime ? new Date(startTime) : new Date(),
+      resourceRequirements: { safariExclusive: false },
+      payload: { maxPublished, maxRounds, wait, batchSize, persistent },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled queue drain: max ${maxPublished} publishes, ${maxRounds} rounds`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Schedule recurring queue drain (e.g., every 2 hours)
+app.post('/api/queue/drain/recurring', (req: Request, res: Response) => {
+  try {
+    const {
+      maxPublished = 5, intervalHours = 2, times = 6, batchSize = 4, priority,
+    } = req.body;
+
+    const s = getScheduler();
+    const taskIds: string[] = [];
+
+    for (let i = 0; i < times; i++) {
+      const runAt = new Date();
+      runAt.setTime(runAt.getTime() + i * intervalHours * 60 * 60 * 1000);
+      if (i === 0) runAt.setTime(runAt.getTime() + 5 * 60 * 1000); // 5min offset for first
+
+      const taskId = s.schedule({
+        type: 'queue-drain' as TaskType,
+        name: `Queue Drain #${i + 1}: max ${maxPublished}`,
+        platform: 'youtube' as Platform,
+        priority: (priority || 3) as TaskPriority,
+        scheduledFor: runAt,
+        resourceRequirements: { safariExclusive: false },
+        payload: { maxPublished, maxRounds: 10, wait: 120, batchSize },
+      });
+      taskIds.push(taskId);
+    }
+
+    res.json({
+      success: true,
+      taskIds,
+      message: `Scheduled ${taskIds.length} queue drains every ${intervalHours}h`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === MARKET RESEARCH ===
+
+app.post('/api/research/daily', (req: Request, res: Response) => {
+  try {
+    const { maxAds = 30, skipScrape = false, priority, scheduledFor } = req.body;
+    const s = getScheduler();
+    const runAt = scheduledFor ? new Date(scheduledFor) : new Date();
+    const taskId = s.schedule({
+      type: 'daily-research' as TaskType,
+      name: 'Daily Market Research Pipeline',
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: runAt,
+      resourceRequirements: { safariExclusive: true },
+      payload: { maxAds, skipScrape },
+    });
+    res.json({ success: true, taskId, scheduledFor: runAt.toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/research/daily/recurring', (req: Request, res: Response) => {
+  try {
+    const { days = 7, hour = 8, maxAds = 30 } = req.body;
+    const s = getScheduler();
+    const taskIds: string[] = [];
+    for (let i = 0; i < days; i++) {
+      const runAt = new Date();
+      runAt.setDate(runAt.getDate() + i);
+      runAt.setHours(hour, 0, 0, 0);
+      if (runAt > new Date()) {
+        const taskId = s.schedule({
+          type: 'daily-research' as TaskType,
+          name: `Daily Research — Day ${i + 1}`,
+          priority: 3 as TaskPriority,
+          scheduledFor: runAt,
+          resourceRequirements: { safariExclusive: true },
+          payload: { maxAds },
+        });
+        taskIds.push(taskId);
+      }
+    }
+    res.json({ success: true, taskIds, message: `Scheduled ${taskIds.length} daily research runs at ${hour}:00` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/research/ad-library', (req: Request, res: Response) => {
+  try {
+    const {
+      keywords, maxAds = 30, downloadTop = 5,
+      country = 'US', allStatus = false, priority, scheduledFor,
+    } = req.body;
+
+    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({ error: 'keywords array is required' });
+    }
+
+    const s = getScheduler();
+    const runAt = scheduledFor ? new Date(scheduledFor) : new Date();
+
+    const taskId = s.schedule({
+      type: 'meta-ad-library' as TaskType,
+      name: `Ad Library: ${keywords.join(', ').substring(0, 50)}`,
+      platform: 'instagram' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: runAt,
+      resourceRequirements: { safariExclusive: true },
+      payload: { keywords, maxAds, downloadTop, country, allStatus },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled Meta Ad Library research for: ${keywords.join(', ')}`,
+      keywords,
+      scheduledFor: runAt.toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/research/facebook/search', (req: Request, res: Response) => {
+  try {
+    const {
+      keywords, maxPosts = 50, downloadTop = 10,
+      searchType = 'posts', dateFilter, priority, scheduledFor,
+    } = req.body;
+
+    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({ error: 'keywords array is required' });
+    }
+
+    const s = getScheduler();
+    const runAt = scheduledFor ? new Date(scheduledFor) : new Date();
+
+    const taskId = s.schedule({
+      type: 'market-research' as TaskType,
+      name: `FB Research: ${keywords.join(', ').substring(0, 50)}`,
+      platform: 'instagram' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: runAt,
+      resourceRequirements: { safariExclusive: true },
+      payload: { keywords, maxPosts, downloadTop, searchType, dateFilter },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled Facebook research for: ${keywords.join(', ')}`,
+      keywords,
+      scheduledFor: runAt.toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/research/instagram/search', (req: Request, res: Response) => {
+  try {
+    const {
+      keywords, maxPosts = 50, downloadTop = 10,
+      searchType = 'hashtag', detail = false, priority, scheduledFor,
+    } = req.body;
+
+    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({ error: 'keywords array is required' });
+    }
+
+    const s = getScheduler();
+    const runAt = scheduledFor ? new Date(scheduledFor) : new Date();
+
+    const taskId = s.schedule({
+      type: 'market-research-instagram' as TaskType,
+      name: `IG Research: ${keywords.join(', ').substring(0, 50)}`,
+      platform: 'instagram' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: runAt,
+      resourceRequirements: { safariExclusive: true },
+      payload: { keywords, maxPosts, downloadTop, searchType, detail },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled Instagram research for: ${keywords.join(', ')}`,
+      keywords,
+      scheduledFor: runAt.toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/research/ad-brief', (req: Request, res: Response) => {
+  try {
+    const {
+      keyword, product, platform = 'facebook',
+      skipScrape = false, priority, scheduledFor,
+    } = req.body;
+
+    if (!keyword) return res.status(400).json({ error: 'keyword is required' });
+    if (!product) return res.status(400).json({ error: 'product is required' });
+
+    const s = getScheduler();
+    const runAt = scheduledFor ? new Date(scheduledFor) : new Date();
+
+    const taskId = s.schedule({
+      type: 'ad-brief' as TaskType,
+      name: `Ad Brief: ${product} × "${keyword}"`,
+      platform: 'instagram' as Platform,
+      priority: (priority || 3) as TaskPriority,
+      scheduledFor: runAt,
+      resourceRequirements: { safariExclusive: false },
+      payload: { keyword, product, platform, skipScrape },
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: `Scheduled ad brief: ${product} × "${keyword}"`,
+      scheduledFor: runAt.toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/research/status', async (req: Request, res: Response) => {
+  try {
+    const { execSync } = await import('child_process');
+    const result = execSync(
+      'python3 python/market_research/run_facebook.py status',
+      { cwd: '/Users/isaiahdupree/Documents/Software/Safari Automation', encoding: 'utf8', timeout: 10000 }
+    );
+    const s = getScheduler();
+    const researchTasks = s.getQueue().filter(t =>
+      ['market-research', 'market-research-instagram', 'ad-brief'].includes(t.type)
+    );
+    res.json({
+      status: result,
+      pendingTasks: researchTasks.length,
+      tasks: researchTasks.map(t => ({ id: t.id, name: t.name, type: t.type, scheduledFor: t.scheduledFor })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/publish/status', async (req: Request, res: Response) => {
+  try {
+    // Check MediaPoster backend publishing status
+    const backendResponse = await fetch('http://localhost:5555/api/publish-controls/status', {
+      signal: AbortSignal.timeout(3000),
+    });
+    const backendStatus = await backendResponse.json();
+    
+    // Get local scheduler publish tasks
+    const s = getScheduler();
+    const queue = s.getQueue().filter(t => t.type === 'publish');
+    const completed = s.getCompleted(10).filter(t => t.type === 'publish');
+    
+    res.json({
+      backend: backendStatus,
+      scheduler: {
+        pendingPublishTasks: queue.length,
+        recentPublishTasks: completed.length,
+        queue: queue.map(t => ({ id: t.id, name: t.name, scheduledFor: t.scheduledFor, status: t.status })),
+        recent: completed.map(t => ({ id: t.id, name: t.name, completedAt: t.completedAt, status: t.status })),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Start server
 const PORT = parseInt(process.env.SCHEDULER_PORT || process.env.PORT || '3010');
 
 export function startServer(port: number = PORT): void {
   app.listen(port, () => {
     console.log(`📅 Scheduler API running on http://localhost:${port}`);
-    console.log(`   Health:    GET  /health`);
-    console.log(`   Status:    GET  /api/scheduler/status`);
-    console.log(`   Queue:     GET  /api/scheduler/queue`);
-    console.log(`   Resources: GET  /api/resources`);
-    console.log(`   Sora:      POST /api/sora/queue-trilogy`);
-    console.log(`   Comments:  POST /api/comments/threads/multi`);
+    console.log(`   Health:      GET  /health`);
+    console.log(`   Status:      GET  /api/scheduler/status`);
+    console.log(`   Queue:       GET  /api/scheduler/queue`);
+    console.log(`   Resources:   GET  /api/resources`);
+    console.log(`   Sora:        POST /api/sora/queue-trilogy`);
+    console.log(`   SoraGen:     POST /api/sora/generate`);
+    console.log(`   Pipeline:    POST /api/sora/daily-pipeline`);
+    console.log(`   PipeRecur:   POST /api/sora/daily-pipeline/recurring`);
+    console.log(`   Drain:       POST /api/queue/drain`);
+    console.log(`   DrainRecur:  POST /api/queue/drain/recurring`);
+    console.log(`   Comments:    POST /api/comments/threads/multi`);
+    console.log(`   Publish:     POST /api/publish/daily`);
+    console.log(`   Recurring:   POST /api/publish/daily/recurring`);
+    console.log(`   PubStatus:   GET  /api/publish/status`);
+    console.log(`   DailyRes:    POST /api/research/daily`);
+    console.log(`   DailyRecur:  POST /api/research/daily/recurring`);
+    console.log(`   AdLibrary:   POST /api/research/ad-library`);
+    console.log(`   FBResearch:  POST /api/research/facebook/search`);
+    console.log(`   IGResearch:  POST /api/research/instagram/search`);
+    console.log(`   AdBrief:     POST /api/research/ad-brief`);
+    console.log(`   ResStatus:   GET  /api/research/status`);
   });
 }
 
