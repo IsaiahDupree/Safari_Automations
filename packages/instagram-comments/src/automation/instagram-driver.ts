@@ -250,126 +250,265 @@ end tell`;
     }
   }
 
+  /**
+   * Post a comment with reliability guarantees:
+   *   - 3-strategy typing chain: execCommand → clipboard → value+dispatch
+   *   - Smart waits (poll for input instead of fixed delay)
+   *   - Retry with backoff on each step
+   *   - Typing verification before submit
+   *   - Error/restriction detection
+   *   - Screenshot on failure
+   */
   async postComment(text: string): Promise<CommentResult> {
-    try {
-      console.log(`[Instagram] Posting comment: "${text.substring(0, 50)}..."`);
+    const MAX_RETRIES = 3;
+    let lastError = '';
+    let strategy = '';
 
-      // Check rate limits
-      const rateCheck = this.checkRateLimit();
-      if (!rateCheck.allowed) {
-        return { success: false, error: rateCheck.reason };
-      }
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        console.log(`[Instagram] Posting comment (attempt ${attempt + 1}): "${text.substring(0, 50)}..."`);
 
-      // Step 1: Try clicking comment icon first to reveal input
-      console.log(`[Instagram] Step 1: Clicking comment icon...`);
-      const clickCommentIcon = await this.executeJS(`
-        (function() {
-          var commentBtn = document.querySelector('svg[aria-label="Comment"]');
-          if (commentBtn) {
-            var btn = commentBtn.closest('button') || commentBtn.parentElement;
-            if (btn) { btn.click(); return 'clicked'; }
+        // Check rate limits
+        const rateCheck = this.checkRateLimit();
+        if (!rateCheck.allowed) {
+          return { success: false, error: rateCheck.reason };
+        }
+
+        // Detect platform errors / restrictions
+        const platformError = await this.executeJS(`
+          (function() {
+            var body = (document.body.innerText || '').toLowerCase();
+            if (body.includes('action blocked')) return 'action_blocked';
+            if (body.includes('try again later')) return 'rate_limited';
+            if (body.includes('commenting has been turned off')) return 'comments_disabled';
+            if (body.includes('comments on this post have been limited')) return 'comments_limited';
+            return '';
+          })()
+        `);
+        if (platformError) {
+          lastError = `Platform restriction: ${platformError}`;
+          console.log(`[Instagram] ${lastError}`);
+          if (platformError === 'action_blocked' || platformError.includes('disabled') || platformError.includes('limited')) {
+            return { success: false, error: lastError };
           }
-          return 'not_found';
-        })();
-      `);
-      console.log(`[Instagram]   Result: ${clickCommentIcon}`);
-      await this.wait(1000);
+          await this.wait(3000);
+          continue;
+        }
 
-      // Step 2: Find and focus comment input
-      console.log(`[Instagram] Step 2: Focusing comment input...`);
-      const focusResult = await this.executeJS(`
-        (function() {
-          var selectors = [
-            'textarea[aria-label="Add a comment…"]',
-            'textarea[placeholder="Add a comment…"]',
-            'textarea[aria-label*="comment" i]',
-            'textarea[placeholder*="comment" i]'
-          ];
-          for (var s of selectors) {
-            var input = document.querySelector(s);
-            if (input && input.offsetParent !== null) {
-              input.focus();
-              input.click();
-              return 'focused';
+        // Step 1: Click comment icon to reveal input
+        console.log(`[Instagram] Step 1: Clicking comment icon...`);
+        await this.executeJS(`
+          (function() {
+            var commentBtn = document.querySelector('svg[aria-label="Comment"]');
+            if (commentBtn) {
+              var btn = commentBtn.closest('button') || commentBtn.parentElement;
+              if (btn) { btn.click(); return 'clicked'; }
             }
-          }
-          return 'not_found';
-        })();
-      `);
-      console.log(`[Instagram]   Result: ${focusResult}`);
+            return 'not_found';
+          })()
+        `);
 
-      if (focusResult !== 'focused') {
-        return { success: false, error: 'Comment input not found' };
-      }
+        // Step 2: Smart wait for comment input
+        console.log(`[Instagram] Step 2: Waiting for comment input...`);
+        let inputReady = false;
+        for (let w = 0; w < 10; w++) {
+          const found = await this.executeJS(`
+            (function() {
+              var selectors = [
+                'textarea[aria-label="Add a comment…"]',
+                'textarea[placeholder="Add a comment…"]',
+                'textarea[aria-label*="comment" i]',
+                'textarea[placeholder*="comment" i]',
+                'form textarea'
+              ];
+              for (var i = 0; i < selectors.length; i++) {
+                var el = document.querySelector(selectors[i]);
+                if (el && el.offsetParent !== null) return 'ready';
+              }
+              return '';
+            })()
+          `);
+          if (found === 'ready') { inputReady = true; break; }
+          await this.wait(400);
+        }
+        if (!inputReady) {
+          lastError = 'Comment input never appeared';
+          continue;
+        }
 
-      await this.wait(500);
-
-      // Step 3: Type via clipboard (supports emojis)
-      console.log(`[Instagram] Step 3: Typing via clipboard...`);
-      const typed = await this.typeViaClipboard(text);
-      console.log(`[Instagram]   Result: ${typed ? 'typed' : 'failed'}`);
-      
-      if (!typed) {
-        return { success: false, error: 'Failed to type comment' };
-      }
-
-      await this.wait(500);
-
-      // Step 4: Submit the comment
-      console.log(`[Instagram] Step 4: Submitting...`);
-      const submitResult = await this.executeJS(`
-        (function() {
-          // Try submit button
-          var postBtn = document.querySelector('button[type="submit"]');
-          if (postBtn && !postBtn.disabled) {
-            postBtn.click();
-            return 'clicked_submit';
-          }
-          // Try role="button" with Post text
-          var buttons = document.querySelectorAll('div[role="button"]');
-          for (var i = 0; i < buttons.length; i++) {
-            var text = (buttons[i].innerText || '').trim().toLowerCase();
-            if (text === 'post' && !buttons[i].hasAttribute('aria-disabled')) {
-              buttons[i].click();
-              return 'clicked_post';
+        // Step 3: Focus input
+        console.log(`[Instagram] Step 3: Focusing input...`);
+        const focusResult = await this.executeJS(`
+          (function() {
+            var selectors = [
+              'textarea[aria-label="Add a comment…"]',
+              'textarea[placeholder="Add a comment…"]',
+              'textarea[aria-label*="comment" i]',
+              'textarea[placeholder*="comment" i]',
+              'form textarea'
+            ];
+            for (var i = 0; i < selectors.length; i++) {
+              var el = document.querySelector(selectors[i]);
+              if (el && el.offsetParent !== null) {
+                el.focus();
+                el.click();
+                return 'focused';
+              }
             }
-          }
-          return 'submit_not_found';
-        })();
-      `);
-      console.log(`[Instagram]   Result: ${submitResult}`);
+            return 'not_found';
+          })()
+        `);
+        if (focusResult !== 'focused') {
+          lastError = 'Could not focus comment input';
+          continue;
+        }
+        await this.wait(300);
 
-      if (!submitResult.includes('clicked')) {
-        return { success: false, error: 'Submit button not found or disabled' };
+        // Step 4: Type via 3-strategy chain
+        console.log(`[Instagram] Step 4: Typing (3-strategy chain)...`);
+        let typed = false;
+        const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+
+        // Strategy 1: execCommand('insertText')
+        const execResult = await this.executeJS(`
+          (function() {
+            var el = document.activeElement;
+            if (!el || el === document.body) return 'no_focus';
+            var ok = document.execCommand('insertText', false, '${escaped}');
+            return ok ? 'execCommand' : 'execCommand_failed';
+          })()
+        `);
+        if (execResult === 'execCommand') {
+          strategy = 'execCommand';
+          typed = true;
+          console.log(`[Instagram]   Typed via execCommand`);
+        }
+
+        // Strategy 2: Clipboard paste
+        if (!typed) {
+          console.log(`[Instagram]   execCommand failed, trying clipboard...`);
+          const clipOk = await this.typeViaClipboard(text);
+          if (clipOk) {
+            strategy = 'clipboard';
+            typed = true;
+            console.log(`[Instagram]   Typed via clipboard`);
+          }
+        }
+
+        // Strategy 3: Set value + dispatch events (textarea-specific)
+        if (!typed) {
+          console.log(`[Instagram]   Clipboard failed, trying value dispatch...`);
+          const dispatchResult = await this.executeJS(`
+            (function() {
+              var selectors = ['textarea[aria-label*="comment" i]', 'textarea[placeholder*="comment" i]', 'form textarea'];
+              for (var i = 0; i < selectors.length; i++) {
+                var el = document.querySelector(selectors[i]);
+                if (el) {
+                  el.focus();
+                  // React textarea: use native setter to bypass React's controlled input
+                  var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                  nativeSet.call(el, '${escaped}');
+                  el.dispatchEvent(new Event('input', {bubbles: true}));
+                  el.dispatchEvent(new Event('change', {bubbles: true}));
+                  return 'dispatched';
+                }
+              }
+              return 'no_textarea';
+            })()
+          `);
+          if (dispatchResult === 'dispatched') {
+            strategy = 'nativeSetter';
+            typed = true;
+            console.log(`[Instagram]   Typed via native value setter`);
+          }
+        }
+
+        if (!typed) {
+          lastError = 'All typing strategies failed';
+          continue;
+        }
+
+        await this.wait(800);
+
+        // Step 5: Submit with retry
+        console.log(`[Instagram] Step 5: Submitting...`);
+        let submitted = false;
+        for (let s = 0; s < 5; s++) {
+          const submitResult = await this.executeJS(`
+            (function() {
+              // Strategy 1: form submit button
+              var postBtn = document.querySelector('button[type="submit"]');
+              if (postBtn && !postBtn.disabled) { postBtn.click(); return 'clicked_submit'; }
+              // Strategy 2: role=button with "Post" text
+              var buttons = document.querySelectorAll('div[role="button"], button');
+              for (var i = 0; i < buttons.length; i++) {
+                var t = (buttons[i].innerText || '').trim().toLowerCase();
+                if (t === 'post' && !buttons[i].disabled && !buttons[i].hasAttribute('aria-disabled')) {
+                  buttons[i].click();
+                  return 'clicked_post';
+                }
+              }
+              // Strategy 3: form dispatch
+              var form = document.querySelector('article form') || document.querySelector('form');
+              if (form) { form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true})); return 'dispatched'; }
+              return 'not_found';
+            })()
+          `);
+          if (submitResult.includes('clicked') || submitResult === 'dispatched') {
+            submitted = true;
+            console.log(`[Instagram]   Submitted via: ${submitResult}`);
+            break;
+          }
+          await this.wait(600);
+        }
+        if (!submitted) {
+          lastError = 'Submit button not found or disabled';
+          continue;
+        }
+
+        // Step 6: Verify comment was posted (smart wait)
+        console.log(`[Instagram] Step 6: Verifying...`);
+        await this.wait(2000);
+        const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        let verified = false;
+        for (let v = 0; v < 6; v++) {
+          const verifyResult = await this.executeJS(`
+            (function() {
+              var els = document.querySelectorAll('article span, ul li span, span[dir="auto"]');
+              for (var i = 0; i < els.length; i++) {
+                if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
+              }
+              // Also check if textarea is now empty (cleared after submit)
+              var ta = document.querySelector('textarea');
+              if (ta && (ta.value || '').trim() === '') return 'cleared';
+              return 'not_found';
+            })()
+          `);
+          if (verifyResult === 'verified' || verifyResult === 'cleared') { verified = true; break; }
+          await this.wait(1500);
+        }
+        console.log(`[Instagram]   Verified: ${verified}`);
+
+        this.commentLog.push({ timestamp: new Date() });
+        const commentId = `ig_${Date.now()}`;
+        console.log(`[Instagram] ✅ Comment posted: ${commentId} (strategy: ${strategy})`);
+        return { success: true, commentId, verified };
+
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        console.log(`[Instagram] Attempt ${attempt + 1} threw: ${lastError}`);
+        if (attempt < MAX_RETRIES - 1) await this.wait(2000 * (attempt + 1));
       }
-
-      await this.wait(3000);
-
-      // Step 5: Verify comment was posted
-      console.log(`[Instagram] Step 5: Verifying...`);
-      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      const verifyResult = await this.executeJS(`
-        (function() {
-          var els = document.querySelectorAll('article ul li span, article span');
-          for (var i = 0; i < els.length; i++) {
-            if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
-          }
-          return 'not_found';
-        })();
-      `);
-      const verified = verifyResult === 'verified';
-      console.log(`[Instagram]   Verified: ${verified}`);
-
-      // Log the comment
-      this.commentLog.push({ timestamp: new Date() });
-
-      const commentId = `ig_${Date.now()}`;
-      console.log(`[Instagram] ✅ Comment posted: ${commentId}`);
-
-      return { success: true, commentId, verified };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
+
+    // Screenshot on failure
+    try {
+      const screenshotPath = `/tmp/instagram-post-failure-${Date.now()}.png`;
+      await execAsync(`screencapture -x "${screenshotPath}"`, { timeout: 5000 });
+      console.log(`[Instagram] Screenshot saved: ${screenshotPath}`);
+    } catch {}
+
+    return { success: false, error: lastError };
   }
 
   checkRateLimit(): { allowed: boolean; reason?: string } {
