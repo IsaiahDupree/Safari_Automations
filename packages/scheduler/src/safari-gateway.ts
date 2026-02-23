@@ -138,7 +138,7 @@ const LOGIN_CHECKS: Record<Platform, { url: string; selector: string }> = {
 
 // ─── Safari Lock Manager ────────────────────────────────────
 
-class SafariLockManager {
+export class SafariLockManager {
   private currentLock: SafariLock | null = null;
   private queue: QueueEntry[] = [];
   private lockIdCounter = 0;
@@ -694,5 +694,10 @@ export function startGateway(port: number = PORT): void {
   });
 }
 
-// Run directly
-startGateway();
+export { app, lockManager };
+
+// Run directly (skip if imported as module for testing)
+const isDirectRun = process.argv[1]?.includes('safari-gateway');
+if (isDirectRun) {
+  startGateway();
+}
