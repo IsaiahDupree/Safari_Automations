@@ -25,11 +25,13 @@
  *   npx tsx packages/market-research/src/api/server.ts
  */
 
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as http from 'http';
+import * as https from 'https';
 
 // ─── Platform Researchers (lazy-loaded to avoid import issues) ────
 
@@ -40,6 +42,131 @@ import { FacebookResearcher } from '../../../facebook-comments/src/automation/fa
 import { TikTokResearcher } from '../../../tiktok-comments/src/automation/tiktok-researcher.js';
 import { TwitterFeedbackLoop } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
 import type { OfferContext, NicheContext } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
+
+// ─── Auth & Webhooks ─────────────────────────────────────────────
+
+const API_KEY = process.env.RESEARCH_API_KEY || '';
+const WEBHOOKS_FILE = path.join(os.homedir(), '.twitter-feedback', 'webhooks.json');
+
+interface WebhookRegistration {
+  id: string;
+  url: string;
+  events: string[];  // 'checkback.complete' | 'strategy.updated' | 'tweet.classified' | 'job.complete' | '*'
+  secret?: string;
+  createdAt: string;
+  lastDelivery?: string;
+  failCount: number;
+}
+
+function loadWebhooks(): WebhookRegistration[] {
+  try { return fs.existsSync(WEBHOOKS_FILE) ? JSON.parse(fs.readFileSync(WEBHOOKS_FILE, 'utf-8')) : []; }
+  catch { return []; }
+}
+
+function saveWebhooks(hooks: WebhookRegistration[]): void {
+  const dir = path.dirname(WEBHOOKS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(hooks, null, 2));
+}
+
+async function fireWebhook(event: string, payload: Record<string, any>): Promise<void> {
+  const hooks = loadWebhooks().filter(h => h.events.includes('*') || h.events.includes(event));
+  for (const hook of hooks) {
+    try {
+      const body = JSON.stringify({ event, timestamp: new Date().toISOString(), data: payload });
+      const url = new URL(hook.url);
+      const options = {
+        method: 'POST',
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'X-Webhook-Event': event,
+          ...(hook.secret ? { 'X-Webhook-Secret': hook.secret } : {}),
+        },
+      };
+      const transport = url.protocol === 'https:' ? https : http;
+      await new Promise<void>((resolve) => {
+        const req = transport.request(options, (res) => { res.resume(); resolve(); });
+        req.on('error', () => { hook.failCount++; resolve(); });
+        req.setTimeout(5000, () => { req.destroy(); resolve(); });
+        req.write(body);
+        req.end();
+      });
+      hook.lastDelivery = new Date().toISOString();
+    } catch { hook.failCount++; }
+  }
+  saveWebhooks(hooks);
+}
+
+// ─── API Key Auth Middleware ─────────────────────────────────────
+
+function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Skip auth if no key configured or if it's a health check
+  if (!API_KEY || req.path === '/health') { next(); return; }
+
+  const provided = req.headers['x-api-key'] as string
+    || req.headers['authorization']?.replace('Bearer ', '')
+    || req.query.api_key as string;
+
+  if (provided === API_KEY) { next(); return; }
+
+  res.status(401).json({ error: 'Unauthorized. Set X-API-Key header or ?api_key= query param.' });
+}
+
+// ─── Auto-Scheduler ──────────────────────────────────────────────
+
+let autoSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+let autoSchedulerRunning = false;
+const AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000; // every 10 minutes
+
+async function autoSchedulerTick(): Promise<void> {
+  if (autoSchedulerRunning) return;
+  autoSchedulerRunning = true;
+  try {
+    const due = feedbackLoop.tracker.getDueForCheckBack();
+    if (due.length > 0) {
+      console.log(`[AutoScheduler] ${due.length} tweets due for check-back`);
+      const results = await feedbackLoop.runCheckBacks();
+      console.log(`[AutoScheduler] Checked ${results.checked} tweets`);
+
+      // Auto-analyze after check-backs
+      if (results.checked > 0) {
+        const strategy = feedbackLoop.analyze();
+        console.log(`[AutoScheduler] Strategy updated (${strategy.totalTweetsAnalyzed} tweets)`);
+        await fireWebhook('checkback.complete', {
+          checked: results.checked,
+          totalTracked: feedbackLoop.tracker.getStats().totalTracked,
+        });
+        await fireWebhook('strategy.updated', {
+          totalTweetsAnalyzed: strategy.totalTweetsAnalyzed,
+          avgEngagementRate: strategy.avgEngagementRate,
+        });
+      }
+    }
+  } catch (e) {
+    console.error(`[AutoScheduler] Error: ${e}`);
+  }
+  autoSchedulerRunning = false;
+}
+
+function startAutoScheduler(): void {
+  if (autoSchedulerInterval) return;
+  autoSchedulerInterval = setInterval(autoSchedulerTick, AUTO_CHECK_INTERVAL_MS);
+  console.log(`[AutoScheduler] Started — checking every ${AUTO_CHECK_INTERVAL_MS / 60000} minutes`);
+  // Run once immediately
+  setTimeout(autoSchedulerTick, 5000);
+}
+
+function stopAutoScheduler(): void {
+  if (autoSchedulerInterval) {
+    clearInterval(autoSchedulerInterval);
+    autoSchedulerInterval = null;
+    console.log('[AutoScheduler] Stopped');
+  }
+}
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -161,7 +288,8 @@ function listResultFiles(platform?: string): Array<{ filename: string; platform:
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(authMiddleware);
 
 const PORT = parseInt(process.env.RESEARCH_PORT || process.env.PORT || '3106');
 
@@ -535,6 +663,75 @@ app.get('/api/research/download/*', (req: Request, res: Response) => {
 
 const feedbackLoop = new TwitterFeedbackLoop();
 
+// ─── Webhook management ──────────────────────────────────────────
+
+app.get('/api/webhooks', (_req: Request, res: Response) => {
+  res.json({ webhooks: loadWebhooks().map(w => ({ ...w, secret: w.secret ? '***' : undefined })) });
+});
+
+app.post('/api/webhooks', (req: Request, res: Response) => {
+  const { url, events, secret } = req.body;
+  if (!url) { res.status(400).json({ error: 'url is required' }); return; }
+
+  const hook: WebhookRegistration = {
+    id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    url,
+    events: events || ['*'],
+    secret,
+    createdAt: new Date().toISOString(),
+    failCount: 0,
+  };
+
+  const hooks = loadWebhooks();
+  hooks.push(hook);
+  saveWebhooks(hooks);
+  res.json({ success: true, webhook: { ...hook, secret: secret ? '***' : undefined } });
+});
+
+app.delete('/api/webhooks/:id', (req: Request, res: Response) => {
+  const hooks = loadWebhooks().filter(h => h.id !== req.params.id);
+  saveWebhooks(hooks);
+  res.json({ success: true, remaining: hooks.length });
+});
+
+app.post('/api/webhooks/test', async (req: Request, res: Response) => {
+  const { url } = req.body;
+  if (!url) { res.status(400).json({ error: 'url is required' }); return; }
+  try {
+    await fireWebhook('test', { message: 'Webhook test from Market Research API' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Auto-scheduler control ──────────────────────────────────────
+
+app.get('/api/scheduler/status', (_req: Request, res: Response) => {
+  res.json({
+    running: !!autoSchedulerInterval,
+    intervalMs: AUTO_CHECK_INTERVAL_MS,
+    intervalMinutes: AUTO_CHECK_INTERVAL_MS / 60000,
+    currentlyProcessing: autoSchedulerRunning,
+    dueNow: feedbackLoop.tracker.getDueForCheckBack().length,
+  });
+});
+
+app.post('/api/scheduler/start', (_req: Request, res: Response) => {
+  startAutoScheduler();
+  res.json({ success: true, running: true, intervalMinutes: AUTO_CHECK_INTERVAL_MS / 60000 });
+});
+
+app.post('/api/scheduler/stop', (_req: Request, res: Response) => {
+  stopAutoScheduler();
+  res.json({ success: true, running: false });
+});
+
+app.post('/api/scheduler/trigger', async (_req: Request, res: Response) => {
+  try {
+    await autoSchedulerTick();
+    res.json({ success: true, message: 'Manual tick complete' });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 // ─── Feedback loop status ────────────────────────────────────────
 
 app.get('/api/feedback/status', (_req: Request, res: Response) => {
@@ -552,6 +749,22 @@ app.post('/api/feedback/register', (req: Request, res: Response) => {
 
   const tracked = feedbackLoop.registerPostedTweet(tweetUrl, text, niche || 'general', offer || '');
   res.json({ success: true, tweet: tracked });
+});
+
+// ─── Batch register multiple tweets ──────────────────────────────
+
+app.post('/api/feedback/register/batch', (req: Request, res: Response) => {
+  const { tweets } = req.body;
+  if (!tweets || !Array.isArray(tweets)) {
+    res.status(400).json({ error: 'tweets array is required (each: {tweetUrl, text, niche?, offer?})' });
+    return;
+  }
+
+  const results = tweets.map((t: any) => {
+    if (!t.tweetUrl || !t.text) return { error: 'tweetUrl and text required', input: t };
+    return feedbackLoop.registerPostedTweet(t.tweetUrl, t.text, t.niche || 'general', t.offer || '');
+  });
+  res.json({ success: true, registered: results.length, tweets: results });
 });
 
 // ─── Run scheduled check-backs ───────────────────────────────────
@@ -698,6 +911,7 @@ app.get('/api/feedback/due', (_req: Request, res: Response) => {
 export function startServer(port: number = PORT): void {
   app.listen(port, () => {
     console.log(`\n🔬 Market Research API running on http://localhost:${port}`);
+    console.log(`   Auth: ${API_KEY ? 'ENABLED (X-API-Key header required)' : 'DISABLED (set RESEARCH_API_KEY to enable)'}`);
     console.log(`\n   ── RESEARCH ──`);
     console.log(`   Platforms:      GET  /api/research/platforms`);
     console.log(`   Search:         POST /api/research/:platform/search       {query}`);
@@ -709,19 +923,34 @@ export function startServer(port: number = PORT): void {
     console.log(`   Latest:         GET  /api/research/results/latest/:platform`);
     console.log(`\n   ── FEEDBACK LOOP ──`);
     console.log(`   Status:         GET  /api/feedback/status`);
-    console.log(`   Register tweet: POST /api/feedback/register              {tweetUrl, text, niche}`);
+    console.log(`   Register:       POST /api/feedback/register              {tweetUrl, text, niche}`);
+    console.log(`   Batch register: POST /api/feedback/register/batch        {tweets[]}`);
     console.log(`   Check-backs:    POST /api/feedback/check-backs`);
-    console.log(`   Extract metrics:POST /api/feedback/metrics               {tweetUrl}`);
+    console.log(`   Metrics:        POST /api/feedback/metrics               {tweetUrl}`);
     console.log(`   Analyze:        POST /api/feedback/analyze`);
     console.log(`   Strategy:       GET  /api/feedback/strategy`);
     console.log(`   Gen prompt:     POST /api/feedback/generate-prompt       {niche, style?}`);
     console.log(`   Full cycle:     POST /api/feedback/cycle                 {niche, style?}`);
-    console.log(`   Set offers:     POST /api/feedback/offers                {offers[]}`);
-    console.log(`   Set niches:     POST /api/feedback/niches                {niches[]}`);
-    console.log(`   List tweets:    GET  /api/feedback/tweets?classification=&status=`);
-    console.log(`   Due check-backs:GET  /api/feedback/due`);
+    console.log(`   Offers:         POST /api/feedback/offers                {offers[]}`);
+    console.log(`   Niches:         POST /api/feedback/niches                {niches[]}`);
+    console.log(`   Tweets:         GET  /api/feedback/tweets?classification=&status=`);
+    console.log(`   Due:            GET  /api/feedback/due`);
+    console.log(`\n   ── WEBHOOKS ──`);
+    console.log(`   List:           GET  /api/webhooks`);
+    console.log(`   Register:       POST /api/webhooks                      {url, events[], secret?}`);
+    console.log(`   Delete:         DELETE /api/webhooks/:id`);
+    console.log(`   Test:           POST /api/webhooks/test                  {url}`);
+    console.log(`\n   ── AUTO-SCHEDULER ──`);
+    console.log(`   Status:         GET  /api/scheduler/status`);
+    console.log(`   Start:          POST /api/scheduler/start`);
+    console.log(`   Stop:           POST /api/scheduler/stop`);
+    console.log(`   Trigger now:    POST /api/scheduler/trigger`);
     console.log(`\n   Platforms: ${PLATFORMS.join(', ')}`);
-    console.log(`   Output dir: ${DEFAULT_OUTPUT_DIR}\n`);
+    console.log(`   Output dir: ${DEFAULT_OUTPUT_DIR}`);
+    console.log(`   Webhooks: ${loadWebhooks().length} registered\n`);
+
+    // Auto-start the scheduler
+    startAutoScheduler();
   });
 }
 
