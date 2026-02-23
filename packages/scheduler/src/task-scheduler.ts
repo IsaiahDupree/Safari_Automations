@@ -339,8 +339,14 @@ export class TaskScheduler extends EventEmitter {
       // Skip if not yet scheduled
       if (task.scheduledFor > now) continue;
 
-      // Skip if waiting for resources
-      if (task.status === 'waiting') continue;
+      // Re-evaluate waiting tasks each tick (resources may have become available)
+      if (task.status === 'waiting') {
+        if (this.checkResourceRequirements(task)) {
+          task.status = 'pending';
+        } else {
+          continue;
+        }
+      }
 
       // Check dependencies
       if (task.dependencies?.length) {
@@ -419,9 +425,14 @@ export class TaskScheduler extends EventEmitter {
       task.error = error instanceof Error ? error.message : String(error);
       
       if (task.retryCount < task.maxRetries) {
-        // Retry
+        // Retry — re-insert at correct priority position
         task.status = 'pending';
-        this.queue.push(task);
+        const retryIndex = this.queue.findIndex(t => t.priority > task.priority);
+        if (retryIndex === -1) {
+          this.queue.push(task);
+        } else {
+          this.queue.splice(retryIndex, 0, task);
+        }
         console.log(`[SCHEDULER] 🔄 Task retry ${task.retryCount}/${task.maxRetries}: ${task.name}`);
       } else {
         task.status = 'failed';
@@ -853,7 +864,13 @@ export class TaskScheduler extends EventEmitter {
           completedAt: t.completedAt ? new Date(t.completedAt) : undefined,
         }));
         
-        this.completed = state.completed || [];
+        this.completed = (state.completed || []).map((t: ScheduledTask) => ({
+          ...t,
+          scheduledFor: new Date(t.scheduledFor),
+          createdAt: new Date(t.createdAt),
+          startedAt: t.startedAt ? new Date(t.startedAt) : undefined,
+          completedAt: t.completedAt ? new Date(t.completedAt) : undefined,
+        }));
         console.log(`[SCHEDULER] Loaded ${this.queue.length} pending tasks from state`);
       }
     } catch (error) {
