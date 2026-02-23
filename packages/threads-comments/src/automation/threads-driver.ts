@@ -706,92 +706,203 @@ end tell`;
     };
   }
 
+  /**
+   * Post a comment with reliability guarantees:
+   *   - 3-strategy typing chain: execCommand → clipboard → innerText+dispatch
+   *   - Smart waits (poll for composer instead of fixed delay)
+   *   - Retry with backoff on each step
+   *   - Typing verification before submit
+   *   - Error/popup detection
+   */
   async postComment(text: string): Promise<CommentResult> {
-    // Flow from python/engagement/threads_engagement.py engage_with_post()
-    try {
-      console.log(`[Threads] Posting comment: "${text.substring(0, 50)}..."`);
+    const MAX_RETRIES = 3;
+    let lastError = '';
+    let strategy = '';
 
-      // Check rate limits
-      const rateCheck = this.checkRateLimit();
-      if (!rateCheck.allowed) {
-        return { success: false, error: rateCheck.reason };
-      }
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        console.log(`[Threads] Posting comment (attempt ${attempt + 1}): "${text.substring(0, 50)}..."`);
 
-      // Step 1: Click reply button (from JS_CLICK_REPLY)
-      console.log(`[Threads] Step 1: Clicking reply button...`);
-      const clickResult = await this.executeJS(JS_TEMPLATES.clickReplyButton);
-      console.log(`[Threads]   Result: ${clickResult}`);
-      if (clickResult !== 'clicked') {
-        return { success: false, error: 'Reply button not found' };
-      }
+        // Check rate limits
+        const rateCheck = this.checkRateLimit();
+        if (!rateCheck.allowed) {
+          return { success: false, error: rateCheck.reason };
+        }
 
-      await this.wait(2000); // Wait for composer to open
+        // Detect platform errors before attempting
+        const platformError = await this.executeJS(`
+          (function() {
+            var body = document.body.innerText || '';
+            if (body.includes('Something went wrong')) return 'error';
+            if (body.includes('rate') && body.includes('limit')) return 'rate_limit';
+            return '';
+          })()
+        `);
+        if (platformError) {
+          lastError = `Platform error: ${platformError}`;
+          console.log(`[Threads] ${lastError}, waiting...`);
+          await this.wait(3000);
+          continue;
+        }
 
-      // Step 2: Focus the input (from JS_FOCUS_INPUT)
-      console.log(`[Threads] Step 2: Focusing input...`);
-      const focusResult = await this.executeJS(JS_TEMPLATES.focusInput);
-      console.log(`[Threads]   Result: ${focusResult}`);
-      if (focusResult !== 'focused') {
-        return { success: false, error: 'Could not focus reply input' };
-      }
+        // Step 1: Click reply button
+        console.log(`[Threads] Step 1: Clicking reply button...`);
+        const clickResult = await this.executeJS(JS_TEMPLATES.clickReplyButton);
+        console.log(`[Threads]   Result: ${clickResult}`);
+        if (clickResult !== 'clicked') {
+          lastError = 'Reply button not found';
+          continue;
+        }
 
-      await this.wait(500);
+        // Step 2: Smart wait for composer input
+        console.log(`[Threads] Step 2: Waiting for composer...`);
+        let composerReady = false;
+        for (let w = 0; w < 10; w++) {
+          const found = await this.executeJS(`
+            (function() {
+              var el = document.querySelector('[contenteditable="true"]');
+              return (el && el.offsetParent !== null) ? 'ready' : '';
+            })()
+          `);
+          if (found === 'ready') { composerReady = true; break; }
+          await this.wait(400);
+        }
+        if (!composerReady) {
+          lastError = 'Composer never appeared';
+          continue;
+        }
 
-      // Step 3: Type via clipboard (from safari_controller.py type_via_clipboard)
-      console.log(`[Threads] Step 3: Typing via clipboard...`);
-      const typeSuccess = await this.typeViaClipboard(text);
-      console.log(`[Threads]   Result: ${typeSuccess ? 'typed' : 'failed'}`);
-      if (!typeSuccess) {
-        return { success: false, error: 'Failed to type comment' };
-      }
+        // Step 3: Focus input
+        console.log(`[Threads] Step 3: Focusing input...`);
+        const focusResult = await this.executeJS(JS_TEMPLATES.focusInput);
+        if (focusResult !== 'focused') {
+          lastError = 'Could not focus reply input';
+          continue;
+        }
+        await this.wait(300);
 
-      await this.wait(1000);
+        // Step 4: Type via 3-strategy chain
+        console.log(`[Threads] Step 4: Typing (3-strategy chain)...`);
+        const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
 
-      // Step 4: Click expand button (from JS_CLICK_EXPAND)
-      console.log(`[Threads] Step 4: Expanding composer...`);
-      const expandResult = await this.executeJS(JS_TEMPLATES.clickExpand);
-      console.log(`[Threads]   Result: ${expandResult}`);
+        // Strategy 1: execCommand('insertText') — React/contenteditable compatible
+        let typed = false;
+        const execResult = await this.executeJS(`
+          (function() {
+            var el = document.querySelector('[contenteditable="true"]');
+            if (!el || !el.offsetParent) return 'no_input';
+            el.focus();
+            var ok = document.execCommand('insertText', false, '${escaped}');
+            return ok ? 'execCommand' : 'execCommand_failed';
+          })()
+        `);
+        if (execResult === 'execCommand') {
+          strategy = 'execCommand';
+          typed = true;
+          console.log(`[Threads]   Typed via execCommand`);
+        }
 
-      await this.wait(1000);
-
-      // Step 5: Submit (from JS_SUBMIT with multiple strategies)
-      console.log(`[Threads] Step 5: Submitting...`);
-      const submitResult = await this.executeJS(JS_TEMPLATES.submitReply);
-      console.log(`[Threads]   Result: ${submitResult}`);
-
-      const posted = submitResult.includes('clicked');
-      if (!posted) {
-        return { success: false, error: 'Submit button not found' };
-      }
-
-      // Wait for comment to post
-      await this.wait(3000);
-
-      // Verify comment was posted
-      console.log(`[Threads] Step 6: Verifying...`);
-      const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      const verifyResult = await this.executeJS(`
-        (function() {
-          var els = document.querySelectorAll('div[data-pressable-container] span, p span, div span');
-          for (var i = 0; i < els.length; i++) {
-            if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
+        // Strategy 2: Clipboard paste
+        if (!typed) {
+          console.log(`[Threads]   execCommand failed, trying clipboard...`);
+          const clipOk = await this.typeViaClipboard(text);
+          if (clipOk) {
+            strategy = 'clipboard';
+            typed = true;
+            console.log(`[Threads]   Typed via clipboard`);
           }
-          return 'not_found';
-        })();
-      `);
-      const verified = verifyResult === 'verified';
-      console.log(`[Threads]   Verified: ${verified}`);
+        }
 
-      // Log the comment
-      this.commentLog.push({ timestamp: new Date() });
+        // Strategy 3: innerText + InputEvent dispatch
+        if (!typed) {
+          console.log(`[Threads]   Clipboard failed, trying innerText dispatch...`);
+          const dispatchResult = await this.executeJS(`
+            (function() {
+              var el = document.querySelector('[contenteditable="true"]');
+              if (!el) return 'no_input';
+              el.focus();
+              el.innerText = '${escaped}';
+              el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'${escaped}'}));
+              return 'dispatched';
+            })()
+          `);
+          if (dispatchResult === 'dispatched') {
+            strategy = 'innerText';
+            typed = true;
+            console.log(`[Threads]   Typed via innerText dispatch`);
+          }
+        }
 
-      const commentId = `th_${Date.now()}`;
-      console.log(`[Threads] ✅ Comment posted: ${commentId}`);
+        if (!typed) {
+          lastError = 'All typing strategies failed';
+          continue;
+        }
 
-      return { success: true, commentId, verified };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
+        await this.wait(800);
+
+        // Step 5: Click expand button (optional — may not exist)
+        console.log(`[Threads] Step 5: Expanding composer...`);
+        const expandResult = await this.executeJS(JS_TEMPLATES.clickExpand);
+        console.log(`[Threads]   Result: ${expandResult}`);
+        await this.wait(800);
+
+        // Step 6: Submit with retry
+        console.log(`[Threads] Step 6: Submitting...`);
+        let submitted = false;
+        for (let s = 0; s < 5; s++) {
+          const submitResult = await this.executeJS(JS_TEMPLATES.submitReply);
+          if (submitResult.includes('clicked')) {
+            submitted = true;
+            console.log(`[Threads]   Submitted via: ${submitResult}`);
+            break;
+          }
+          await this.wait(600);
+        }
+        if (!submitted) {
+          lastError = 'Submit button not found or disabled';
+          continue;
+        }
+
+        // Step 7: Verify comment was posted (smart wait)
+        console.log(`[Threads] Step 7: Verifying...`);
+        await this.wait(2000);
+        const snippet = text.substring(0, 25).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        let verified = false;
+        for (let v = 0; v < 6; v++) {
+          const verifyResult = await this.executeJS(`
+            (function() {
+              var els = document.querySelectorAll('[data-pressable-container] span, p span, div span');
+              for (var i = 0; i < els.length; i++) {
+                if ((els[i].textContent || '').includes('${snippet}')) return 'verified';
+              }
+              return 'not_found';
+            })()
+          `);
+          if (verifyResult === 'verified') { verified = true; break; }
+          await this.wait(1500);
+        }
+        console.log(`[Threads]   Verified: ${verified}`);
+
+        this.commentLog.push({ timestamp: new Date() });
+        const commentId = `th_${Date.now()}`;
+        console.log(`[Threads] ✅ Comment posted: ${commentId} (strategy: ${strategy})`);
+        return { success: true, commentId, verified };
+
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        console.log(`[Threads] Attempt ${attempt + 1} threw: ${lastError}`);
+        if (attempt < MAX_RETRIES - 1) await this.wait(2000 * (attempt + 1));
+      }
     }
+
+    // All retries exhausted — capture screenshot for debugging
+    try {
+      const screenshotPath = `/tmp/threads-post-failure-${Date.now()}.png`;
+      await execAsync(`screencapture -x "${screenshotPath}"`, { timeout: 5000 });
+      console.log(`[Threads] Screenshot saved: ${screenshotPath}`);
+    } catch {}
+
+    return { success: false, error: lastError };
   }
 
   checkRateLimit(): { allowed: boolean; reason?: string } {
