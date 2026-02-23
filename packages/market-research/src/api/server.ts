@@ -42,6 +42,9 @@ import { FacebookResearcher } from '../../../facebook-comments/src/automation/fa
 import { TikTokResearcher } from '../../../tiktok-comments/src/automation/tiktok-researcher.js';
 import { TwitterFeedbackLoop } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
 import type { OfferContext, NicheContext } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
+import { UniversalTaskQueue } from '../queue/universal-queue.js';
+import type { TaskPriority, TaskStatus } from '../queue/universal-queue.js';
+import { registerBuiltinWorkers } from '../queue/builtin-workers.js';
 
 // ─── Auth & Webhooks ─────────────────────────────────────────────
 
@@ -906,6 +909,170 @@ app.get('/api/feedback/due', (_req: Request, res: Response) => {
   res.json({ due, count: due.length });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// UNIVERSAL TASK QUEUE
+// ═══════════════════════════════════════════════════════════════════
+
+const taskQueue = new UniversalTaskQueue();
+registerBuiltinWorkers(taskQueue, feedbackLoop);
+
+// ─── Submit a task ───────────────────────────────────────────────
+
+app.post('/api/queue/submit', (req: Request, res: Response) => {
+  const { type, payload, platform, priority, scheduledFor, maxRetries, retryDelayMs, webhookUrl, callbackId, submittedBy, tags, notes } = req.body;
+  if (!type || !payload) {
+    res.status(400).json({ error: 'type and payload are required' });
+    return;
+  }
+
+  const task = taskQueue.submit({
+    type,
+    payload,
+    platform,
+    priority: priority as TaskPriority,
+    scheduledFor,
+    maxRetries,
+    retryDelayMs,
+    webhookUrl,
+    callbackId,
+    submittedBy,
+    tags,
+    notes,
+  });
+
+  res.json({ success: true, task });
+});
+
+// ─── Submit batch of tasks ───────────────────────────────────────
+
+app.post('/api/queue/submit/batch', (req: Request, res: Response) => {
+  const { tasks: taskList } = req.body;
+  if (!taskList || !Array.isArray(taskList)) {
+    res.status(400).json({ error: 'tasks array is required' });
+    return;
+  }
+
+  const results = taskList.map((t: any) => {
+    if (!t.type || !t.payload) return { error: 'type and payload required', input: t };
+    return taskQueue.submit(t);
+  });
+
+  res.json({ success: true, submitted: results.length, tasks: results });
+});
+
+// ─── Get task by ID ──────────────────────────────────────────────
+
+app.get('/api/queue/:taskId', (req: Request, res: Response) => {
+  // Exclude paths that would match other routes
+  if (['stats', 'workers', 'rate-limits', 'control'].includes(req.params.taskId)) { return; }
+
+  const task = taskQueue.getTask(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  res.json(task);
+});
+
+// ─── List tasks with filters ─────────────────────────────────────
+
+app.get('/api/queue', (req: Request, res: Response) => {
+  const tasks = taskQueue.listTasks({
+    status: req.query.status as TaskStatus | undefined,
+    type: req.query.type as string | undefined,
+    platform: req.query.platform as string | undefined,
+    limit: req.query.limit ? parseInt(req.query.limit as string) : 50,
+    submittedBy: req.query.submittedBy as string | undefined,
+  });
+
+  res.json({ tasks, count: tasks.length });
+});
+
+// ─── Cancel a task ───────────────────────────────────────────────
+
+app.post('/api/queue/cancel/:taskId', (req: Request, res: Response) => {
+  const task = taskQueue.cancel(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  res.json({ success: true, task });
+});
+
+// ─── Queue stats ─────────────────────────────────────────────────
+
+app.get('/api/queue/stats', (_req: Request, res: Response) => {
+  res.json(taskQueue.getStats());
+});
+
+// ─── Register a remote worker ────────────────────────────────────
+
+app.post('/api/queue/workers', (req: Request, res: Response) => {
+  const { name, url, taskPatterns, platforms, maxConcurrent } = req.body;
+  if (!name || !url || !taskPatterns) {
+    res.status(400).json({ error: 'name, url, and taskPatterns are required' });
+    return;
+  }
+
+  const worker = taskQueue.registerWorker({
+    name,
+    type: 'remote',
+    url,
+    taskPatterns,
+    platforms,
+    maxConcurrent,
+  });
+
+  res.json({ success: true, worker: { ...worker, handler: undefined } });
+});
+
+// ─── List workers ────────────────────────────────────────────────
+
+app.get('/api/queue/workers', (_req: Request, res: Response) => {
+  res.json({ workers: taskQueue.listWorkers() });
+});
+
+// ─── Remove a worker ─────────────────────────────────────────────
+
+app.delete('/api/queue/workers/:workerId', (req: Request, res: Response) => {
+  const ok = taskQueue.removeWorker(req.params.workerId);
+  if (!ok) {
+    res.status(404).json({ error: 'Worker not found' });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// ─── Rate limits ─────────────────────────────────────────────────
+
+app.post('/api/queue/rate-limits', (req: Request, res: Response) => {
+  const { key, maxPerHour, maxPerDay } = req.body;
+  if (!key || maxPerHour === undefined || maxPerDay === undefined) {
+    res.status(400).json({ error: 'key, maxPerHour, and maxPerDay are required' });
+    return;
+  }
+  taskQueue.setRateLimit(key, maxPerHour, maxPerDay);
+  res.json({ success: true, key, maxPerHour, maxPerDay });
+});
+
+// ─── Queue control ───────────────────────────────────────────────
+
+app.post('/api/queue/control/start', (_req: Request, res: Response) => {
+  taskQueue.start();
+  res.json({ success: true, running: true });
+});
+
+app.post('/api/queue/control/stop', (_req: Request, res: Response) => {
+  taskQueue.stop();
+  res.json({ success: true, running: false });
+});
+
+app.post('/api/queue/control/cleanup', (req: Request, res: Response) => {
+  const olderThanMs = req.body.olderThanMs || 7 * 24 * 60 * 60 * 1000;
+  const removed = taskQueue.cleanup(olderThanMs);
+  res.json({ success: true, removed });
+});
+
 // ─── Start Server ────────────────────────────────────────────────
 
 export function startServer(port: number = PORT): void {
@@ -935,6 +1102,20 @@ export function startServer(port: number = PORT): void {
     console.log(`   Niches:         POST /api/feedback/niches                {niches[]}`);
     console.log(`   Tweets:         GET  /api/feedback/tweets?classification=&status=`);
     console.log(`   Due:            GET  /api/feedback/due`);
+    console.log(`\n   ── UNIVERSAL QUEUE ──`);
+    console.log(`   Submit:         POST /api/queue/submit                   {type, payload, platform?, priority?}`);
+    console.log(`   Submit batch:   POST /api/queue/submit/batch             {tasks[]}`);
+    console.log(`   Get task:       GET  /api/queue/:taskId`);
+    console.log(`   List tasks:     GET  /api/queue?status=&type=&platform=&limit=`);
+    console.log(`   Cancel:         POST /api/queue/cancel/:taskId`);
+    console.log(`   Stats:          GET  /api/queue/stats`);
+    console.log(`   Add worker:     POST /api/queue/workers                  {name, url, taskPatterns[]}`);
+    console.log(`   List workers:   GET  /api/queue/workers`);
+    console.log(`   Remove worker:  DELETE /api/queue/workers/:id`);
+    console.log(`   Rate limits:    POST /api/queue/rate-limits              {key, maxPerHour, maxPerDay}`);
+    console.log(`   Start queue:    POST /api/queue/control/start`);
+    console.log(`   Stop queue:     POST /api/queue/control/stop`);
+    console.log(`   Cleanup:        POST /api/queue/control/cleanup          {olderThanMs?}`);
     console.log(`\n   ── WEBHOOKS ──`);
     console.log(`   List:           GET  /api/webhooks`);
     console.log(`   Register:       POST /api/webhooks                      {url, events[], secret?}`);
@@ -947,10 +1128,12 @@ export function startServer(port: number = PORT): void {
     console.log(`   Trigger now:    POST /api/scheduler/trigger`);
     console.log(`\n   Platforms: ${PLATFORMS.join(', ')}`);
     console.log(`   Output dir: ${DEFAULT_OUTPUT_DIR}`);
-    console.log(`   Webhooks: ${loadWebhooks().length} registered\n`);
+    console.log(`   Webhooks: ${loadWebhooks().length} registered`);
+    console.log(`   Queue workers: ${taskQueue.listWorkers().length}\n`);
 
-    // Auto-start the scheduler
+    // Auto-start
     startAutoScheduler();
+    taskQueue.start();
   });
 }
 

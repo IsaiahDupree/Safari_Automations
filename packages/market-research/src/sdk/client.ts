@@ -306,4 +306,97 @@ export class ResearchClient {
   async triggerScheduler(): Promise<any> {
     return this.request('POST', '/api/scheduler/trigger');
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Universal Task Queue
+  // ═══════════════════════════════════════════════════════════════
+
+  async submitTask(opts: {
+    type: string;
+    payload: Record<string, any>;
+    platform?: string;
+    priority?: 'critical' | 'high' | 'medium' | 'low';
+    scheduledFor?: string;
+    maxRetries?: number;
+    webhookUrl?: string;
+    callbackId?: string;
+    submittedBy?: string;
+    tags?: string[];
+    notes?: string;
+  }): Promise<{ success: boolean; task: any }> {
+    return this.request('POST', '/api/queue/submit', opts);
+  }
+
+  async submitTaskBatch(tasks: Array<{
+    type: string;
+    payload: Record<string, any>;
+    platform?: string;
+    priority?: string;
+    webhookUrl?: string;
+  }>): Promise<{ success: boolean; submitted: number; tasks: any[] }> {
+    return this.request('POST', '/api/queue/submit/batch', { tasks });
+  }
+
+  async getTask(taskId: string): Promise<any> {
+    return this.request('GET', `/api/queue/${taskId}`);
+  }
+
+  async listQueueTasks(filters?: {
+    status?: string;
+    type?: string;
+    platform?: string;
+    limit?: number;
+    submittedBy?: string;
+  }): Promise<{ tasks: any[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set('status', filters.status);
+    if (filters?.type) params.set('type', filters.type);
+    if (filters?.platform) params.set('platform', filters.platform);
+    if (filters?.limit) params.set('limit', String(filters.limit));
+    if (filters?.submittedBy) params.set('submittedBy', filters.submittedBy);
+    const qs = params.toString();
+    return this.request('GET', `/api/queue${qs ? '?' + qs : ''}`);
+  }
+
+  async cancelTask(taskId: string): Promise<{ success: boolean; task: any }> {
+    return this.request('POST', `/api/queue/cancel/${taskId}`);
+  }
+
+  async queueStats(): Promise<any> {
+    return this.request('GET', '/api/queue/stats');
+  }
+
+  async registerWorker(opts: {
+    name: string;
+    url: string;
+    taskPatterns: string[];
+    platforms?: string[];
+    maxConcurrent?: number;
+  }): Promise<{ success: boolean; worker: any }> {
+    return this.request('POST', '/api/queue/workers', opts);
+  }
+
+  async listQueueWorkers(): Promise<{ workers: any[] }> {
+    return this.request('GET', '/api/queue/workers');
+  }
+
+  async removeQueueWorker(workerId: string): Promise<{ success: boolean }> {
+    return this.request('DELETE', `/api/queue/workers/${workerId}`);
+  }
+
+  async setRateLimit(key: string, maxPerHour: number, maxPerDay: number): Promise<any> {
+    return this.request('POST', '/api/queue/rate-limits', { key, maxPerHour, maxPerDay });
+  }
+
+  async startQueue(): Promise<any> {
+    return this.request('POST', '/api/queue/control/start');
+  }
+
+  async stopQueue(): Promise<any> {
+    return this.request('POST', '/api/queue/control/stop');
+  }
+
+  async cleanupQueue(olderThanMs?: number): Promise<{ success: boolean; removed: number }> {
+    return this.request('POST', '/api/queue/control/cleanup', { olderThanMs });
+  }
 }
