@@ -1,13 +1,13 @@
 /**
  * Twitter Reply Integration Test (REAL — no mocks)
  *
- * This test drives Safari in real-time to:
+ * Exercises the full reliable TwitterDriver pipeline:
  *   1. Verify Safari is open & logged into Twitter/X
- *   2. Navigate to @isaiahdupree's profile
+ *   2. Navigate to @IsaiahDupree7's profile
  *   3. Extract the latest tweet URL
- *   4. Navigate to that tweet
- *   5. Post a timestamped test reply
- *   6. Verify the reply appeared on the page
+ *   4. Navigate to that tweet using TwitterDriver.navigateToPost (smart wait)
+ *   5. Post a reply using TwitterDriver.postComment (3-strategy typing, retry, verify)
+ *   6. Assert the result reports success + verified + strategy used
  *
  * Requirements:
  *   - Safari must be running with a window open
@@ -15,7 +15,6 @@
  *   - macOS Accessibility permissions for osascript
  *
  * Run:  npx vitest run src/__tests__/twitter-post-reply.integration.test.ts
- *   or: npx tsx src/__tests__/twitter-post-reply.integration.test.ts  (standalone)
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -24,13 +23,14 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { TwitterDriver, type PostResult } from '../automation/twitter-driver.js';
 
 const execAsync = promisify(exec);
 
 const TWITTER_HANDLE = 'IsaiahDupree7';
 const PROFILE_URL = `https://x.com/${TWITTER_HANDLE}`;
 
-// ─── Helpers ─────────────────────────────────────────────────
+// ─── Helpers (minimal — the driver handles the hard parts) ──
 
 async function executeJS(script: string): Promise<string> {
   const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
@@ -45,60 +45,28 @@ async function executeJS(script: string): Promise<string> {
   }
 }
 
-async function navigate(url: string): Promise<void> {
-  const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
-}
-
 async function wait(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
-}
-
-async function waitForSelector(selector: string, timeoutMs = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const found = await executeJS(`(function(){ return document.querySelector('${selector}') ? 'found' : 'missing'; })()`);
-    if (found === 'found') return true;
-    await wait(500);
-  }
-  return false;
-}
-
-async function typeViaExecCommand(text: string): Promise<string> {
-  // execCommand('insertText') is the one method React/Draft.js recognises
-  // because Draft.js hooks the browser's native 'beforeinput' handling.
-  const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-  return executeJS(`
-    (function() {
-      var el = document.querySelector('[data-testid="tweetTextarea_0"]');
-      if (!el) return 'no_input';
-      el.focus();
-      var ok = document.execCommand('insertText', false, '${escaped}');
-      if (!ok) {
-        // Fallback: dispatch InputEvent directly
-        el.textContent = '${escaped}';
-        el.dispatchEvent(new InputEvent('beforeinput', {bubbles:true, inputType:'insertText', data:'${escaped}'}));
-        el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'${escaped}'}));
-        return 'fallback';
-      }
-      return 'typed';
-    })()
-  `);
 }
 
 // ─── Tests ───────────────────────────────────────────────────
 
 describe('Twitter Reply (real Safari)', () => {
+  let driver: TwitterDriver;
   let latestTweetUrl = '';
   const testReplyText = `Automated test reply — ${new Date().toISOString().slice(0, 19)}`;
 
-  // ─── Pre-flight ──────────────────────────────────────────
-
   beforeAll(async () => {
-    // Make sure Safari is frontmost
+    driver = new TwitterDriver({
+      maxRetries: 3,
+      screenshotOnFailure: true,
+      screenshotDir: '/tmp/twitter-automation-screenshots',
+    });
     await execAsync(`osascript -e 'tell application "Safari" to activate'`).catch(() => null);
     await wait(500);
   }, 10000);
+
+  // ─── Pre-flight ──────────────────────────────────────────
 
   it('Safari is running and has a window', async () => {
     const { stdout } = await execAsync(
@@ -109,46 +77,32 @@ describe('Twitter Reply (real Safari)', () => {
     expect(count).toBeGreaterThan(0);
   }, 10000);
 
-  it('is logged in to Twitter/X', async () => {
-    await navigate('https://x.com/home');
+  it('is logged in to Twitter/X (via TwitterDriver.getStatus)', async () => {
+    // Navigate to x.com first so getStatus can check login selectors
+    await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "https://x.com/home"'`);
     await wait(4000);
 
-    const loggedIn = await waitForSelector('[data-testid="AppTabBar_Profile_Link"]', 10000);
-    if (!loggedIn) {
-      // Fallback check
-      const altCheck = await executeJS(`(function(){
-        return document.querySelector('[data-testid="SideNav_NewTweet_Button"]') ? 'yes' : 'no';
-      })()`);
-      expect(altCheck).toBe('yes');
-      return;
-    }
-    expect(loggedIn).toBe(true);
-    console.log('   ✅ Logged in to Twitter/X');
+    const status = await driver.getStatus();
+    console.log(`   Twitter status: ${JSON.stringify(status)}`);
+    expect(status.isLoggedIn).toBe(true);
   }, 20000);
 
   // ─── Find latest tweet ──────────────────────────────────
 
   it('navigates to profile and extracts latest tweet URL', async () => {
-    await navigate(PROFILE_URL);
-    await wait(4000);
-
-    // Wait for tweets to render
-    const tweetsLoaded = await waitForSelector('[data-testid="tweet"]', 10000);
-    expect(tweetsLoaded).toBe(true);
+    // Navigate and use smart wait for tweet rendering
+    const ok = await driver.navigateToPost(PROFILE_URL);
+    expect(ok).toBe(true);
 
     // Extract the first tweet's permalink
     const tweetUrl = await executeJS(`
       (function() {
-        var tweets = document.querySelectorAll('article[data-testid="tweet"]');
+        var tweets = document.querySelectorAll('article[data-testid="tweet"], article[role="article"]');
         if (!tweets.length) return 'no_tweets';
-
-        // Find the first status link inside the first tweet
         var links = tweets[0].querySelectorAll('a[href*="/status/"]');
         for (var i = 0; i < links.length; i++) {
           var href = links[i].getAttribute('href');
-          if (href && href.match(/\\/status\\/\\d+$/)) {
-            return 'https://x.com' + href;
-          }
+          if (href && href.match(/\\/status\\/\\d+$/)) return 'https://x.com' + href;
         }
         return 'no_link';
       })()
@@ -159,129 +113,50 @@ describe('Twitter Reply (real Safari)', () => {
     latestTweetUrl = tweetUrl;
   }, 20000);
 
-  // ─── Navigate to tweet ──────────────────────────────────
+  // ─── Navigate + post reply via driver ───────────────────
 
-  it('navigates to the tweet page', async () => {
+  it('navigates to tweet and posts reply via TwitterDriver.postComment', async () => {
     expect(latestTweetUrl).toBeTruthy();
-    await navigate(latestTweetUrl);
-    await wait(4000);
 
-    // Verify we're on a tweet detail page
-    const onTweet = await waitForSelector('[data-testid="tweet"]', 10000);
-    expect(onTweet).toBe(true);
+    // Navigate using driver (smart wait for tweet to render)
+    const navOk = await driver.navigateToPost(latestTweetUrl);
+    expect(navOk).toBe(true);
 
-    // Get the tweet text for logging
-    const tweetText = await executeJS(`
-      (function() {
-        var tweet = document.querySelector('article[data-testid="tweet"]');
-        if (!tweet) return '';
-        var textEl = tweet.querySelector('[data-testid="tweetText"]');
-        return textEl ? textEl.innerText.substring(0, 120) : '(no text)';
-      })()
-    `);
-    console.log(`   Tweet content: "${tweetText}"`);
-  }, 20000);
+    // Post reply — exercises full pipeline:
+    //   retry loop → error detection → multi-selector click →
+    //   3-strategy typing → typing verification → submit → verify
+    console.log(`   Posting: "${testReplyText}"`);
+    const result: PostResult = await driver.postComment(testReplyText);
 
-  // ─── Post reply ─────────────────────────────────────────
-
-  it('opens the reply composer and posts a reply', async () => {
-    // Step 1: Click reply button on the main tweet
-    const clickResult = await executeJS(`
-      (function() {
-        var tweets = document.querySelectorAll('[data-testid="tweet"]');
-        if (tweets.length === 0) return 'no_tweets';
-        var mainTweet = tweets[0];
-        var replyBtn = mainTweet.querySelector('[data-testid="reply"]');
-        if (replyBtn) { replyBtn.click(); return 'clicked'; }
-        return 'no_reply_btn';
-      })()
-    `);
-    console.log(`   Reply button click: ${clickResult}`);
-    expect(clickResult).toBe('clicked');
-    await wait(2000);
-
-    // Step 2: Wait for reply input
-    const inputReady = await waitForSelector('[data-testid="tweetTextarea_0"]', 8000);
-    expect(inputReady).toBe(true);
-
-    // Step 3: Focus the input
-    const focusResult = await executeJS(`
-      (function() {
-        var input = document.querySelector('[data-testid="tweetTextarea_0"]');
-        if (input) { input.focus(); input.click(); return 'focused'; }
-        return 'not_found';
-      })()
-    `);
-    expect(focusResult).toBe('focused');
-    await wait(300);
-
-    // Step 4: Type reply via execCommand (the only method React/Draft.js recognises)
-    console.log(`   Typing: "${testReplyText}"`);
-    const typed = await typeViaExecCommand(testReplyText);
-    console.log(`   Type result: ${typed}`);
-    expect(['typed', 'fallback']).toContain(typed);
-    await wait(1500);
-
-    // Step 5: Click submit (retry, checking multiple button selectors)
-    let submitResult = 'pending';
-    for (let attempt = 0; attempt < 6; attempt++) {
-      submitResult = await executeJS(`
-        (function() {
-          // Try inline reply button first
-          var btn = document.querySelector('[data-testid="tweetButtonInline"]');
-          if (btn && !btn.disabled) { btn.click(); return 'submitted_inline'; }
-          // Try dialog reply/post button
-          btn = document.querySelector('[data-testid="tweetButton"]');
-          if (btn && !btn.disabled) { btn.click(); return 'submitted_dialog'; }
-          // Try any enabled Reply/Post button in a dialog
-          var dialog = document.querySelector('[role="dialog"]');
-          if (dialog) {
-            var btns = dialog.querySelectorAll('button');
-            for (var i = 0; i < btns.length; i++) {
-              var t = (btns[i].innerText || '').trim();
-              if ((t === 'Reply' || t === 'Post') && !btns[i].disabled) {
-                btns[i].click();
-                return 'submitted_' + t.toLowerCase();
-              }
-            }
-          }
-          if (btn && btn.disabled) return 'disabled';
-          return 'no_button';
-        })()
-      `);
-      if (submitResult.startsWith('submitted')) break;
-      console.log(`   Submit attempt ${attempt + 1}: ${submitResult}`);
-      await wait(1000);
-    }
-    console.log(`   Submit result: ${submitResult}`);
-    expect(submitResult).toMatch(/^submitted/);
-  }, 30000);
+    console.log(`   Result: ${JSON.stringify(result)}`);
+    expect(result.success).toBe(true);
+    expect(result.strategy).toBeTruthy();
+    expect(result.attempts).toBeGreaterThan(0);
+    expect(result.durationMs).toBeGreaterThan(0);
+    console.log(`   Strategy: ${result.strategy}`);
+    console.log(`   Attempts: ${result.attempts}`);
+    console.log(`   Duration: ${result.durationMs}ms`);
+  }, 45000);
 
   // ─── Verify reply ──────────────────────────────────────
 
   it('verifies the reply appeared on the page', async () => {
-    // Wait for the reply to appear (Twitter needs time to process)
-    await wait(4000);
+    await wait(3000);
 
     const snippet = testReplyText.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     let verified = false;
 
-    // Retry verification a few times (reply might take a moment)
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
       const result = await executeJS(`
         (function() {
-          var tweets = document.querySelectorAll('[data-testid="tweetText"]');
-          for (var i = 0; i < tweets.length; i++) {
-            if (tweets[i].innerText.includes('${snippet}')) return 'verified';
+          var els = document.querySelectorAll('[data-testid="tweetText"], div[lang] > span');
+          for (var i = 0; i < els.length; i++) {
+            if (els[i].innerText.includes('${snippet}')) return 'verified';
           }
           return 'not_found';
         })()
       `);
-
-      if (result === 'verified') {
-        verified = true;
-        break;
-      }
+      if (result === 'verified') { verified = true; break; }
       console.log(`   Verification attempt ${attempt + 1}: ${result}`);
       await wait(2000);
     }
@@ -291,4 +166,13 @@ describe('Twitter Reply (real Safari)', () => {
     console.log(`   Tweet URL: ${latestTweetUrl}`);
     expect(verified).toBe(true);
   }, 30000);
+
+  // ─── Rate limiter works ────────────────────────────────
+
+  it('rate limiter reports the posted comment', () => {
+    const limits = driver.getRateLimits();
+    console.log(`   Rate limits: ${JSON.stringify(limits)}`);
+    expect(limits.commentsThisHour).toBeGreaterThanOrEqual(1);
+    expect(limits.commentsToday).toBeGreaterThanOrEqual(1);
+  });
 });
