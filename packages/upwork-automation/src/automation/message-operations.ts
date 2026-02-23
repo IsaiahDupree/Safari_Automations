@@ -155,12 +155,13 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 export async function openConversation(clientName: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
 
+  const safeName = clientName.toLowerCase().replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ');
   const result = await d.executeJS(`
     (function() {
       var items = document.querySelectorAll('a.room-list-item');
       for (var item of items) {
         var nameEl = item.querySelector('.item-title');
-        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${clientName.toLowerCase().replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')) {
+        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${safeName}')) {
           item.click();
           return 'opened';
         }
@@ -246,7 +247,7 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
   }
 
   // Verify message was sent by checking last story item
-  const snippet = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const snippet = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ');
   const verified = await d.executeJS(`
     (function() {
       var items = document.querySelectorAll('.up-d-story-item');

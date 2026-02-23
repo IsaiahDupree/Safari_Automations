@@ -301,7 +301,8 @@ export class SoraFullAutomation {
     const filePath = path.join(this.config.downloadPath, filename);
 
     try {
-      await execAsync(`curl -L -o "${filePath}" "${videoUrl}"`, {
+      const safeUrl = videoUrl.replace(/[`$\\!"]/g, '\\$&');
+      await execAsync(`curl -L -o "${filePath}" "${safeUrl}"`, {
         timeout: 120000, // 2 minute timeout
       });
 

@@ -160,13 +160,20 @@ Make the prompts cinematic, emotional, and visually striking. Each prompt should
         { role: 'user', content: userPrompt }
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.8
+      temperature: 0.8,
+    }, {
+      timeout: 30000, // 30s timeout to prevent indefinite blocking
     });
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error('No response from OpenAI');
 
-    const parsed = JSON.parse(content);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error(`OpenAI returned invalid JSON: ${content.substring(0, 200)}`);
+    }
     return parsed.prompts || parsed.videos || parsed;
   }
 
@@ -242,6 +249,7 @@ Make the prompts cinematic, emotional, and visually striking. Each prompt should
       console.log(`   Theme: ${story.theme}`);
       console.log('═'.repeat(70));
 
+      const sora = new SoraFullAutomation();
       for (const video of story.videos) {
         if ((story.id || 0) === startMovie && video.part < startPart) continue;
 
@@ -250,7 +258,6 @@ Make the prompts cinematic, emotional, and visually striking. Each prompt should
         console.log(`   Prompt: ${video.prompt.slice(0, 80)}...`);
 
         try {
-          const sora = new SoraFullAutomation();
           const result = await sora.fullRun(video.prompt);
 
           if (result.download?.success && result.download.filePath) {

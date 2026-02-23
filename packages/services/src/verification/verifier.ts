@@ -36,6 +36,11 @@ export class ActionVerifier {
   private executeJS?: (code: string) => Promise<string | null>;
   private getCurrentURL?: () => Promise<string>;
 
+  /** Escape a string for safe interpolation inside single-quoted JS strings */
+  private static escapeJS(s: string): string {
+    return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  }
+
   constructor(
     auditLogger: AuditLogger,
     config: Partial<VerifierConfig> = {}
@@ -192,7 +197,7 @@ export class ActionVerifier {
     
     const js = `
       (function() {
-        var el = document.querySelector('${check.selector}');
+        var el = document.querySelector('${ActionVerifier.escapeJS(check.selector)}');
         return el ? 'found' : 'not_found';
       })();
     `;
@@ -227,7 +232,7 @@ export class ActionVerifier {
     
     const js = `
       (function() {
-        var el = document.querySelector('${check.selector}');
+        var el = document.querySelector('${ActionVerifier.escapeJS(check.selector)}');
         if (!el) return JSON.stringify({ found: false, visible: false });
         
         var rect = el.getBoundingClientRect();
@@ -281,7 +286,7 @@ export class ActionVerifier {
     const selector = check.selector || 'body';
     const js = `
       (function() {
-        var el = document.querySelector('${selector}');
+        var el = document.querySelector('${ActionVerifier.escapeJS(selector)}');
         return el ? el.innerText : '';
       })();
     `;
@@ -317,7 +322,7 @@ export class ActionVerifier {
     
     const js = `
       (function() {
-        var el = document.querySelector('${check.selector}');
+        var el = document.querySelector('${ActionVerifier.escapeJS(check.selector!)}');
         return el ? el.innerText.trim() : '';
       })();
     `;
@@ -396,7 +401,7 @@ export class ActionVerifier {
     
     const js = `
       (function() {
-        var el = document.querySelector('${check.selector}');
+        var el = document.querySelector('${ActionVerifier.escapeJS(check.selector!)}');
         if (!el) return JSON.stringify({ found: false });
         
         var ariaLabel = el.getAttribute('aria-label') || '';

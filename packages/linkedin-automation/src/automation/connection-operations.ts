@@ -178,50 +178,26 @@ export async function extractProfile(profileUrl: string, driver?: SafariDriver):
   }
   await d.wait(1000);
 
-  // Use text-based extraction — LinkedIn Feb 2026 uses obfuscated classes
-  const nameResult = await d.executeJS(
-    'var m = document.querySelector("main"); var h2s = m ? m.querySelectorAll("h2") : []; var skip = ["activity","experience","education","skills","interests","languages","certifications","recommendations","courses","projects","publications","honors","organizations","volunteering","about","people you may know","you might like","more profiles for you"]; var n = ""; for (var i = 0; i < h2s.length; i++) { var t = h2s[i].innerText.trim(); if (t.length > 2 && t.length < 60 && skip.indexOf(t.toLowerCase()) === -1 && t.indexOf("notification") === -1 && t.indexOf("Ad ") !== 0 && t.indexOf("Don") !== 0) { n = t; break; } } n'
-  );
-
-  const introResult = await d.executeJS(
-    'var m = document.querySelector("main"); if(!m) "{}"; var NL = String.fromCharCode(10); var txt = m.innerText; var lines = txt.split(NL).map(function(l){return l.trim()}).filter(function(l){return l.length > 0}); var nameIdx = -1; var name = "' + (nameResult || '').replace(/"/g, '\\"') + '"; for(var i=0;i<lines.length;i++){if(lines[i]===name){nameIdx=i;break}} var headline=""; var loc=""; var degree="out_of_network"; var mutual=0; var sects=["activity","experience","education","skills","interests","about"]; if(nameIdx>=0){for(var li=nameIdx+1;li<Math.min(nameIdx+15,lines.length);li++){var line=lines[li]; if(line.match(/[123](?:st|nd|rd)/i)&&line.length<10){var d2=line.replace(/[^123]/g,""); degree=d2==="1"?"1st":d2==="2"?"2nd":"3rd"; continue} if(line.toLowerCase()==="contact info"||line==="Connect"||line==="Message"||line==="Follow") continue; var mm=line.match(/(\\d+).*mutual/i); if(mm){mutual=parseInt(mm[1])||0;continue} if(line.toLowerCase().indexOf("mutual")!==-1) continue; if(sects.indexOf(line.toLowerCase())!==-1) break; if(line==="Show all") break; if(!headline&&line.length>5&&line!==name){headline=line;continue} if(headline&&!loc&&(line.indexOf(",")!==-1||line.indexOf("United States")!==-1)){loc=line;continue}}} JSON.stringify({headline:headline,location:loc,connectionDegree:degree,mutualConnections:mutual})'
-  );
-
-  const expResult = await d.executeJS(
-    'var m=document.querySelector("main"); if(!m) "{}"; var NL=String.fromCharCode(10); var lines=m.innerText.split(NL).map(function(l){return l.trim()}).filter(function(l){return l.length>0}); var sects=["activity","experience","education","skills","interests","about","people you may know","you might like","more profiles for you"]; var ei=-1; for(var i=0;i<lines.length;i++){if(lines[i].toLowerCase()==="experience"){ei=i;break}} if(ei<0) "{}"; else { var end=lines.length; for(var j=ei+1;j<lines.length;j++){if(sects.indexOf(lines[j].toLowerCase())!==-1){end=j;break}} var el=lines.slice(ei+1,Math.min(ei+8,end)); if(el.length>=2){var dur=""; for(var k=2;k<el.length;k++){if(el[k].match(/\\d{4}|\\d+\\s+(yr|mo)/i)){dur=el[k];break}} JSON.stringify({title:el[0],company:el[1],duration:dur})} else "{}"}'
-  );
-
-  const skillsResult = await d.executeJS(
-    'var m=document.querySelector("main"); if(!m) "[]"; var NL=String.fromCharCode(10); var lines=m.innerText.split(NL).map(function(l){return l.trim()}).filter(function(l){return l.length>0}); var sects=["activity","experience","education","skills","interests","about","people you may know","you might like","more profiles for you"]; var si=-1; for(var i=0;i<lines.length;i++){if(lines[i].toLowerCase()==="skills"){si=i;break}} if(si<0) "[]"; else { var end=lines.length; for(var j=si+1;j<lines.length;j++){if(sects.indexOf(lines[j].toLowerCase())!==-1){end=j;break}} var sl=lines.slice(si+1,end); var sk=[]; for(var k=0;k<sl.length&&sk.length<10;k++){if(sl[k].length>1&&sl[k].length<60&&sl[k]!=="Show all"&&!sl[k].match(/^\\d+ endorsement/i)) sk.push(sl[k])} JSON.stringify(sk)}'
-  );
-
-  const canConnect = await d.executeJS(
-    'var c=false; var bs=document.querySelectorAll("button"); for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||"")+ " "+bs[i].innerText; if(l.match(/Connect|Invite.*connect/i)){c=true;break}} if(!c){var as=document.querySelectorAll("a"); for(var j=0;j<as.length;j++){var al=(as[j].getAttribute("aria-label")||"")+ " "+as[j].innerText.trim(); var ah=as[j].href||""; if(al.match(/Connect|Invite.*connect/i)||ah.indexOf("custom-invite")!==-1){c=true;break}}} c?"true":"false"'
-  );
-
-  const canMessage = await d.executeJS(
-    'var c=false; var bs=document.querySelectorAll("button"); for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute("aria-label")||""); if(l.match(/^Message/i)){c=true;break}} if(!c){var as=document.querySelectorAll("a"); for(var j=0;j<as.length;j++){var al=(as[j].getAttribute("aria-label")||"")+ " "+as[j].innerText.trim(); var ah=as[j].href||""; if(al.match(/^Message/i)||ah.indexOf("/messaging/compose")!==-1){c=true;break}}} c?"true":"false"'
-  );
+  // Single round-trip using combined PROFILE_EXTRACTION_JS (was 5 separate calls)
+  const rawResult = await d.executeJS(PROFILE_EXTRACTION_JS);
 
   try {
-    const intro = JSON.parse(introResult || '{}');
-    const exp = JSON.parse(expResult || '{}');
-    const skills = JSON.parse(skillsResult || '[]');
+    const data = JSON.parse(rawResult || '{}');
 
     return {
       profileUrl: nav.currentUrl || profileUrl,
-      name: nameResult || '',
-      headline: intro.headline || '',
-      location: intro.location || '',
-      about: '',
-      currentPosition: exp.title ? exp : undefined,
-      connectionDegree: intro.connectionDegree || 'out_of_network',
-      mutualConnections: intro.mutualConnections || 0,
-      isOpenToWork: false,
-      isHiring: false,
-      skills: Array.isArray(skills) ? skills : [],
-      canConnect: canConnect === 'true',
-      canMessage: canMessage === 'true',
+      name: data.name || '',
+      headline: data.headline || '',
+      location: data.location || '',
+      about: data.about || '',
+      currentPosition: data.currentPosition?.title ? data.currentPosition : undefined,
+      connectionDegree: data.connectionDegree || 'out_of_network',
+      mutualConnections: data.mutualConnections || 0,
+      isOpenToWork: data.isOpenToWork || false,
+      isHiring: data.isHiring || false,
+      skills: Array.isArray(data.skills) ? data.skills : [],
+      canConnect: data.canConnect || false,
+      canMessage: data.canMessage || false,
       scrapedAt: new Date().toISOString(),
     } as any;
   } catch {
@@ -518,7 +494,7 @@ export async function acceptRequest(profileUrl: string, driver?: SafariDriver): 
       var cards = document.querySelectorAll('.invitation-card, .mn-invitation-list li');
       for (var card of cards) {
         var link = card.querySelector('a[href*="/in/"]');
-        if (link && link.href.includes('${profileUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')) {
+        if (link && link.href.includes('${profileUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '')}')) {
           var btn = card.querySelector('button[aria-label*="Accept"]');
           if (btn) { btn.click(); return 'accepted'; }
         }

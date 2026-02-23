@@ -36,6 +36,10 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    if (!response.ok) {
+      console.error(`[AI] OpenAI returned ${response.status}`);
+      return `Hey! Love your content, wanted to connect! 🙌`;
+    }
     const data = await response.json() as { choices?: { message?: { content?: string } }[] };
     return data.choices?.[0]?.message?.content?.trim() || `Hey! Love your content, wanted to connect! 🙌`;
   } catch {
