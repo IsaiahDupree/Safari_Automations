@@ -38,6 +38,8 @@ import { ThreadsResearcher } from '../../../threads-comments/src/automation/thre
 import { InstagramResearcher } from '../../../instagram-comments/src/automation/instagram-researcher.js';
 import { FacebookResearcher } from '../../../facebook-comments/src/automation/facebook-researcher.js';
 import { TikTokResearcher } from '../../../tiktok-comments/src/automation/tiktok-researcher.js';
+import { TwitterFeedbackLoop } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
+import type { OfferContext, NicheContext } from '../../../twitter-comments/src/automation/twitter-feedback-loop.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -527,23 +529,197 @@ app.get('/api/research/download/*', (req: Request, res: Response) => {
   res.download(filepath);
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// TWITTER FEEDBACK LOOP API
+// ═══════════════════════════════════════════════════════════════════
+
+const feedbackLoop = new TwitterFeedbackLoop();
+
+// ─── Feedback loop status ────────────────────────────────────────
+
+app.get('/api/feedback/status', (_req: Request, res: Response) => {
+  res.json(feedbackLoop.getStatus());
+});
+
+// ─── Register a posted tweet for tracking ────────────────────────
+
+app.post('/api/feedback/register', (req: Request, res: Response) => {
+  const { tweetUrl, text, niche, offer } = req.body;
+  if (!tweetUrl || !text) {
+    res.status(400).json({ error: 'tweetUrl and text are required' });
+    return;
+  }
+
+  const tracked = feedbackLoop.registerPostedTweet(tweetUrl, text, niche || 'general', offer || '');
+  res.json({ success: true, tweet: tracked });
+});
+
+// ─── Run scheduled check-backs ───────────────────────────────────
+
+app.post('/api/feedback/check-backs', async (_req: Request, res: Response) => {
+  try {
+    const results = await feedbackLoop.runCheckBacks();
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Extract metrics for a specific tweet URL ────────────────────
+
+app.post('/api/feedback/metrics', async (req: Request, res: Response) => {
+  const { tweetUrl } = req.body;
+  if (!tweetUrl) {
+    res.status(400).json({ error: 'tweetUrl is required' });
+    return;
+  }
+
+  try {
+    const metrics = await feedbackLoop.tracker.extractMetrics(tweetUrl);
+    res.json({ success: !!metrics, tweetUrl, metrics });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Analyze performance & update strategy ───────────────────────
+
+app.post('/api/feedback/analyze', (_req: Request, res: Response) => {
+  try {
+    const strategy = feedbackLoop.analyze();
+    res.json({ success: true, strategy });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Get current strategy context ────────────────────────────────
+
+app.get('/api/feedback/strategy', (_req: Request, res: Response) => {
+  const strategy = feedbackLoop.refiner.loadStrategy();
+  if (!strategy) {
+    res.status(404).json({ error: 'No strategy generated yet. POST /api/feedback/analyze first.' });
+    return;
+  }
+  res.json(strategy);
+});
+
+// ─── Generate optimized tweet prompt ─────────────────────────────
+
+app.post('/api/feedback/generate-prompt', (req: Request, res: Response) => {
+  const { niche, style, offer } = req.body;
+  if (!niche) {
+    res.status(400).json({ error: 'niche is required' });
+    return;
+  }
+
+  const prompt = feedbackLoop.generateTweetPrompt(niche, { style, offer });
+  res.json({ niche, style: style || 'educational', prompt });
+});
+
+// ─── Run full feedback cycle (check → analyze → generate) ───────
+
+app.post('/api/feedback/cycle', async (req: Request, res: Response) => {
+  const { niche, style, offer } = req.body;
+  if (!niche) {
+    res.status(400).json({ error: 'niche is required' });
+    return;
+  }
+
+  try {
+    const result = await feedbackLoop.runCycle(niche, { style, offer });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Set offers for promotion context ────────────────────────────
+
+app.post('/api/feedback/offers', (req: Request, res: Response) => {
+  const { offers } = req.body;
+  if (!offers || !Array.isArray(offers)) {
+    res.status(400).json({ error: 'offers array is required' });
+    return;
+  }
+  feedbackLoop.setOffers(offers as OfferContext[]);
+  res.json({ success: true, count: offers.length });
+});
+
+app.get('/api/feedback/offers', (_req: Request, res: Response) => {
+  res.json({ offers: feedbackLoop.getOffers() });
+});
+
+// ─── Set niche context for prompt refinement ─────────────────────
+
+app.post('/api/feedback/niches', (req: Request, res: Response) => {
+  const { niches } = req.body;
+  if (!niches || !Array.isArray(niches)) {
+    res.status(400).json({ error: 'niches array is required' });
+    return;
+  }
+  feedbackLoop.setNiches(niches as NicheContext[]);
+  res.json({ success: true, count: niches.length });
+});
+
+app.get('/api/feedback/niches', (_req: Request, res: Response) => {
+  res.json({ niches: feedbackLoop.getNiches() });
+});
+
+// ─── List all tracked tweets ─────────────────────────────────────
+
+app.get('/api/feedback/tweets', (req: Request, res: Response) => {
+  const classification = req.query.classification as string;
+  const status = req.query.status as string;
+
+  let tweets = feedbackLoop.tracker.getAllTweets();
+
+  if (classification) {
+    tweets = tweets.filter(t => t.classification === classification);
+  }
+  if (status === 'pending') {
+    tweets = feedbackLoop.tracker.getPending();
+  } else if (status === 'tracked') {
+    tweets = feedbackLoop.tracker.getFullyTracked();
+  }
+
+  res.json({ tweets, count: tweets.length });
+});
+
+// ─── Get tweets due for check-back ───────────────────────────────
+
+app.get('/api/feedback/due', (_req: Request, res: Response) => {
+  const due = feedbackLoop.tracker.getDueForCheckBack();
+  res.json({ due, count: due.length });
+});
+
 // ─── Start Server ────────────────────────────────────────────────
 
 export function startServer(port: number = PORT): void {
   app.listen(port, () => {
     console.log(`\n🔬 Market Research API running on http://localhost:${port}`);
-    console.log(`   Health:         GET  /health`);
+    console.log(`\n   ── RESEARCH ──`);
     console.log(`   Platforms:      GET  /api/research/platforms`);
     console.log(`   Search:         POST /api/research/:platform/search       {query}`);
-    console.log(`   Niche:          POST /api/research/:platform/niche        {niche, config?}`);
-    console.log(`   Full research:  POST /api/research/:platform/full         {niches[], config?}`);
-    console.log(`   All platforms:  POST /api/research/all/full               {niches[], platforms?, config?}`);
+    console.log(`   Niche:          POST /api/research/:platform/niche        {niche}`);
+    console.log(`   Full research:  POST /api/research/:platform/full         {niches[]}`);
+    console.log(`   All platforms:  POST /api/research/all/full               {niches[]}`);
     console.log(`   Job status:     GET  /api/research/status`);
-    console.log(`   Job detail:     GET  /api/research/status/:jobId`);
-    console.log(`   List results:   GET  /api/research/results?platform=`);
-    console.log(`   Latest result:  GET  /api/research/results/latest/:platform`);
-    console.log(`   Read file:      GET  /api/research/results/file/:path`);
-    console.log(`   Download:       GET  /api/research/download/:path`);
+    console.log(`   Results:        GET  /api/research/results`);
+    console.log(`   Latest:         GET  /api/research/results/latest/:platform`);
+    console.log(`\n   ── FEEDBACK LOOP ──`);
+    console.log(`   Status:         GET  /api/feedback/status`);
+    console.log(`   Register tweet: POST /api/feedback/register              {tweetUrl, text, niche}`);
+    console.log(`   Check-backs:    POST /api/feedback/check-backs`);
+    console.log(`   Extract metrics:POST /api/feedback/metrics               {tweetUrl}`);
+    console.log(`   Analyze:        POST /api/feedback/analyze`);
+    console.log(`   Strategy:       GET  /api/feedback/strategy`);
+    console.log(`   Gen prompt:     POST /api/feedback/generate-prompt       {niche, style?}`);
+    console.log(`   Full cycle:     POST /api/feedback/cycle                 {niche, style?}`);
+    console.log(`   Set offers:     POST /api/feedback/offers                {offers[]}`);
+    console.log(`   Set niches:     POST /api/feedback/niches                {niches[]}`);
+    console.log(`   List tweets:    GET  /api/feedback/tweets?classification=&status=`);
+    console.log(`   Due check-backs:GET  /api/feedback/due`);
     console.log(`\n   Platforms: ${PLATFORMS.join(', ')}`);
     console.log(`   Output dir: ${DEFAULT_OUTPUT_DIR}\n`);
   });
