@@ -278,6 +278,76 @@ export function registerBuiltinWorkers(queue: UniversalTaskQueue, feedbackLoop?:
     },
   });
 
+  // ═══ Medium Worker ══════════════════════════════════════════════
+
+  queue.registerWorker({
+    name: 'Medium Worker',
+    type: 'local',
+    taskPatterns: ['medium.*', 'blog.*'],
+    maxConcurrent: 1,
+    handler: async (task: Task) => {
+      const { type, payload } = task;
+
+      if (type === 'medium.post' || type === 'blog.publish') {
+        return callService(3107, 'POST', '/api/medium/posts/create', {
+          title: payload.title,
+          body: payload.body,
+          tags: payload.tags,
+          subtitle: payload.subtitle,
+          publish: payload.publish,
+        });
+      }
+
+      if (type === 'medium.clap' || type === 'blog.clap') {
+        return callService(3107, 'POST', '/api/medium/articles/clap', {
+          url: payload.url,
+          claps: payload.claps,
+        });
+      }
+
+      if (type === 'medium.respond' || type === 'blog.comment') {
+        return callService(3107, 'POST', '/api/medium/articles/respond', {
+          url: payload.url,
+          text: payload.text,
+        });
+      }
+
+      if (type === 'medium.follow') {
+        return callService(3107, 'POST', '/api/medium/users/follow', {
+          username: payload.username,
+          url: payload.url,
+        });
+      }
+
+      if (type === 'medium.bookmark') {
+        return callService(3107, 'POST', '/api/medium/articles/bookmark', {
+          url: payload.url,
+        });
+      }
+
+      if (type === 'medium.read') {
+        return callService(3107, 'POST', '/api/medium/articles/read', {
+          url: payload.url,
+        });
+      }
+
+      if (type === 'medium.search' || type === 'blog.search') {
+        return callService(3107, 'POST', '/api/medium/search', {
+          query: payload.query,
+          limit: payload.limit,
+        });
+      }
+
+      if (type === 'medium.metrics') {
+        return callService(3107, 'POST', '/api/medium/articles/metrics', {
+          url: payload.url,
+        });
+      }
+
+      throw new Error(`Unknown medium task type: ${type}`);
+    },
+  });
+
   // ═══ Catch-all Remote Worker (for future extensibility) ═══════
 
   // External servers can register their own workers via the API:
