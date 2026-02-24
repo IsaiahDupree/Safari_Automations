@@ -173,6 +173,25 @@ export class UniversalTaskQueue {
         task.startedAt = undefined;
       }
     }
+
+    // Cancel any queued Safari/Medium tasks that were pending from a previous session.
+    // These should never auto-execute on boot — a browser takeover requires explicit intent.
+    const SAFARI_TASK_PREFIXES = ['medium.', 'blog.', 'comment.', 'dm.', 'scrape.'];
+    let cancelledCount = 0;
+    for (const task of this.tasks) {
+      if (task.status === 'queued' || task.status === 'scheduled' || task.status === 'retrying') {
+        const isSafariTask = SAFARI_TASK_PREFIXES.some(prefix => task.type.startsWith(prefix));
+        if (isSafariTask) {
+          task.status = 'cancelled';
+          task.completedAt = new Date().toISOString();
+          task.error = 'Cancelled on restart — Safari tasks require explicit trigger';
+          cancelledCount++;
+        }
+      }
+    }
+    if (cancelledCount > 0) {
+      console.log(`[Queue] ⚠️  Cancelled ${cancelledCount} stale Safari task(s) from previous session`);
+    }
     this.saveTasks();
   }
 
@@ -624,7 +643,8 @@ export class UniversalTaskQueue {
     if (this.processInterval) return;
     this.processInterval = setInterval(() => this.processNext(), this.config.processIntervalMs);
     console.log(`[Queue] Started — processing every ${this.config.processIntervalMs / 1000}s`);
-    setTimeout(() => this.processNext(), 1000);
+    // NOTE: No immediate processNext() call — first tick happens after processIntervalMs.
+    // This prevents a burst of Safari tasks immediately after an external server calls start().
   }
 
   stop(): void {

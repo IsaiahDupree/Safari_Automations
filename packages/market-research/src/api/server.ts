@@ -159,8 +159,8 @@ function startAutoScheduler(): void {
   if (autoSchedulerInterval) return;
   autoSchedulerInterval = setInterval(autoSchedulerTick, AUTO_CHECK_INTERVAL_MS);
   console.log(`[AutoScheduler] Started — checking every ${AUTO_CHECK_INTERVAL_MS / 60000} minutes`);
-  // Run once immediately
-  setTimeout(autoSchedulerTick, 5000);
+  // NOTE: No immediate run — first tick happens after AUTO_CHECK_INTERVAL_MS.
+  // Use POST /api/scheduler/trigger to run immediately on demand.
 }
 
 function stopAutoScheduler(): void {
@@ -1131,9 +1131,19 @@ export function startServer(port: number = PORT): void {
     console.log(`   Webhooks: ${loadWebhooks().length} registered`);
     console.log(`   Queue workers: ${taskQueue.listWorkers().length}\n`);
 
-    // Auto-start
-    startAutoScheduler();
-    taskQueue.start();
+    // Queue and AutoScheduler do NOT auto-start on boot.
+    // They must be explicitly started by an external server:
+    //   POST /api/queue/control/start
+    //   POST /api/scheduler/start
+    // To opt-in to auto-start (e.g. in a dedicated worker environment),
+    // set env var: SAFARI_AUTO_START=true
+    if (process.env.SAFARI_AUTO_START === 'true') {
+      startAutoScheduler();
+      taskQueue.start();
+      console.log('[Server] ⚠️  SAFARI_AUTO_START=true — queue and scheduler started automatically');
+    } else {
+      console.log('[Server] 🔒 Queue and scheduler are PAUSED — start them via API when ready');
+    }
   });
 }
 
