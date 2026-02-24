@@ -21,6 +21,7 @@ import cors from 'cors';
 import { MediumOperations } from '../automation/medium-operations.js';
 import type { PostDraft } from '../automation/medium-operations.js';
 import { MonetizationEngine } from '../automation/monetization-engine.js';
+import { MediumResearcher } from '../automation/medium-researcher.js';
 
 const app = express();
 app.use(cors());
@@ -29,6 +30,7 @@ app.use(express.json({ limit: '5mb' }));
 const PORT = parseInt(process.env.MEDIUM_PORT || '3107');
 const medium = new MediumOperations();
 const monetization = new MonetizationEngine(medium);
+const researcher = new MediumResearcher();
 
 // ─── Health ──────────────────────────────────────────────────
 
@@ -487,6 +489,112 @@ app.get('/api/medium/monetization/reports', async (_req: Request, res: Response)
 });
 
 // ═══════════════════════════════════════════════════════════════
+// MARKET RESEARCH
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Research a Single Niche ─────────────────────────────────
+
+app.post('/api/medium/research/niche', async (req: Request, res: Response) => {
+  try {
+    const { niche } = req.body;
+    if (!niche) {
+      res.status(400).json({ error: 'niche is required (e.g. "artificial-intelligence", "saas", "personal-branding")' });
+      return;
+    }
+    const result = await researcher.researchNiche(niche);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ─── Research Multiple Niches ────────────────────────────────
+
+app.post('/api/medium/research/multi', async (req: Request, res: Response) => {
+  try {
+    const { niches } = req.body;
+    if (!niches || !Array.isArray(niches) || niches.length === 0) {
+      res.status(400).json({ error: 'niches array is required' });
+      return;
+    }
+    const result = await researcher.researchMultipleNiches(niches);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ─── Discover Top Authors Across Niches ──────────────────────
+
+app.post('/api/medium/research/top-authors', async (req: Request, res: Response) => {
+  try {
+    const { niches, minFollowers } = req.body;
+    if (!niches || !Array.isArray(niches) || niches.length === 0) {
+      res.status(400).json({ error: 'niches array is required' });
+      return;
+    }
+    const authors = await researcher.discoverTopAuthors(niches, minFollowers || 1000);
+    res.json({ authors, count: authors.length });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ─── News Summary Across Niches ──────────────────────────────
+
+app.post('/api/medium/research/news', async (req: Request, res: Response) => {
+  try {
+    const { niches } = req.body;
+    if (!niches || !Array.isArray(niches) || niches.length === 0) {
+      res.status(400).json({ error: 'niches array is required' });
+      return;
+    }
+    const summaries = await researcher.getNewsSummary(niches);
+    res.json({ summaries, count: summaries.length });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ─── Research + Forward to External Server ───────────────────
+
+app.post('/api/medium/research/forward', async (req: Request, res: Response) => {
+  try {
+    const { niches, webhook } = req.body;
+    if (!niches || !Array.isArray(niches) || niches.length === 0) {
+      res.status(400).json({ error: 'niches array is required' });
+      return;
+    }
+    if (!webhook || !webhook.url) {
+      res.status(400).json({ error: 'webhook.url is required' });
+      return;
+    }
+    const result = await researcher.researchAndForward(niches, webhook);
+    res.json({
+      researchSummary: {
+        niches: result.research.niches.length,
+        totalAuthors: result.research.allTopAuthors.length,
+        totalArticles: result.research.allTrendingArticles.length,
+      },
+      forwarded: result.forwarded,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ─── Saved Research ──────────────────────────────────────────
+
+app.get('/api/medium/research/saved', async (_req: Request, res: Response) => {
+  try {
+    const files = researcher.listSavedResearch();
+    res.json({ files, count: files.length });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
 
@@ -526,6 +634,13 @@ export function startServer(port: number = PORT): void {
     console.log(`   SEO update:      POST /api/medium/monetization/seo/update    {storyId, seoTitle?, seoDescription?}`);
     console.log(`   Full report:     GET  /api/medium/monetization/report`);
     console.log(`   Saved reports:   GET  /api/medium/monetization/reports`);
+    console.log(`\n   ── MARKET RESEARCH ──`);
+    console.log(`   Single niche:    POST /api/medium/research/niche        {niche}`);
+    console.log(`   Multi-niche:     POST /api/medium/research/multi        {niches[]}`);
+    console.log(`   Top authors:     POST /api/medium/research/top-authors  {niches[], minFollowers?}`);
+    console.log(`   News summary:    POST /api/medium/research/news         {niches[]}`);
+    console.log(`   Forward:         POST /api/medium/research/forward      {niches[], webhook:{url,headers?}}`);
+    console.log(`   Saved research:  GET  /api/medium/research/saved`);
     console.log(`\n   ── STATS ──`);
     console.log(`   Status:          GET  /api/medium/status`);
     console.log(`   My stats:        GET  /api/medium/stats\n`);

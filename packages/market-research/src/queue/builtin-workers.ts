@@ -344,6 +344,55 @@ export function registerBuiltinWorkers(queue: UniversalTaskQueue, feedbackLoop?:
         });
       }
 
+      // ─── Research Tasks ────────────────────────────────────
+      if (type === 'medium.research.niche' || type === 'blog.research.niche') {
+        return callService(3107, 'POST', '/api/medium/research/niche', {
+          niche: payload.niche,
+        });
+      }
+
+      if (type === 'medium.research.multi' || type === 'blog.research.multi') {
+        return callService(3107, 'POST', '/api/medium/research/multi', {
+          niches: payload.niches,
+        });
+      }
+
+      if (type === 'medium.research.authors' || type === 'blog.research.authors') {
+        return callService(3107, 'POST', '/api/medium/research/top-authors', {
+          niches: payload.niches,
+          minFollowers: payload.minFollowers,
+        });
+      }
+
+      if (type === 'medium.research.news' || type === 'blog.research.news') {
+        return callService(3107, 'POST', '/api/medium/research/news', {
+          niches: payload.niches,
+        });
+      }
+
+      if (type === 'medium.research.forward' || type === 'blog.research.forward') {
+        return callService(3107, 'POST', '/api/medium/research/forward', {
+          niches: payload.niches,
+          webhook: payload.webhook,
+        });
+      }
+
+      // ─── Monetization Tasks ────────────────────────────────
+      if (type === 'medium.earnings') {
+        return callService(3107, 'GET', '/api/medium/monetization/earnings');
+      }
+
+      if (type === 'medium.paywall.analyze') {
+        return callService(3107, 'GET', `/api/medium/monetization/analyze?max=${payload.max || 200}`);
+      }
+
+      if (type === 'medium.paywall.execute') {
+        return callService(3107, 'POST', '/api/medium/monetization/execute', {
+          storyIds: payload.storyIds,
+          action: payload.action || 'add',
+        });
+      }
+
       throw new Error(`Unknown medium task type: ${type}`);
     },
   });
