@@ -1086,6 +1086,261 @@ def tk_fetch_all_messages(conversations, dry_run=False):
     return message_rows
 
 
+# ── LinkedIn Messaging scraper ───────────────────────────────────────────────
+
+# JS: get all visible conversation rows with name + index
+_LI_GET_ALL_ROWS_JS = """(function(){
+  var items = document.querySelectorAll('.msg-conversation-listitem__link');
+  var out = [];
+  for(var i=0;i<items.length;i++){
+    var el = items[i];
+    var aria = el.getAttribute('aria-label')||'';
+    var name = aria.replace('Select conversation with ','').trim();
+    if(!name){
+      var h3=el.querySelector('h3'); name=h3?(h3.innerText||'').trim():'';
+    }
+    if(name) out.push({name:name,idx:i});
+  }
+  return JSON.stringify(out);
+})()"""
+
+# JS: scroll the left conversation list by delta px
+_LI_SCROLL_LIST_JS = """(function(delta){
+  var ul = document.querySelector('ul.list-style-none') ||
+            document.querySelector('[class*=conversations-list]');
+  if(!ul) { window.scrollBy(0,delta); return window.scrollY+'|9999'; }
+  ul.scrollTop += delta;
+  return ul.scrollTop+'|'+ul.scrollHeight;
+})(LI_DELTA)"""
+
+# JS: scrape all messages from the currently open LinkedIn thread
+_LI_SCRAPE_MESSAGES_JS = """(function(){
+  var items = document.querySelectorAll('.msg-s-event-listitem');
+  var out = [];
+  var skip = {'Like':'skip','React':'skip','Reply to':'skip'};
+  for(var i=0;i<items.length;i++){
+    var el = items[i];
+    var cls = (el.className||'').replace(/\\s+/g,' ');
+    // Outbound: class contains --other (LinkedIn applies --other to the logged-in user's messages)
+    var isOut = cls.indexOf('--other') >= 0;
+    // Only items with a message bubble have actual content
+    var bubble = el.querySelector('.msg-s-event-listitem__message-bubble');
+    if(!bubble) continue;
+    var txt = (bubble.innerText||'').trim().replace(/\\n/g,' ');
+    if(!txt || txt.length < 1 || skip[txt]) continue;
+    out.push({text:txt.substring(0,1000), out:isOut});
+  }
+  return JSON.stringify(out);
+})()"""
+
+# JS: get current thread URL to detect navigation
+_LI_GET_THREAD_URL_JS = "window.location.href"
+
+
+def _li_nav_to(url, wait=5):
+    """Navigate the LinkedIn Safari tab to a URL."""
+    nav = _nav_state.get("linkedin")
+    if nav:
+        win, tab = nav
+        scpt = (f'tell application "Safari"\n'
+                f'  set URL of tab {tab} of window {win} to "{url}"\n'
+                f'  delay {wait}\nend tell\n')
+    else:
+        scpt = (f'tell application "Safari"\n'
+                f'  set URL of front document to "{url}"\n'
+                f'  delay {wait}\nend tell\n')
+    with open('/tmp/li_nav.scpt', 'w') as f:
+        f.write(scpt)
+    subprocess.run(['osascript', '/tmp/li_nav.scpt'], capture_output=True)
+    time.sleep(2)
+
+
+def _li_run_js(js):
+    """Run JS in the LinkedIn tab via file to avoid quote escaping issues."""
+    with open('/tmp/li_probe.js', 'w') as f:
+        f.write(js)
+    nav = _nav_state.get("linkedin")
+    if nav:
+        win, tab = nav
+    else:
+        win, tab = 1, 1
+    scpt = (f'tell application "Safari"\n'
+            f'  set jsCode to (read POSIX file "/tmp/li_probe.js" as \xabclass utf8\xbb)\n'
+            f'  return do JavaScript jsCode in tab {tab} of window {win}\n'
+            f'end tell\n')
+    with open('/tmp/li_js.scpt', 'w') as f:
+        f.write(scpt)
+    r = subprocess.run(['osascript', '/tmp/li_js.scpt'], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def li_collect_conversations():
+    """
+    Navigate to linkedin.com/messaging/, collect all conversation rows.
+    Scrolls the left panel to find all conversations.
+    Returns [{username, name, idx, unread}] compatible with sync_platform.
+    """
+    _li_nav_to("https://www.linkedin.com/messaging/", wait=5)
+    if not _poll_for_element("linkedin",
+            "document.querySelector('.msg-conversation-listitem__link') ? 'yes' : ''",
+            max_wait=10):
+        print("  ⚠️  LinkedIn conversation list not found")
+        return []
+
+    # Scroll to collect all rows (LinkedIn may lazy-load more)
+    collected = {}   # name → row
+    stall_rounds = 0
+    while True:
+        raw = _li_run_js(_LI_GET_ALL_ROWS_JS)
+        try:
+            rows = json.loads(raw or '[]')
+        except Exception:
+            rows = []
+        new = [r for r in rows if r['name'] not in collected]
+        if new:
+            for r in new:
+                collected[r['name']] = r
+            stall_rounds = 0
+        else:
+            raw_scroll = _li_run_js(_LI_SCROLL_LIST_JS.replace("LI_DELTA", "400"))
+            time.sleep(0.8)
+            raw2 = _li_run_js(_LI_GET_ALL_ROWS_JS)
+            try:
+                rows2 = json.loads(raw2 or '[]')
+            except Exception:
+                rows2 = []
+            new2 = [r for r in rows2 if r['name'] not in collected]
+            if new2:
+                for r in new2:
+                    collected[r['name']] = r
+                stall_rounds = 0
+            else:
+                stall_rounds += 1
+                if stall_rounds >= 2:
+                    break
+
+    result = []
+    for r in collected.values():
+        name = r['name']
+        result.append({
+            "username":    name,
+            "name":        name,
+            "displayName": name,
+            "idx":         r['idx'],
+            "unread":      False,
+            "lastMessage": "",
+        })
+    print(f"  ✅ {len(result)} LinkedIn conversations found")
+    return result
+
+
+def li_fetch_all_messages(conversations, dry_run=False):
+    """
+    For each LinkedIn conversation, click by index, wait for thread URL to change,
+    scrape .msg-s-event-listitem__message-bubble elements.
+    Outbound detection: msg-s-event-listitem class contains '--other' = sent by me.
+    """
+    message_rows = []
+    now = utcnow()
+    total_msgs = 0
+    processed_msgs = set()
+
+    prev_url = _li_run_js(_LI_GET_THREAD_URL_JS) or ''
+
+    for conv in (conversations or []):
+        name  = conv.get('name') or conv.get('username', '')
+        idx   = conv.get('idx', -1)
+        flag  = '  '
+
+        if dry_run:
+            print(f"    {flag} {name[:40]} [dry-run]")
+            continue
+
+        if idx < 0:
+            continue
+
+        # Click the conversation row by index
+        click_js = (
+            f"(function(){{"
+            f"var items=document.querySelectorAll('.msg-conversation-listitem__link');"
+            f"var el=items[{idx}];"
+            f"if(!el)return 'not_found';"
+            f"el.scrollIntoView({{block:'center'}});"
+            f"el.click();"
+            f"return 'clicked';"
+            f"}})()"
+        )
+        click_result = _run_js_in_tab("linkedin", click_js)
+        if click_result != 'clicked':
+            print(f"    {flag} {name[:40]} ⚠️  click failed ({click_result})")
+            continue
+
+        # Wait for thread URL to change
+        deadline = time.time() + 6.0
+        loaded = False
+        while time.time() < deadline:
+            url = _li_run_js(_LI_GET_THREAD_URL_JS)
+            cnt_raw = _li_run_js(
+                "document.querySelectorAll('.msg-s-event-listitem').length + ''")
+            try:
+                has_msgs = int(float(cnt_raw or '0')) > 0
+            except Exception:
+                has_msgs = False
+            if url != prev_url and has_msgs:
+                prev_url = url
+                loaded = True
+                break
+            time.sleep(0.4)
+
+        if not loaded:
+            # Try scraping anyway
+            cnt_raw = _li_run_js(
+                "document.querySelectorAll('.msg-s-event-listitem').length + ''")
+            try:
+                loaded = int(float(cnt_raw or '0')) > 0
+            except Exception:
+                loaded = False
+            if loaded:
+                prev_url = _li_run_js(_LI_GET_THREAD_URL_JS) or prev_url
+
+        if not loaded:
+            print(f"    {flag} {name[:40]} ⚠️  thread not loaded")
+            continue
+
+        raw = _li_run_js(_LI_SCRAPE_MESSAGES_JS)
+        try:
+            msgs = json.loads(raw or '[]')
+        except Exception:
+            msgs = []
+
+        msg_count = 0
+        for m in msgs:
+            txt = (m.get('text') or '').strip()
+            if not txt:
+                continue
+            msg_id = hashlib.md5(f"linkedin:{name}:{txt[:40]}".encode()).hexdigest()
+            if msg_id in processed_msgs:
+                continue
+            processed_msgs.add(msg_id)
+            message_rows.append({
+                "platform":      "linkedin",
+                "username":      name,
+                "sender":        "me" if m.get('out') else name,
+                "text":          txt[:2000],
+                "is_outbound":   bool(m.get('out', False)),
+                "message_id":    msg_id,
+                "timestamp_str": "",
+                "synced_at":     now,
+            })
+            msg_count += 1
+
+        total_msgs += msg_count
+        print(f"    {flag} {name[:40]} → {msg_count} msgs")
+
+    print(f"\n  💬 Total: {total_msgs} messages from {len(conversations or [])} conversations")
+    return message_rows
+
+
 def _ig_click_tab_js(tab_name):
     """JS to click an Instagram DM tab by name prefix. tab_name: 'Primary','General','Requests'"""
     return (
@@ -1455,11 +1710,13 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
     base = cfg["base"]
     print(f"\n[{platform.upper()}] checking service...")
 
-    # Health check
-    health, err = http_get(f"{base}/health", timeout=5)
-    if err or not health:
-        print(f"  ⚠️  Service down: {err} — skipping {platform}")
-        return [], [], "service_down"
+    # DOM-scraped platforms bypass service health check
+    _DOM_ONLY = {"instagram", "twitter", "tiktok", "linkedin"}
+    if platform not in _DOM_ONLY:
+        health, err = http_get(f"{base}/health", timeout=5)
+        if err or not health:
+            print(f"  ⚠️  Service down: {err} — skipping {platform}")
+            return [], [], "service_down"
 
     print(f"  ✅ Service up — navigating Safari to {platform} inbox...")
 
@@ -1479,6 +1736,10 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
         # TikTok: all rows are in DOM, grab them all at once
         conversations = tk_collect_conversations()
         print(f"  Found {len(conversations)} TikTok conversations")
+    elif platform == "linkedin":
+        # LinkedIn: click-through left panel, scroll for more
+        conversations = li_collect_conversations()
+        print(f"  Found {len(conversations)} LinkedIn conversations")
     else:
         # Other platforms: scroll all the way down then scrape
         print(f"  🔄 Scrolling to bottom (exhaust all conversations)...")
@@ -1557,6 +1818,9 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
 
     elif platform == "tiktok":
         message_rows = tk_fetch_all_messages(conversations, dry_run=dry_run)
+
+    elif platform == "linkedin":
+        message_rows = li_fetch_all_messages(conversations, dry_run=dry_run)
 
     elif fetch_messages:
         print(f"  📨 Fetching messages for {len(contact_rows)} conversations...")
