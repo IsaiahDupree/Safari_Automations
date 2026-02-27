@@ -1,0 +1,123 @@
+# ── LinkedIn Prospect Config ─────────────────────────────────────────────────
+# Edit this file to match your offer and ideal customer profile.
+# Run: python3 scripts/li_prospect.py --search --limit 50
+# ─────────────────────────────────────────────────────────────────────────────
+
+offer:
+  name: "Content Writing & Ghostwriting Services"
+  description: >
+    I help founders, executives, and creators build their personal brand
+    on LinkedIn and Twitter through done-for-you content writing, ghostwriting,
+    and content strategy. My clients get consistent, high-quality posts that
+    grow their audience and generate leads without spending hours writing.
+  price_point: "$1,500–5,000/month"
+  cta: "free 30-min content audit"
+
+icp:
+  # Job titles to target (case-insensitive partial match, 15 pts each)
+  target_titles:
+    - "founder"
+    - "co-founder"
+    - "ceo"
+    - "chief executive"
+    - "president"
+    - "executive director"
+    - "managing director"
+    - "partner"
+    - "vp of marketing"
+    - "chief marketing"
+    - "head of content"
+    - "marketing director"
+    - "consultant"
+    - "coach"
+    - "advisor"
+    - "author"
+    - "speaker"
+
+  # Industries / keywords in headline that signal fit (10 pts each)
+  target_keywords:
+    - "saas"
+    - "software"
+    - "startup"
+    - "agency"
+    - "marketing"
+    - "content"
+    - "brand"
+    - "growth"
+    - "b2b"
+    - "entrepreneur"
+    - "build in public"
+    - "creator"
+    - "ghostwrit"
+    - "copywriting"
+    - "linkedin"
+    - "personal brand"
+
+  # Company sizes that signal a good fit (10 pts)
+  target_company_signals:
+    - "self-employed"
+    - "solopreneur"
+    - "1-10 employees"
+    - "bootstrapped"
+    - "freelance"
+
+  # These reduce score by 20 pts — not a good fit
+  negative_keywords:
+    - "student"
+    - "looking for work"
+    - "open to work"
+    - "job seeker"
+    - "recruiter"
+    - "hr manager"
+    - "accountant"
+    - "lawyer"
+    - "attorney"
+
+  # Minimum fit score to mark as "qualified" (0-100)
+  min_score_to_qualify: 25
+
+  # Locations to prefer (5 pts if matched, empty = anywhere)
+  preferred_locations:
+    - "united states"
+    - "canada"
+    - "united kingdom"
+    - "australia"
+
+# Search queries to run on LinkedIn People Search
+# Run each one via: python3 scripts/li_prospect.py --search --query "founder saas b2b"
+search_queries:
+  - "founder saas b2b content"
+  - "startup ceo ghostwriting"
+  - "b2b founder personal brand linkedin"
+  - "marketing director agency content strategy"
+  - "executive coach author speaker"
+  - "entrepreneur build in public"
+
+# Connection request note templates (pick one randomly, max 300 chars)
+# Variables: {first_name}, {their_title}, {their_company}
+connection_notes:
+  - >
+    Hey {first_name}! Love what you're doing at {their_company}.
+    I help {their_title}s grow their audience on LinkedIn —
+    thought it'd be great to connect!
+  - >
+    Hi {first_name}, I noticed your work in this space.
+    I help founders & executives build personal brands through content.
+    Would love to connect!
+  - >
+    Hey {first_name}! Your profile caught my eye —
+    I work with {their_title}s on content & thought leadership.
+    Let's connect!
+
+# First message after they accept (sent via li_send_dm)
+# Variables: {first_name}, {their_title}, {their_company}
+first_message_template: >
+  Hey {first_name}! Thanks for connecting.
+
+  I help {their_title}s like yourself grow on LinkedIn with
+  done-for-you content — without spending hours writing.
+
+  Would a free 30-min content audit be valuable?
+  Happy to take a look at your profile and give honest feedback.
+
+  No pitch — just value. Let me know!
