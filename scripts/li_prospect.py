@@ -71,7 +71,7 @@ def _upsert_prospects(rows):
 def _update_prospect(profile_url, updates):
     updates['updated_at'] = utcnow()
     _sb_request('PATCH', TABLE, updates,
-                params={'profile_url': f'eq.{urllib.parse.quote(profile_url)}'})
+                params={'profile_url': f'eq.{profile_url}'})
 
 
 def _get_prospects(stage=None, min_score=0, limit=100):
