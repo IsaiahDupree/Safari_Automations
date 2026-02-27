@@ -860,6 +860,232 @@ def tw_fetch_all_messages(conversations, dry_run=False):
     return message_rows
 
 
+# ── TikTok DM sliding window ─────────────────────────────────────────────────
+
+# JS: get ALL chat-list-item rows with name, uniqueid index (all are in DOM)
+_TK_GET_ALL_ROWS_JS = (
+    "(function(){"
+    "var rows=document.querySelectorAll('[data-e2e=chat-list-item]');"
+    "var out=[];"
+    "for(var i=0;i<rows.length;i++){"
+    "  var el=rows[i];"
+    "  var spans=el.querySelectorAll('span,p');"
+    "  var name='';"
+    "  for(var j=0;j<spans.length;j++){"
+    "    var t=(spans[j].innerText||'').trim();"
+    "    if(t&&spans[j].children.length===0&&t.length>1&&t.length<80){name=t;break;}"
+    "  }"
+    "  if(name)out.push({name:name,idx:i});"
+    "}"
+    "return JSON.stringify(out);"
+    "})()"
+)
+
+# JS: scroll row[idx] into view then click it. Returns 'clicked' or 'not_found'.
+def _tk_click_row_js(idx):
+    return (
+        "(function(){"
+        f"var rows=document.querySelectorAll('[data-e2e=chat-list-item]');"
+        f"var el=rows[{idx}];"
+        "if(!el)return 'not_found';"
+        "el.scrollIntoView({block:'center'});"
+        "el.click();"
+        "return 'clicked';"
+        "})()"
+    )
+
+# JS: scrape messages from the open TikTok conversation right pane
+_TK_SCRAPE_MESSAGES_JS = (
+    "(function(){"
+    "var items=document.querySelectorAll('[data-e2e=chat-item]');"
+    "var vw=window.innerWidth;"
+    "var mid=vw*0.5;"
+    "var out=[];"
+    "for(var i=0;i<items.length;i++){"
+    "  var el=items[i];"
+    # Outbound: avatar is on the RIGHT side (avatarX > mid)
+    "  var av=el.querySelector('[data-e2e=chat-avatar]');"
+    "  var avX=av?av.getBoundingClientRect().left:-1;"
+    "  var isOut=(avX>mid);"
+    # Get message text: first leaf span/p with meaningful content
+    "  var spans=el.querySelectorAll('span,p,div');"
+    "  var txt='';"
+    "  for(var j=0;j<spans.length;j++){"
+    "    var t=(spans[j].innerText||'').trim();"
+    "    if(t&&spans[j].children.length===0&&t.length>1&&t.length<1000){"
+    "      txt=t;break;"
+    "    }"
+    "  }"
+    "  if(txt)out.push({text:txt.substring(0,1000),out:isOut});"
+    "}"
+    "return JSON.stringify(out);"
+    "})()"
+)
+
+# JS: get current right-pane identity (nickname + uniqueid) to detect pane change
+_TK_GET_PANE_IDENTITY_JS = (
+    "(function(){"
+    "var n=document.querySelector('[data-e2e=chat-nickname]');"
+    "var u=document.querySelector('[data-e2e=chat-uniqueid]');"
+    "return (n?(n.innerText||'').trim():'')+':'+(u?(u.innerText||'').trim():'');"
+    "})()"
+)
+
+
+def _tk_nav_to(url, wait=4):
+    """Navigate the TikTok Safari tab to a URL."""
+    nav = _nav_state.get("tiktok")
+    if nav:
+        win, tab = nav
+        scpt = (f'tell application "Safari"\n'
+                f'  set URL of tab {tab} of window {win} to "{url}"\n'
+                f'  delay {wait}\nend tell\n')
+    else:
+        scpt = (f'tell application "Safari"\n'
+                f'  set URL of front document to "{url}"\n'
+                f'  delay {wait}\nend tell\n')
+    with open('/tmp/tk_nav.scpt', 'w') as f:
+        f.write(scpt)
+    subprocess.run(['osascript', '/tmp/tk_nav.scpt'], capture_output=True)
+    time.sleep(1.5)
+
+
+def tk_collect_conversations():
+    """
+    Navigate to tiktok.com/messages, grab all chat-list-item rows (all are in DOM).
+    Returns list of {username, name, idx, unread} dicts.
+    """
+    _tk_nav_to("https://www.tiktok.com/messages", wait=4)
+    if not _poll_for_element("tiktok",
+            "document.querySelector('[data-e2e=chat-list-item]') ? 'yes' : ''",
+            max_wait=8):
+        print("  ⚠️  TikTok chat-list-item not found")
+        return []
+
+    raw = _run_js_in_tab("tiktok", _TK_GET_ALL_ROWS_JS)
+    try:
+        rows = json.loads(raw or '[]')
+    except Exception:
+        rows = []
+
+    result = []
+    for r in rows:
+        name = r.get('name', '')
+        if not name:
+            continue
+        result.append({
+            "username":    name,
+            "name":        name,
+            "displayName": name,
+            "idx":         r['idx'],
+            "unread":      False,
+            "lastMessage": "",
+        })
+    print(f"  ✅ {len(result)} TikTok conversations found")
+    return result
+
+
+def tk_fetch_all_messages(conversations, dry_run=False):
+    """
+    For each TikTok conversation, scrollIntoView+click the chat-list-item row,
+    wait for right pane to update, scrape chat-item messages.
+    Outbound detection: chat-avatar x > viewport midpoint = sent by me.
+    """
+    message_rows = []
+    now = utcnow()
+    total_msgs = 0
+    processed_msgs = set()
+
+    # Get current pane identity before starting
+    prev_identity = _run_js_in_tab("tiktok", _TK_GET_PANE_IDENTITY_JS) or ''
+
+    for conv in (conversations or []):
+        name  = conv.get('name') or conv.get('username', '')
+        idx   = conv.get('idx', -1)
+        flag  = '  '
+
+        if dry_run:
+            print(f"    {flag} {name[:40]} [dry-run]")
+            continue
+
+        if idx < 0:
+            continue
+
+        # Click the row
+        click_result = _run_js_in_tab("tiktok", _tk_click_row_js(idx))
+        if click_result != 'clicked':
+            print(f"    {flag} {name[:40]} ⚠️  click failed ({click_result})")
+            continue
+
+        # Wait for right pane to show a different conversation
+        deadline = time.time() + 5.0
+        loaded = False
+        while time.time() < deadline:
+            identity = _run_js_in_tab("tiktok", _TK_GET_PANE_IDENTITY_JS) or ''
+            # Also check chat-items are present
+            cnt = _run_js_in_tab("tiktok",
+                "document.querySelectorAll('[data-e2e=chat-item]').length")
+            try:
+                has_msgs = int(float(cnt or '0')) > 0
+            except Exception:
+                has_msgs = False
+            if (identity != prev_identity or has_msgs) and identity:
+                prev_identity = identity
+                loaded = True
+                break
+            time.sleep(0.3)
+
+        if not loaded:
+            # Still try to scrape — pane may not have changed identity but content is there
+            cnt = _run_js_in_tab("tiktok",
+                "document.querySelectorAll('[data-e2e=chat-item]').length")
+            try:
+                loaded = int(float(cnt or '0')) > 0
+            except Exception:
+                loaded = False
+
+        if not loaded:
+            print(f"    {flag} {name[:40]} ⚠️  pane not loaded")
+            continue
+
+        # Also get the actual handle from right pane header
+        identity_parts = prev_identity.split(':', 1)
+        handle = identity_parts[1].lstrip('@') if len(identity_parts) > 1 else name
+
+        raw = _run_js_in_tab("tiktok", _TK_SCRAPE_MESSAGES_JS)
+        try:
+            msgs = json.loads(raw or '[]')
+        except Exception:
+            msgs = []
+
+        msg_count = 0
+        for m in msgs:
+            txt = (m.get('text') or '').strip()
+            if not txt:
+                continue
+            msg_id = hashlib.md5(f"tiktok:{handle}:{txt[:40]}".encode()).hexdigest()
+            if msg_id in processed_msgs:
+                continue
+            processed_msgs.add(msg_id)
+            message_rows.append({
+                "platform":      "tiktok",
+                "username":      handle or name,
+                "sender":        "me" if m.get('out') else (handle or name),
+                "text":          txt[:2000],
+                "is_outbound":   bool(m.get('out', False)),
+                "message_id":    msg_id,
+                "timestamp_str": "",
+                "synced_at":     now,
+            })
+            msg_count += 1
+
+        total_msgs += msg_count
+        print(f"    {flag} {name[:40]} → {msg_count} msgs")
+
+    print(f"\n  💬 Total: {total_msgs} messages from {len(conversations or [])} conversations")
+    return message_rows
+
+
 def _ig_click_tab_js(tab_name):
     """JS to click an Instagram DM tab by name prefix. tab_name: 'Primary','General','Requests'"""
     return (
@@ -1249,6 +1475,10 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
         # Twitter: slide through All + Requests tabs in DM inbox
         conversations = tw_collect_conversations()
         print(f"  Found {len(conversations)} Twitter conversations")
+    elif platform == "tiktok":
+        # TikTok: all rows are in DOM, grab them all at once
+        conversations = tk_collect_conversations()
+        print(f"  Found {len(conversations)} TikTok conversations")
     else:
         # Other platforms: scroll all the way down then scrape
         print(f"  🔄 Scrolling to bottom (exhaust all conversations)...")
@@ -1325,6 +1555,9 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
     elif platform == "twitter":
         message_rows = tw_fetch_all_messages(conversations, dry_run=dry_run)
 
+    elif platform == "tiktok":
+        message_rows = tk_fetch_all_messages(conversations, dry_run=dry_run)
+
     elif fetch_messages:
         print(f"  📨 Fetching messages for {len(contact_rows)} conversations...")
         for i, conv in enumerate(conversations):
@@ -1359,6 +1592,17 @@ def sync_platform(platform, cfg, message_limit=20, dry_run=False, fetch_messages
                     "timestamp_str": str(m.get("timestamp") or m.get("sentAt") or ""),
                     "synced_at":     now,
                 })
+
+    # Deduplicate contact_rows by (platform, username) — same username in one batch
+    # causes "ON CONFLICT DO UPDATE command cannot affect row" error
+    seen_contacts = set()
+    deduped_contacts = []
+    for c in contact_rows:
+        key = (c.get("platform", ""), c.get("username", ""))
+        if key not in seen_contacts:
+            seen_contacts.add(key)
+            deduped_contacts.append(c)
+    contact_rows = deduped_contacts
 
     print(f"  📦 {len(contact_rows)} contacts, {len(message_rows)} messages to upsert")
 
