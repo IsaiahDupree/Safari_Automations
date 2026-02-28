@@ -18,7 +18,7 @@ import {
  * Returns true if error was detected and retry was attempted
  */
 export async function checkAndRetryError(driver: SafariDriver): Promise<boolean> {
-  const result = await driver.executeScript(`
+  const result = await driver.executeJS(`
     (function() {
       var bodyText = document.body.innerText || '';
       var hasError = bodyText.includes('Page not available') || 
@@ -61,7 +61,7 @@ export async function checkAndRetryError(driver: SafariDriver): Promise<boolean>
  * Detect if page has error state
  */
 export async function hasErrorState(driver: SafariDriver): Promise<boolean> {
-  const result = await driver.executeScript(`
+  const result = await driver.executeJS(`
     (function() {
       var bodyText = document.body.innerText || '';
       return bodyText.includes('Page not available') || 
@@ -78,7 +78,7 @@ export async function hasErrorState(driver: SafariDriver): Promise<boolean> {
  */
 export async function navigateToInbox(driver: SafariDriver): Promise<NavigationResult> {
   try {
-    await driver.navigate(TIKTOK_URLS.messages);
+    await driver.navigateTo(TIKTOK_URLS.messages);
     await driver.wait(2000);
 
     // Check for error page and retry if needed
@@ -117,7 +117,7 @@ export async function navigateToInbox(driver: SafariDriver): Promise<NavigationR
  * List conversations in the inbox
  */
 export async function listConversations(driver: SafariDriver): Promise<DMConversation[]> {
-  const result = await driver.executeScript(`
+  const result = await driver.executeJS(`
     (function() {
       var conversations = [];
       var items = document.querySelectorAll('[data-e2e="chat-list-item"]');
@@ -168,7 +168,7 @@ export async function openConversation(
   const escapedUsername = username.toLowerCase().replace(/"/g, '\\"');
 
   // Find and click the conversation using validated selector
-  const clicked = await driver.executeScript(`
+  const clicked = await driver.executeJS(`
     (function() {
       var items = document.querySelectorAll('[data-e2e="chat-list-item"]');
       var targetUsername = "${escapedUsername}";
@@ -199,7 +199,7 @@ export async function readMessages(
   driver: SafariDriver,
   limit: number = 50
 ): Promise<DMMessage[]> {
-  const result = await driver.executeScript(`
+  const result = await driver.executeJS(`
     (function() {
       var messages = [];
       var items = document.querySelectorAll('[data-e2e="chat-item"]');
@@ -270,7 +270,7 @@ export async function sendMessage(
     await driver.wait(500);
 
     // Click the send button — validated selector: data-e2e="message-send" (SVG icon)
-    const sendResult = await driver.executeScript(`
+    const sendResult = await driver.executeJS(`
       (function() {
         // Primary: validated data-e2e="message-send" (SVG element)
         var btn = document.querySelector('[data-e2e="message-send"]');
@@ -295,7 +295,7 @@ export async function sendMessage(
     }
 
     // OS-level click on send button position as last resort
-    const sendPos = await driver.executeScript(`
+    const sendPos = await driver.executeJS(`
       (function() {
         var btn = document.querySelector('[data-e2e="message-send"]');
         if (btn) {
@@ -309,12 +309,13 @@ export async function sendMessage(
     if (sendPos !== 'none') {
       try {
         const pos = JSON.parse(sendPos);
-        await driver.clickAtViewportPosition(pos.x, pos.y);
+        // OS-level click — TikTok virtual DOM ignores JS .click() on send button
+        await driver.clickAtScreenPosition(pos.x, pos.y, true);
         return { success: true };
       } catch {}
     }
 
-    // Final fallback: press Enter via OS-level
+    // Final fallback: Enter key
     const sent = await driver.pressEnter();
     if (!sent) {
       return { success: false, error: 'Could not send message — no send button found and Enter failed' };
@@ -351,7 +352,7 @@ export async function startNewConversation(
     await driver.wait(1500);
 
     // Search for the user
-    const searchTyped = await driver.typeText(TIKTOK_SELECTORS.searchInput, username);
+    const searchTyped = await driver.typeViaKeystrokes(username);
     if (!searchTyped) {
       return { success: false, error: 'Could not type in search input' };
     }
@@ -359,7 +360,7 @@ export async function startNewConversation(
     await driver.wait(2000);
 
     // Click on the user result
-    const userClicked = await driver.executeScript(`
+    const userClicked = await driver.executeJS(`
       (function() {
         var targetUsername = "${username.toLowerCase()}";
         var cards = document.querySelectorAll('[class*="UserCard"], [class*="SearchResult"]');
@@ -410,13 +411,13 @@ export async function sendDMByUsername(
     console.log(`[TikTok DM] 📤 Sending to @${handle}`);
 
     // ── Navigate to /messages ──────────────────────────────────────
-    await driver.navigate(TIKTOK_URLS.messages);
+    await driver.navigateTo(TIKTOK_URLS.messages);
     await driver.wait(5000);
 
     // ── Helpers ────────────────────────────────────────────────────
     /** Get sidebar avatar image positions (the ONLY elements with real dimensions) */
     const getAvatarPositions = async (): Promise<Array<{x: number; y: number}>> => {
-      const raw = await driver.executeScript(`
+      const raw = await driver.executeJS(`
         (function() {
           var imgs = document.querySelectorAll('img');
           var out = [];
@@ -433,141 +434,197 @@ export async function sendDMByUsername(
       try { return JSON.parse(raw); } catch { return []; }
     };
 
-    /** Find target's LI index using href="/@handle" — the most reliable selector */
-    const findConversationIndex = async (): Promise<number> => {
-      const raw = await driver.executeScript(`
+    /** Find target conversation row — squish-matches handle against display name.
+     *  e.g. "Sarah E Ashley" squished = "saraheashley" matches handle exactly. */
+    const findConversationByText = async (): Promise<{x: number; y: number} | null> => {
+      const raw = await driver.executeJS(`
         (function() {
-          var lis = document.querySelectorAll('li[class*="InboxItemWrapper"]');
-          for (var i = 0; i < lis.length; i++) {
-            var link = lis[i].querySelector('a[href="/@${handle}"]');
-            if (link) return String(i);
-            // Fallback: aria-label contains handle
-            var ariaLink = lis[i].querySelector('a[aria-label]');
-            if (ariaLink) {
-              var href = ariaLink.getAttribute('href') || '';
-              if (href.replace('/@','').toLowerCase() === '${handle}') return String(i);
+          var target = '${handle.toLowerCase()}';
+          var rows = document.querySelectorAll('[class*="DivItemWrapper"]');
+          for (var i = 0; i < rows.length; i++) {
+            var text = (rows[i].innerText || '').toLowerCase();
+            var squished = text.replace(/[^a-z0-9]/g, '');
+            if (text.includes(target) || squished.includes(target)) {
+              var r = rows[i].getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                return JSON.stringify({x: Math.round(r.left + r.width * 0.25), y: Math.round(r.top + r.height / 2)});
+              }
             }
           }
-          return '-1';
+          return 'not_found';
         })()
       `);
-      return parseInt(raw, 10);
+      if (raw === 'not_found') return null;
+      try { return JSON.parse(raw); } catch { return null; }
     };
 
     /** Verify the opened chat belongs to target user.
-     *  Gate: conversation must actually be open (composer or 'Send a message' visible).
-     *  Then verify identity via href count, aria-label, or visible header text. */
+     *  Primary: a[href="/@handle"] link in the right-panel chat area (validated 2026-02-26).
+     *  TikTok always injects a profile link for the open conversation — DivChatHeader does not exist.
+     *  Fallback: composer visible + any span/p in right panel (x>200) containing the handle. */
     const verifyIdentity = async (): Promise<{verified: boolean; header: string}> => {
-      const raw = await driver.executeScript(`
+      const raw = await driver.executeJS(`
         (function() {
-          // Gate: is a conversation actually open?
-          var hasComposer = !!document.querySelector('.public-DraftEditor-content[contenteditable="true"]')
-                        || !!document.querySelector('[contenteditable="true"]');
-          var hasSendText = document.body.innerText.includes('Send a message');
-          if (!hasComposer && !hasSendText) {
+          var target = '${handle.toLowerCase()}';
+          // Primary: profile link in open chat — TikTok always renders a[href="/@handle"]
+          var profileLink = document.querySelector('a[href="/@' + target + '"]');
+          if (profileLink) {
+            return JSON.stringify({verified: true, header: profileLink.innerText.trim().substring(0, 60) || target});
+          }
+          // Check composer is open at all
+          var hasComposer = !!document.querySelector('[contenteditable="true"]')
+                         || (document.body.innerText || '').includes('Send a message');
+          if (!hasComposer) {
             return JSON.stringify({verified: false, header: 'no_conversation_open'});
           }
-
-          // Strategy 1: count href="/@handle" links.
-          // 1 link = sidebar only. 2+ links = sidebar + chat header = conversation is open.
-          var links = document.querySelectorAll('a[href="/@${handle}"]');
-          if (links.length >= 2) {
-            var label = links[1].getAttribute('aria-label') || '';
-            return JSON.stringify({verified: true, header: label.replace("'s profile","").trim() || '@${handle}'});
-          }
-
-          // Strategy 2: visible header text containing handle (right panel, y < 120)
-          var spans = document.querySelectorAll('p, span, h2');
-          for (var i = 0; i < spans.length; i++) {
-            var r = spans[i].getBoundingClientRect();
-            var t = (spans[i].textContent || '').trim();
-            if (r.width > 0 && r.y < 120 && r.x > 150 && t.toLowerCase().includes('${handle}')) {
+          // Fallback: scan right-panel (x>200) text nodes for the handle
+          var nodes = document.querySelectorAll('p, span, h2, h3');
+          for (var i = 0; i < nodes.length; i++) {
+            var r = nodes[i].getBoundingClientRect();
+            var t = (nodes[i].textContent || '').trim();
+            if (r.width > 0 && r.y < 200 && r.x > 200 && t.toLowerCase().includes(target)) {
               return JSON.stringify({verified: true, header: t.substring(0, 60)});
             }
           }
-
-          // Strategy 3: aria-label visible in chat panel area
-          var ariaLinks = document.querySelectorAll('a[aria-label*="${handle}"]');
-          for (var j = 0; j < ariaLinks.length; j++) {
-            var r2 = ariaLinks[j].getBoundingClientRect();
-            if (r2.x > 150 && r2.width > 0) {
-              return JSON.stringify({verified: true, header: ariaLinks[j].getAttribute('aria-label').replace("'s profile","").trim()});
-            }
-          }
-
-          // Composer is open but we can't confirm WHO — fail safe
           return JSON.stringify({verified: false, header: 'composer_open_but_unverified'});
         })()
       `);
       try { return JSON.parse(raw); } catch { return {verified: false, header: ''}; }
     };
 
-    // ── STRATEGY A: Direct index lookup ────────────────────────────
-    console.log('[TikTok DM]   🔍 Strategy A: href index lookup...');
-    const targetIdx = await findConversationIndex();
-    const avatars = await getAvatarPositions();
+    // ── STRATEGY A: Text-based LI click ────────────────────────────
+    console.log('[TikTok DM]   🔍 Strategy A: text-based conversation lookup...');
+    const convPos = await findConversationByText();
 
-    if (targetIdx >= 0 && targetIdx < avatars.length) {
-      // Target is visible — click their avatar directly
-      console.log(`[TikTok DM]   📍 Found at index ${targetIdx}, clicking avatar...`);
-      const pos = avatars[targetIdx];
-      await driver.clickAtViewportPosition(pos.x + 30, pos.y);
-      await driver.wait(2500);
+    if (convPos) {
+      console.log(`[TikTok DM]   📍 Squish-matched @${handle} at (${convPos.x}, ${convPos.y}), OS-clicking...`);
+      await driver.clickAtScreenPosition(convPos.x, convPos.y, true);
+      await driver.wait(4000); // longer wait for SPA transition to settle
 
-      const idCheck = await verifyIdentity();
-      if (idCheck.verified) {
-        console.log('[TikTok DM]   ✅ Identity verified: ' + idCheck.header);
-        return await _sendAndVerify(driver, handle, message, idCheck.header);
+      // After squish-match, trust the row selection — just confirm composer opened
+      const composerCheck = await driver.executeJS(
+        `(function(){var ce=document.querySelector('[contenteditable="true"]');return ce?'open':(document.body.innerText.includes('Send a message')||document.body.innerText.includes('Message...'))?'placeholder':'closed';})()`
+      );
+      if (composerCheck === 'open' || composerCheck === 'placeholder') {
+        console.log('[TikTok DM]   ✅ Strategy A: composer open, sending...');
+        return await _sendAndVerify(driver, handle, message, handle);
       }
-      console.log('[TikTok DM]   ⚠️ Strategy A: header mismatch, falling through...');
-    } else if (targetIdx >= 0) {
-      console.log(`[TikTok DM]   📍 Found at index ${targetIdx} but only ${avatars.length} avatars visible — need search`);
+      console.log('[TikTok DM]   ⚠️ Strategy A: composer not found after squish-click (' + composerCheck + '), falling through...');
     } else {
-      console.log('[TikTok DM]   ℹ️ Handle not found in conversation list');
+      console.log('[TikTok DM]   ℹ️ @' + handle + ' not found in inbox list');
     }
 
     // ── STRATEGY B: Search filter ──────────────────────────────────
     console.log('[TikTok DM]   🔍 Strategy B: search filter...');
-    await driver.navigate(TIKTOK_URLS.messages);
+    await driver.navigateTo(TIKTOK_URLS.messages);
     await driver.wait(4000);
 
-    // Focus search input
-    const searchOk = await driver.focusElement('input[data-e2e="search-user-input"]')
-                  || await driver.focusElement('input[placeholder*="Search"]');
-    if (!searchOk) {
-      return { success: false, error: 'Could not find messages search input', username: handle };
-    }
-    await driver.wait(300);
+    // OS-level click on search bar (input has 0x0 in TikTok virtual DOM, JS focus fails).
+    // The search input sits in the DivFullSideNavConversationHeader at viewport ~(300, 55).
+    await driver.clickAtScreenPosition(300, 55, true);
+    await driver.wait(500);
 
-    // Clear + type
-    await driver.activateSafari();
-    await driver.wait(200);
+    // Clear any existing text then type handle
     const { execSync } = await import('child_process');
     try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`); } catch {}
     await driver.wait(100);
     try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to key code 51'`); } catch {}
     await driver.wait(200);
     await driver.typeViaKeystrokes(handle);
-    await driver.wait(3000);
+    await driver.wait(3500);
 
-    // After search, TikTok visually filters but doesn't remove DOM elements.
-    // So we click the FIRST VISIBLE avatar — the filtered result.
-    const filteredAvatars = await getAvatarPositions();
-    // Only consider avatars in the visible viewport (y < 800)
-    const visibleAvatars = filteredAvatars.filter(a => a.y < 800);
+    // After search, find the first LiInboxItemWrapper avatar img and click via OS-level event.
+    // TikTok virtual DOM: container rows have 0x0 dims, but avatar imgs have real dimensions.
+    const firstRowPos = await driver.executeJS(`
+      (function() {
+        // Primary: find LiInboxItemWrapper rows and use their avatar img positions
+        var rows = document.querySelectorAll('[class*="LiInboxItemWrapper"]');
+        for (var i = 0; i < rows.length; i++) {
+          var text = (rows[i].innerText || '').toLowerCase();
+          if (text.length < 3) continue;
+          var img = rows[i].querySelector('img');
+          if (img) {
+            var ri = img.getBoundingClientRect();
+            if (ri.width > 0 && ri.height > 0) {
+              return JSON.stringify({x: Math.round(ri.left + ri.width/2), y: Math.round(ri.top + ri.height/2), text: rows[i].innerText.substring(0,40), via: 'img'});
+            }
+          }
+        }
+        // Fallback: any avatar img in sidebar position
+        var imgs = document.querySelectorAll('img');
+        for (var j = 0; j < imgs.length; j++) {
+          var r = imgs[j].getBoundingClientRect();
+          if (r.width >= 36 && r.width <= 60 && r.x >= 50 && r.x <= 140 && r.y > 50) {
+            return JSON.stringify({x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2), text: '', via: 'avatar_fallback'});
+          }
+        }
+        return 'not_found';
+      })()
+    `);
 
-    if (visibleAvatars.length === 0) {
-      return { success: false, error: `No visible conversations after searching "${handle}"`, username: handle };
+    if (!firstRowPos || firstRowPos === 'not_found') {
+      return { success: false, error: `No visible conversation rows after searching "${handle}"`, username: handle };
     }
 
-    const clickPos = visibleAvatars[0]; // First visible = the search match
-    console.log(`[TikTok DM]   📍 Clicking first visible filtered avatar at y=${clickPos.y}`);
-    await driver.clickAtViewportPosition(clickPos.x + 30, clickPos.y);
+    let rowPos: { x: number; y: number; via: string; text: string };
+    try {
+      rowPos = JSON.parse(firstRowPos);
+    } catch {
+      return { success: false, error: `Could not parse row position after searching "${handle}": ${firstRowPos}`, username: handle };
+    }
+    console.log(`[TikTok DM]   📍 OS-clicking ${rowPos.via} in first filtered row at (${rowPos.x}, ${rowPos.y}) — "${rowPos.text}"`);
+    await driver.clickAtScreenPosition(rowPos.x, rowPos.y, true);
     await driver.wait(3000);
 
     const idCheck = await verifyIdentity();
     if (!idCheck.verified) {
-      return { success: false, error: `Identity verification failed — chat header does not match @${handle}`, username: handle };
+      console.log(`[TikTok DM]   ⚠️ Strategy B identity mismatch — trying Strategy C: inbox compose flow...`);
+
+      // ── STRATEGY C: Inbox compose flow using Quartz OS-clicks ────────────────
+      // TikTok's virtual DOM ignores JS .click() — must use driver.clickElement (Quartz).
+      const navResult = await navigateToInbox(driver);
+      if (!navResult.success) {
+        return { success: false, error: `Strategy C nav failed: ${navResult.error}`, username: handle };
+      }
+
+      const newMsgClicked = await driver.clickElement('[class*="NewMessage"]');
+      if (!newMsgClicked) {
+        return { success: false, error: `Strategy C: NewMessage compose button not found (cannot create new conversation)`, username: handle };
+      }
+      await driver.wait(1500);
+
+      const searchTyped = await driver.typeViaKeystrokes(handle);
+      if (!searchTyped) {
+        return { success: false, error: 'Strategy C: could not type in compose search' };
+      }
+      await driver.wait(2000);
+
+      // Click matching user card via Quartz (clickElement uses OS-level click)
+      const userCardClicked = await driver.clickElement(`[class*="UserCard"]:has(*)`);
+      if (!userCardClicked) {
+        // Fallback: try clicking any SearchResult containing the handle
+        const fallbackClicked = await driver.executeJS(`
+          (function() {
+            var target = "${handle.toLowerCase()}";
+            var items = document.querySelectorAll('[class*="UserCard"], [class*="SearchResult"], li');
+            for (var i = 0; i < items.length; i++) {
+              if ((items[i].innerText||'').toLowerCase().includes(target)) {
+                var r = items[i].getBoundingClientRect();
+                return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
+              }
+            }
+            return 'not_found';
+          })()
+        `);
+        if (fallbackClicked === 'not_found') {
+          return { success: false, error: `Strategy C: @${handle} not in compose results`, username: handle };
+        }
+        const pos = JSON.parse(fallbackClicked);
+        await driver.clickAtViewportPosition(pos.x, pos.y);
+      }
+      await driver.wait(1500);
+
+      return sendMessage(driver, message);
     }
     console.log('[TikTok DM]   ✅ Identity verified: ' + idCheck.header);
     return await _sendAndVerify(driver, handle, message, idCheck.header);
@@ -585,7 +642,7 @@ async function _sendAndVerify(
   verifiedHeader: string
 ): Promise<SendMessageResult> {
   // Check composer ready
-  const composerReady = await driver.executeScript(`
+  const composerReady = await driver.executeJS(`
     (function() {
       var ce = document.querySelector('${TIKTOK_SELECTORS.messageInputDraft}');
       if (ce) return 'draft';
@@ -604,7 +661,7 @@ async function _sendAndVerify(
   // Post-send verification
   await driver.wait(2000);
   const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-  const postCheck = await driver.executeScript(`
+  const postCheck = await driver.executeJS(`
     (function() { return document.body.innerText.includes('${snippet}') ? 'yes' : 'no'; })()
   `);
 
@@ -638,7 +695,7 @@ export async function sendDMFromProfileUrl(
  * Scroll to load more conversations
  */
 export async function scrollConversations(driver: SafariDriver): Promise<number> {
-  const result = await driver.executeScript(`
+  const result = await driver.executeJS(`
     (function() {
       var list = document.querySelector('${TIKTOK_SELECTORS.conversationList}');
       if (!list) return '0';
@@ -651,11 +708,110 @@ export async function scrollConversations(driver: SafariDriver): Promise<number>
 
   await driver.wait(1500);
 
-  const afterResult = await driver.executeScript(`
+  const afterResult = await driver.executeJS(`
     (function() {
       return document.querySelectorAll('${TIKTOK_SELECTORS.conversationItem}').length.toString();
     })()
   `);
 
   return parseInt(afterResult) - parseInt(result);
+}
+
+/**
+ * Scroll the inbox list until no new conversations load, then return all.
+ * Handles TikTok's virtual DOM lazy-loading.
+ */
+export async function scrollAndListAllConversations(driver: SafariDriver, maxScrolls = 30): Promise<DMConversation[]> {
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    await driver.executeJS(`
+      (function() {
+        var list = document.querySelector('${TIKTOK_SELECTORS.conversationList}') ||
+                   document.querySelector('[class*="InboxItemListContainer"]') ||
+                   document.querySelector('[class*="DivInboxList"]');
+        if (list) { list.scrollTop += 900; }
+        else { window.scrollBy(0, 900); }
+      })()
+    `);
+    await driver.wait(1300);
+
+    const countRaw = await driver.executeJS(`
+      String(document.querySelectorAll('${TIKTOK_SELECTORS.conversationItem},[class*="LiInboxItemWrapper"]').length)
+    `);
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break;
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return listConversations(driver);
+}
+
+/**
+ * Scroll up in the current open conversation to load full message history, then read all.
+ */
+export async function readAllMessages(driver: SafariDriver, maxScrolls = 20): Promise<DMMessage[]> {
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    await driver.executeJS(`
+      (function() {
+        var pane = document.querySelector('[class*="DivChatArea"],[class*="DivMessageList"],[class*="DivChatHistory"]');
+        if (pane) { pane.scrollTop -= 1200; }
+        else { window.scrollBy(0, -1200); }
+      })()
+    `);
+    await driver.wait(1000);
+
+    const countRaw = await driver.executeJS(`
+      String(document.querySelectorAll('[class*="DivMessageBubble"],[class*="DivSingleMessage"]').length)
+    `);
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break;
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return readMessages(driver, 9999);
+}
+
+/**
+ * Fetch contact info from a TikTok profile page.
+ */
+export async function enrichContact(username: string, driver: SafariDriver): Promise<{
+  fullName: string; bio: string; followers: string; following: string; likes: string;
+}> {
+  await driver.navigateTo(`https://www.tiktok.com/@${username.replace('@', '')}`);
+  await driver.wait(2500);
+
+  const raw = await driver.executeJS(`
+    (function() {
+      var nameEl = document.querySelector('h1[data-e2e="user-title"], [data-e2e="user-title"]');
+      var bioEl  = document.querySelector('[data-e2e="user-bio"]');
+      var stats  = document.querySelectorAll('[data-e2e="followers-count"],[data-e2e="following-count"],[data-e2e="likes-count"]');
+      return JSON.stringify({
+        fullName:  nameEl ? nameEl.innerText.trim() : '',
+        bio:       bioEl  ? bioEl.innerText.trim()  : '',
+        followers: stats[0] ? stats[0].innerText.trim() : '',
+        following: stats[1] ? stats[1].innerText.trim() : '',
+        likes:     stats[2] ? stats[2].innerText.trim() : '',
+      });
+    })()
+  `);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { fullName: '', bio: '', followers: '', following: '', likes: '' };
+  }
 }

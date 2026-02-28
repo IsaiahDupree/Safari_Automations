@@ -1138,16 +1138,19 @@ _LI_GET_THREAD_URL_JS = "window.location.href"
 
 
 def _li_nav_to(url, wait=5):
-    """Navigate the LinkedIn Safari tab to a URL."""
+    """Navigate the LinkedIn Safari tab to a URL and bring it to front."""
     nav = _nav_state.get("linkedin")
     if nav:
         win, tab = nav
         scpt = (f'tell application "Safari"\n'
+                f'  set current tab of window {win} to tab {tab} of window {win}\n'
                 f'  set URL of tab {tab} of window {win} to "{url}"\n'
+                f'  activate\n'
                 f'  delay {wait}\nend tell\n')
     else:
         scpt = (f'tell application "Safari"\n'
                 f'  set URL of front document to "{url}"\n'
+                f'  activate\n'
                 f'  delay {wait}\nend tell\n')
     with open('/tmp/li_nav.scpt', 'w') as f:
         f.write(scpt)
@@ -1339,6 +1342,350 @@ def li_fetch_all_messages(conversations, dry_run=False):
 
     print(f"\n  💬 Total: {total_msgs} messages from {len(conversations or [])} conversations")
     return message_rows
+
+
+# ── Send DM infrastructure ───────────────────────────────────────────────────
+# Safety: TEST_MODE_TARGET — when test_mode=True only this contact is allowed
+_SEND_TEST_TARGET = "isaiah dupree"
+
+def _clipboard_paste_and_send(platform, compose_sel, send_sel, message):
+    """
+    Shared helper: paste message from clipboard into compose_sel, click send_sel.
+    Returns (success: bool, detail: str).
+    Requires _nav_state[platform] to be set.
+    """
+    # 1. Copy message to clipboard
+    subprocess.run(['pbcopy'], input=message.encode('utf-8'), check=True)
+    time.sleep(0.2)
+
+    nav = _nav_state.get(platform)
+    if nav:
+        win, tab = nav
+    else:
+        win, tab = 1, 1
+
+    # 2. Activate Safari tab, focus compose box, paste, click send — one atomic script
+    compose_sel_esc = compose_sel.replace("'", "\\'")
+    send_sel_esc    = send_sel.replace("'", "\\'")
+
+    scpt = (
+        f'tell application "Safari"\n'
+        f'  set current tab of window {win} to tab {tab} of window {win}\n'
+        f'  activate\n'
+        f'  set jsCode to "var b=document.querySelector(\\"{compose_sel_esc}\\");if(b){{b.click();b.focus();}}"\n'
+        f'  do JavaScript jsCode in tab {tab} of window {win}\n'
+        f'end tell\n'
+        f'delay 0.4\n'
+        f'tell application "System Events"\n'
+        f'  key code 9 using command down\n'  # Cmd+V
+        f'end tell\n'
+        f'delay 0.5\n'
+    )
+    with open(f'/tmp/send_{platform}_paste.scpt', 'w') as f:
+        f.write(scpt)
+    subprocess.run(['osascript', f'/tmp/send_{platform}_paste.scpt'], capture_output=True)
+    time.sleep(0.5)
+
+    # 3. Verify text is in box (expression, no return needed)
+    verify_js = (
+        f"(function(){{"
+        f"var b=document.querySelector('{compose_sel_esc}');"
+        f"return b?(b.value||b.innerText||'').trim().substring(0,60):'NO_BOX';"
+        f"}})()"
+    )
+    content = _run_js_in_tab(platform, verify_js)
+    if not content or content == 'NO_BOX':
+        return False, f'compose box empty after paste (sel={compose_sel})'
+
+    # 4. Click send button (IIFE — top-level return fails in Safari do JavaScript)
+    click_send_js = (
+        f"(function(){{"
+        f"var s=document.querySelector('{send_sel_esc}');"
+        f"if(s&&!s.disabled){{s.click();return 'sent';}}"
+        f"return s?'disabled':'not_found';"
+        f"}})()"
+    )
+    send_result = _run_js_in_tab(platform, click_send_js)
+    if send_result != 'sent':
+        return False, f'send button issue: {send_result}'
+
+    return True, content[:60]
+
+
+def li_send_dm(name, message, test_mode=True):
+    """
+    Send a LinkedIn DM to a contact by display name.
+    Opens the conversation, pastes message, clicks send.
+    test_mode=True restricts to Isaiah Dupree only.
+    """
+    if test_mode and _SEND_TEST_TARGET not in name.lower():
+        return False, f'test_mode: only {_SEND_TEST_TARGET} allowed, got {name}'
+
+    # Always navigate to /messaging/ so the left panel conversation list is visible
+    _li_nav_to("https://www.linkedin.com/messaging/", wait=5)
+
+    # Poll for conversation list using file-based JS (reliable across all states)
+    loaded = False
+    for _ in range(20):
+        cnt = _li_run_js("document.querySelectorAll('.msg-conversation-listitem__link').length + ''")
+        try:
+            if int(float(cnt or '0')) > 0:
+                loaded = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    if not loaded:
+        return False, 'conversation list not loaded'
+
+    # Find and click the conversation — name in h3 child (aria-label is on a child, not root)
+    name_lc = name.lower()[:30]
+    find_js = (
+        f"(function(){{"
+        f"var items=document.querySelectorAll('.msg-conversation-listitem__link');"
+        f"for(var i=0;i<items.length;i++){{"
+        f"  var h3=items[i].querySelector('h3');"
+        f"  var lbl=items[i].querySelector('[aria-label*=\"Select conversation\"]');"
+        f"  var txt=(h3?(h3.innerText||''):(lbl?lbl.getAttribute('aria-label').replace('Select conversation with ',''):''));"
+        f"  if(txt.toLowerCase().indexOf('{name_lc}')>=0){{"
+        f"    items[i].scrollIntoView({{block:'center'}});"
+        f"    items[i].click();"
+        f"    return 'clicked:'+i+':'+txt.substring(0,30);"
+        f"  }}"
+        f"}}"
+        f"return 'not_found';"
+        f"}})()"
+    )
+    click_result = _li_run_js(find_js)
+    if 'not_found' in click_result:
+        return False, f'conversation not found for: {name}'
+    time.sleep(2)
+
+    return _clipboard_paste_and_send(
+        "linkedin",
+        ".msg-form__contenteditable",
+        "button.msg-form__send-button",
+        message
+    )
+
+
+def tw_send_dm(handle, message, test_mode=True):
+    """
+    Send a Twitter DM to a handle. Navigates to the thread URL if known,
+    otherwise opens DM inbox and searches.
+    test_mode=True restricts to Isaiah Dupree only.
+    """
+    if test_mode and _SEND_TEST_TARGET not in handle.lower():
+        return False, f'test_mode: only {_SEND_TEST_TARGET} allowed, got {handle}'
+
+    # Navigate to DM inbox and find thread URL
+    _tw_nav_to("https://x.com/messages", wait=4)
+    if not _poll_for_element("twitter",
+            "document.querySelector('[data-testid=dm-inbox-panel]') ? 'yes' : ''",
+            max_wait=8):
+        return False, 'DM inbox not found'
+
+    # Find conversation row matching handle
+    find_js = (
+        f"(function(){{"
+        f"var rows=document.querySelectorAll('[data-testid^=dm-conversation-item]');"
+        f"for(var i=0;i<rows.length;i++){{"
+        f"  var desc=rows[i].getAttribute('aria-description')||'';"
+        f"  if(desc.toLowerCase().indexOf('{handle.lower()[:20]}')>=0){{"
+        f"    var tid=rows[i].getAttribute('data-testid')||'';"
+        f"    var conv=tid.replace('dm-conversation-item-','');"
+        f"    var ids=conv.split(':');"
+        f"    return '/messages/'+ids[0]+'-'+ids[1];"
+        f"  }}"
+        f"}}"
+        f"return 'not_found';"
+        f"}})()"
+    )
+    thread_path = _run_js_in_tab("twitter", find_js)
+    if thread_path == 'not_found':
+        return False, f'Twitter conversation not found for: {handle}'
+
+    _tw_nav_to(f"https://x.com{thread_path}", wait=4)
+
+    # Poll for compose box
+    loaded = False
+    for _ in range(10):
+        cnt = _run_js_in_tab("twitter",
+            "document.querySelector('[data-testid=\"dm-composer-textarea\"]') ? '1' : '0'")
+        if cnt == '1':
+            loaded = True
+            break
+        time.sleep(0.5)
+    if not loaded:
+        return False, 'Twitter DM compose box not found'
+
+    return _clipboard_paste_and_send(
+        "twitter",
+        '[data-testid="dm-composer-textarea"]',
+        '[data-testid="dm-composer-send-button"]',
+        message
+    )
+
+
+def tk_send_dm(name, message, test_mode=True):
+    """
+    Send a TikTok DM by display name. Clicks the chat-list-item row,
+    pastes into contenteditable, clicks message-send button.
+    test_mode=True restricts to Isaiah Dupree only.
+    """
+    if test_mode and _SEND_TEST_TARGET not in name.lower():
+        return False, f'test_mode: only {_SEND_TEST_TARGET} allowed, got {name}'
+
+    _tk_nav_to("https://www.tiktok.com/messages", wait=4)
+    if not _poll_for_element("tiktok",
+            "document.querySelector('[data-e2e=chat-list-item]') ? 'yes' : ''",
+            max_wait=8):
+        return False, 'TikTok chat list not found'
+
+    # Find and click conversation row
+    find_click_js = (
+        f"(function(){{"
+        f"var rows=document.querySelectorAll('[data-e2e=chat-list-item]');"
+        f"for(var i=0;i<rows.length;i++){{"
+        f"  var spans=rows[i].querySelectorAll('span,p');"
+        f"  for(var j=0;j<spans.length;j++){{"
+        f"    var t=(spans[j].innerText||'').trim().toLowerCase();"
+        f"    if(t.indexOf('{name.lower()[:20]}')>=0){{"
+        f"      rows[i].scrollIntoView({{block:'center'}});"
+        f"      rows[i].click();"
+        f"      return 'clicked:'+i;"
+        f"    }}"
+        f"  }}"
+        f"}}"
+        f"return 'not_found';"
+        f"}})()"
+    )
+    click_result = _run_js_in_tab("tiktok", find_click_js)
+    if 'not_found' in click_result:
+        return False, f'TikTok conversation not found for: {name}'
+    time.sleep(1.5)
+
+    # Poll for compose box
+    for _ in range(8):
+        cnt = _run_js_in_tab("tiktok",
+            "document.querySelector('[contenteditable=true]') ? '1' : '0'")
+        if cnt == '1':
+            break
+        time.sleep(0.4)
+
+    ok, detail = _clipboard_paste_and_send(
+        "tiktok",
+        '[contenteditable="true"]',
+        '[data-e2e="message-send"]',
+        message
+    )
+    if not ok:
+        # Fallback: try clicking parent of message-send SVG
+        parent_click = _run_js_in_tab("tiktok",
+            "var s=document.querySelector('[data-e2e=message-send]');"
+            "var p=s?s.closest('div[role=button]')||s.parentElement:null;"
+            "if(p){p.click();return 'sent_via_parent';}return 'not_found';")
+        if parent_click == 'sent_via_parent':
+            return True, detail + ' (parent click)'
+    return ok, detail
+
+
+def ig_send_dm(handle, message, test_mode=True):
+    """
+    Send an Instagram DM to a handle. Navigates to the inbox, clicks the
+    conversation, pastes message, sends.
+    test_mode=True restricts to Isaiah Dupree only.
+    """
+    if test_mode and _SEND_TEST_TARGET not in handle.lower():
+        return False, f'test_mode: only {_SEND_TEST_TARGET} allowed, got {handle}'
+
+    nav = _nav_state.get("instagram")
+    if nav:
+        win, tab = nav
+        scpt = (f'tell application "Safari"\n'
+                f'  set URL of tab {tab} of window {win} to "https://www.instagram.com/direct/inbox/"\n'
+                f'  delay 4\nend tell\n')
+    else:
+        scpt = ('tell application "Safari"\n'
+                '  set URL of front document to "https://www.instagram.com/direct/inbox/"\n'
+                '  delay 4\nend tell\n')
+    with open('/tmp/ig_send_nav.scpt', 'w') as f:
+        f.write(scpt)
+    subprocess.run(['osascript', '/tmp/ig_send_nav.scpt'], capture_output=True)
+    time.sleep(2)
+
+    if not _poll_for_element("instagram",
+            "document.querySelector('[role=listitem]') ? 'yes' : ''",
+            max_wait=8):
+        return False, 'Instagram inbox not loaded'
+
+    # Click matching conversation by handle/name
+    find_js = (
+        f"(function(){{"
+        f"var items=document.querySelectorAll('[role=listitem]');"
+        f"for(var i=0;i<items.length;i++){{"
+        f"  var t=(items[i].innerText||'').toLowerCase();"
+        f"  if(t.indexOf('{handle.lower()[:20]}')>=0){{"
+        f"    items[i].click();"
+        f"    return 'clicked:'+i;"
+        f"  }}"
+        f"}}"
+        f"return 'not_found';"
+        f"}})()"
+    )
+    click_result = _run_js_in_tab("instagram", find_js)
+    if 'not_found' in click_result:
+        return False, f'Instagram conversation not found for: {handle}'
+    time.sleep(2)
+
+    # Poll for compose box
+    compose_sel = 'textarea[placeholder*="Message"], div[contenteditable="true"][role="textbox"]'
+    loaded = False
+    for _ in range(10):
+        cnt = _run_js_in_tab("instagram",
+            f"document.querySelector('textarea') || document.querySelector('[contenteditable=true][role=textbox]') ? '1' : '0'")
+        if cnt == '1':
+            loaded = True
+            break
+        time.sleep(0.4)
+    if not loaded:
+        return False, 'Instagram compose box not found'
+
+    # Try textarea first, then contenteditable
+    sel = _run_js_in_tab("instagram",
+        "document.querySelector('textarea') ? 'textarea' : 'div[contenteditable=true][role=textbox]'")
+    send_sel = 'button[type=submit], [aria-label*="Send"], [type=submit]'
+
+    return _clipboard_paste_and_send("instagram", sel, send_sel, message)
+
+
+def send_dm(platform, target, message, test_mode=True):
+    """
+    Unified send_dm entry point for all 4 platforms.
+    test_mode=True (default): only allows sending to 'Isaiah Dupree' — safe for testing.
+    test_mode=False: sends to any target.
+    Returns (success: bool, detail: str).
+    """
+    if test_mode:
+        print(f"  🔒 TEST MODE: only sending to '{_SEND_TEST_TARGET}'")
+        if _SEND_TEST_TARGET not in target.lower():
+            return False, f'BLOCKED by test_mode — target={target}'
+
+    print(f"  📤 [{platform}] Sending DM to {target}...")
+    if platform == "linkedin":
+        ok, detail = li_send_dm(target, message, test_mode=False)
+    elif platform == "twitter":
+        ok, detail = tw_send_dm(target, message, test_mode=False)
+    elif platform == "tiktok":
+        ok, detail = tk_send_dm(target, message, test_mode=False)
+    elif platform == "instagram":
+        ok, detail = ig_send_dm(target, message, test_mode=False)
+    else:
+        return False, f'platform not supported: {platform}'
+
+    status = '✅' if ok else '❌'
+    print(f"  {status} [{platform}] {target}: {detail}")
+    return ok, detail
 
 
 def _ig_click_tab_js(tab_name):
@@ -1946,7 +2293,42 @@ if __name__ == "__main__":
             message_limit = int(arg.split("=")[1])
         elif arg == "--deep":
             message_limit = 100
+
     fetch_messages = "--messages" in sys.argv
+
+    # ── send-test: send a DM to Isaiah Dupree only (safety gate) ──────────────
+    # Usage: python3 crm_sync.py --send-test linkedin
+    #        python3 crm_sync.py --send-test twitter
+    #        python3 crm_sync.py --send-test   (tests all 4 platforms)
+    if "--send-test" in sys.argv:
+        test_platforms = [a for a in sys.argv[1:] if a in ("instagram", "twitter", "tiktok", "linkedin")]
+        if not test_platforms:
+            test_platforms = ["linkedin", "twitter", "tiktok", "instagram"]
+        TEST_MSG = "Hey Isaiah! Just testing the CRM outbound send. Ignore this 🙂"
+        print("=" * 60)
+        print(f"SEND TEST — target: '{_SEND_TEST_TARGET}' (test_mode=True)")
+        print("=" * 60)
+        for plat in test_platforms:
+            navigate_safari_to(plat, wait=5)
+            ok, detail = send_dm(plat, "Isaiah Dupree", TEST_MSG, test_mode=True)
+            print(f"  {'✅' if ok else '❌'} {plat}: {detail}\n")
+        sys.exit(0)
+
+    # ── send: send a DM to an arbitrary target (requires --no-test-mode) ──────
+    # Usage: python3 crm_sync.py --send linkedin "Contact Name" "Hello there"
+    if "--send" in sys.argv:
+        idx = sys.argv.index("--send")
+        if len(sys.argv) < idx + 4:
+            print("Usage: crm_sync.py --send <platform> <target_name> <message>")
+            sys.exit(1)
+        send_plat   = sys.argv[idx + 1]
+        send_target = sys.argv[idx + 2]
+        send_msg    = sys.argv[idx + 3]
+        test_mode   = "--no-test-mode" not in sys.argv
+        navigate_safari_to(send_plat, wait=5)
+        ok, detail = send_dm(send_plat, send_target, send_msg, test_mode=test_mode)
+        sys.exit(0 if ok else 1)
+
     result = run_sync(platforms=platform_filter, message_limit=message_limit,
                       dry_run=dry_run, fetch_messages=fetch_messages)
     if result.get("failures"):

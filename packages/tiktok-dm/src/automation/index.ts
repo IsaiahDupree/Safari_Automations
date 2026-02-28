@@ -16,6 +16,7 @@ export {
   sendDMByUsername,
   sendDMFromProfileUrl,
   scrollConversations,
+  enrichContact,
 } from './dm-operations.js';
 
 export {

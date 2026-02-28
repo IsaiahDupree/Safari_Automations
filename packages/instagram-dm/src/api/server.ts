@@ -90,6 +90,9 @@ let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 // Safari driver instance
 let driver: SafariDriver | null = null;
 
+// URL pattern that identifies the Instagram DM Safari session
+const SESSION_URL_PATTERN = 'instagram.com';
+
 function getDriver(): SafariDriver {
   if (!driver) {
     driver = new SafariDriver({
@@ -97,6 +100,37 @@ function getDriver(): SafariDriver {
     });
   }
   return driver;
+}
+
+/**
+ * Ensure the Instagram Safari tab is the active/front tab before any operation.
+ * Scans all Safari windows, finds the instagram.com tab, and activates it.
+ * Falls back to navigating if not found.
+ */
+async function ensureInstagramSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
+  const info = await getDriver().ensureActiveSession(SESSION_URL_PATTERN);
+  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+}
+
+/**
+ * Express middleware: activate the correct Instagram Safari tab before the request handler runs.
+ * Skips for non-automating routes (health, rate-limits, session status).
+ */
+async function requireActiveSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const info = await ensureInstagramSession();
+    if (!info.ok) {
+      res.status(503).json({
+        error: 'Instagram Safari session not found',
+        fix: 'Open Safari and navigate to instagram.com, then retry',
+        session: info,
+      });
+      return;
+    }
+    next();
+  } catch (err) {
+    res.status(503).json({ error: `Session activation failed: ${err}` });
+  }
 }
 
 // Rate limit check middleware
@@ -176,8 +210,47 @@ app.put('/api/rate-limits', (req, res) => {
   res.json({ success: true, rateLimits });
 });
 
+// === SESSION MANAGEMENT ===
+
+// GET /api/session/status — return tracked session info without activating
+app.get('/api/session/status', (req, res) => {
+  const info = getDriver().getSessionInfo();
+  res.json({
+    tracked: !!info.windowIndex,
+    windowIndex: info.windowIndex,
+    tabIndex: info.tabIndex,
+    urlPattern: info.urlPattern,
+    lastVerifiedMs: info.lastVerified ? Date.now() - info.lastVerified : null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+// POST /api/session/ensure — find + activate the correct Instagram tab
+app.post('/api/session/ensure', async (req, res) => {
+  try {
+    const info = await ensureInstagramSession();
+    res.json({
+      ok: info.ok,
+      windowIndex: info.windowIndex,
+      tabIndex: info.tabIndex,
+      url: info.url,
+      message: info.ok
+        ? `Instagram session active at window ${info.windowIndex}, tab ${info.tabIndex}`
+        : 'Instagram tab not found — open Safari and navigate to instagram.com',
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/session/clear — reset tracked session (use after Safari restart)
+app.post('/api/session/clear', (req, res) => {
+  getDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
+});
+
 // Navigate to inbox
-app.post('/api/inbox/navigate', async (req, res) => {
+app.post('/api/inbox/navigate', requireActiveSession, async (req, res) => {
   try {
     const result = await navigateToInbox(getDriver());
     res.json(result);
@@ -187,7 +260,7 @@ app.post('/api/inbox/navigate', async (req, res) => {
 });
 
 // List conversations
-app.get('/api/conversations', async (req, res) => {
+app.get('/api/conversations', requireActiveSession, async (req, res) => {
   try {
     const conversations = await listConversations(getDriver());
     res.json({ conversations, count: conversations.length });
@@ -197,7 +270,7 @@ app.get('/api/conversations', async (req, res) => {
 });
 
 // Get all conversations from all tabs
-app.get('/api/conversations/all', async (req, res) => {
+app.get('/api/conversations/all', requireActiveSession, async (req, res) => {
   try {
     const allConversations = await getAllConversations(getDriver());
     const totalCount = Object.values(allConversations).reduce((sum, arr) => sum + arr.length, 0);
@@ -208,7 +281,7 @@ app.get('/api/conversations/all', async (req, res) => {
 });
 
 // Switch tab
-app.post('/api/inbox/tab', async (req, res) => {
+app.post('/api/inbox/tab', requireActiveSession, async (req, res) => {
   try {
     const { tab } = req.body as { tab: DMTab };
     const success = await switchTab(tab, getDriver());
@@ -219,7 +292,7 @@ app.post('/api/inbox/tab', async (req, res) => {
 });
 
 // Open conversation
-app.post('/api/conversations/open', async (req, res) => {
+app.post('/api/conversations/open', requireActiveSession, async (req, res) => {
   try {
     const { username } = req.body;
     if (!username) {
@@ -234,7 +307,7 @@ app.post('/api/conversations/open', async (req, res) => {
 });
 
 // Read messages from current conversation
-app.get('/api/messages', async (req, res) => {
+app.get('/api/messages', requireActiveSession, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 20;
     const messages = await readMessages(limit, getDriver());
@@ -245,7 +318,7 @@ app.get('/api/messages', async (req, res) => {
 });
 
 // Send message (rate limited)
-app.post('/api/messages/send', checkRateLimit, async (req, res) => {
+app.post('/api/messages/send', requireActiveSession, checkRateLimit, async (req, res) => {
   try {
     const { text, username } = req.body;
     
@@ -286,7 +359,7 @@ app.post('/api/messages/send', checkRateLimit, async (req, res) => {
 });
 
 // Start new conversation
-app.post('/api/conversations/new', async (req, res) => {
+app.post('/api/conversations/new', requireActiveSession, async (req, res) => {
   try {
     const { username } = req.body;
     if (!username) {
@@ -301,7 +374,7 @@ app.post('/api/conversations/new', async (req, res) => {
 });
 
 // Send message to new user (combines new conversation + send)
-app.post('/api/messages/send-to', checkRateLimit, async (req, res) => {
+app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (req, res) => {
   try {
     const { username, text } = req.body;
     
@@ -309,35 +382,62 @@ app.post('/api/messages/send-to', checkRateLimit, async (req, res) => {
       res.status(400).json({ error: 'username and text required' });
       return;
     }
-    
-    // Try to open existing conversation first
-    let opened = await openConversation(username, getDriver());
-    
-    // If not found, start new conversation
-    if (!opened) {
-      opened = await startNewConversation(username, getDriver());
-    }
-    
-    if (!opened) {
-      res.status(404).json({ error: 'Could not open or create conversation' });
-      return;
-    }
-    
-    const result = await sendMessage(text, getDriver());
-    
-    if (result.success) {
+
+    // Strategy 1: Profile-page DM (most reliable — navigate to profile, click Message button)
+    const profileResult = await sendDMFromProfile(username, text, getDriver());
+    if (profileResult.success) {
       messagesSentToday++;
       messagesSentThisHour++;
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      res.json({
+        ...profileResult,
+        username,
+        strategy: 'profile',
+        rateLimits: { messagesSentToday, messagesSentThisHour },
+      });
+      return;
     }
-    
-    res.json({
-      ...result,
-      username,
-      rateLimits: {
-        messagesSentToday,
-        messagesSentThisHour,
+
+    // Strategy 2: Open existing inbox conversation
+    const opened = await openConversation(username, getDriver());
+    if (opened) {
+      const result = await sendMessage(text, getDriver());
+      if (result.success) {
+        messagesSentToday++;
+        messagesSentThisHour++;
+        logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
       }
+      res.json({
+        ...result,
+        username,
+        strategy: 'inbox',
+        rateLimits: { messagesSentToday, messagesSentThisHour },
+      });
+      return;
+    }
+
+    // Strategy 3: Start new conversation via compose flow
+    const newConv = await startNewConversation(username, getDriver());
+    if (newConv) {
+      const result = await sendMessage(text, getDriver());
+      if (result.success) {
+        messagesSentToday++;
+        messagesSentThisHour++;
+        logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      }
+      res.json({
+        ...result,
+        username,
+        strategy: 'new_conversation',
+        rateLimits: { messagesSentToday, messagesSentThisHour },
+      });
+      return;
+    }
+
+    res.status(404).json({
+      error: 'Could not open or create conversation after all strategies',
+      profileError: profileResult.error,
+      username,
     });
   } catch (error) {
     res.status(500).json({ error: String(error) });

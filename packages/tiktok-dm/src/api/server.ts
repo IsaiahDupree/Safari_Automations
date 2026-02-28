@@ -57,6 +57,7 @@ import {
   sendDMByUsername,
   sendDMFromProfileUrl,
   scrollConversations,
+  enrichContact,
   DEFAULT_RATE_LIMITS,
   RateLimitConfig,
 } from '../automation/index.js';
@@ -162,11 +163,9 @@ app.get('/health', (_req: Request, res: Response) => {
 // Get TikTok status
 app.get('/api/tiktok/status', async (_req: Request, res: Response) => {
   try {
-    const [isOnTikTok, isLoggedIn, currentUrl] = await Promise.all([
-      driver.isOnTikTok(),
-      driver.isLoggedIn(),
-      driver.getCurrentUrl(),
-    ]);
+    const currentUrl = await driver.getCurrentUrl();
+    const isOnTikTok = currentUrl.includes('tiktok.com');
+    const isLoggedIn = await driver.isLoggedIn();
     
     res.json({ isOnTikTok, isLoggedIn, currentUrl });
   } catch (error) {
@@ -527,6 +526,26 @@ app.post('/api/tiktok/ai/generate', async (req: Request, res: Response) => {
   }
 });
 
+// Enrich a TikTok creator profile (followers, following, likes)
+app.post('/api/tiktok/profile/enrich', async (req: Request, res: Response) => {
+  try {
+    const { username } = req.body as { username: string };
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+    const profile = await enrichContact(username.replace('@', ''), driver);
+    const hasData = !!(profile.followers || profile.following || profile.fullName);
+    if (!hasData) {
+      res.status(400).json({ success: false, error: 'Empty profile — Safari may not have TikTok session or profile page failed to load', username });
+      return;
+    }
+    res.json({ success: true, username, profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 // Execute raw script (advanced)
 app.post('/api/execute', async (req: Request, res: Response) => {
   try {
@@ -536,7 +555,7 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       return;
     }
     
-    const output = await driver.executeScript(script);
+    const output = await driver.executeJS(script);
     res.json({ output });
   } catch (error) {
     res.status(500).json({ error: String(error) });

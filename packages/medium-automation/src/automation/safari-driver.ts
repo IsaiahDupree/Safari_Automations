@@ -1,334 +1,554 @@
 /**
- * Medium Safari Driver
- *
- * Core browser automation for Medium via macOS Safari + AppleScript.
- * Handles navigation, JS injection, smart waits, typing, and screenshots.
+ * Safari Automation Driver
+ * Handles low-level Safari/AppleScript interactions.
+ * Works with both local and remote Safari instances.
  */
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'fs/promises';
 import * as os from 'os';
+import * as path from 'path';
+import type { AutomationConfig } from './types.js';
 
 const execAsync = promisify(exec);
 
-// ═══════════════════════════════════════════════════════════════
-// Selectors — all from Medium's data-testid attributes
-// ═══════════════════════════════════════════════════════════════
+export interface SessionInfo {
+  found: boolean;
+  windowIndex: number;
+  tabIndex: number;
+  url: string;
+}
 
-export const SELECTORS = {
-  // Header / Navigation
-  HEADER_LOGO: '[data-testid="headerMediumLogo"]',
-  HEADER_WRITE: '[data-testid="headerWriteButton"]',
-  HEADER_SEARCH_INPUT: '[data-testid="headerSearchInput"]',
-  HEADER_SEARCH_BUTTON: '[data-testid="headerSearchButton"]',
-  HEADER_NOTIFICATIONS: '[data-testid="headerNotificationButton"]',
-  HEADER_NOTIFICATION_COUNT: '[data-testid="headerNotificationCount"]',
-  HEADER_USER_ICON: '[data-testid="headerUserIcon"]',
+export class SafariDriver {
+  private config: AutomationConfig;
+  private trackedWindow: number | null = null;
+  private trackedTab: number | null = null;
+  private sessionUrlPattern: string | null = null;
+  private sessionLastVerified: number = 0;
+  private static SESSION_VERIFY_TTL_MS = 5000; // re-verify every 5s
 
-  // Article Page — Top Bar
-  HEADER_CLAP: '[data-testid="headerClapButton"]',
-  HEADER_BOOKMARK: '[data-testid="headerBookmarkButton"]',
-  HEADER_SHARE: '[data-testid="headerSocialShareButton"]',
-  HEADER_OPTIONS: '[data-testid="headerStoryOptionsButton"]',
-  AUDIO_PLAY: '[data-testid="audioPlayButton"]',
-
-  // Article Page — Footer Bar
-  FOOTER_CLAP: '[data-testid="footerClapButton"]',
-  FOOTER_BOOKMARK: '[data-testid="footerBookmarkButton"]',
-  FOOTER_SHARE: '[data-testid="footerSocialShareButton"]',
-  FOOTER_OPTIONS: '[data-testid="footerStoryOptionsButton"]',
-
-  // Article Content
-  STORY_TITLE: '[data-testid="storyTitle"]',
-  AUTHOR_NAME: '[data-testid="authorName"]',
-  AUTHOR_PHOTO: '[data-testid="authorPhoto"]',
-  READ_TIME: '[data-testid="storyReadTime"]',
-
-  // Response (Comment) Area
-  RESPONSE_TEXTBOX: 'div[role="textbox"][data-slate-editor="true"]',
-  RESPONSE_RESPOND_BTN: '[data-testid="ResponseRespondButton"]',
-  RESPONSE_CANCEL_BTN: '[data-testid="CancelResponseButton"]',
-
-  // Feed
-  POST_PREVIEW: 'article[data-testid="post-preview"]',
-
-  // New Story Editor
-  EDITOR_TITLE: '[data-testid="editorTitleParagraph"]',
-  EDITOR_BODY: '[data-testid="editorParagraphText"]',
-  EDITOR_CONTENT: '.postArticle-content.js-postField',
-  EDITOR_ADD_BTN: '[data-testid="editorAddButton"]',
-
-  // Follow
-  FOLLOW_BUTTON: 'button',  // Matched by text content "Follow"
-};
-
-// ═══════════════════════════════════════════════════════════════
-// SafariDriver
-// ═══════════════════════════════════════════════════════════════
-
-export class MediumSafariDriver {
-  private screenshotDir: string;
-
-  constructor() {
-    this.screenshotDir = path.join(os.homedir(), '.medium-automation', 'screenshots');
-    if (!fs.existsSync(this.screenshotDir)) fs.mkdirSync(this.screenshotDir, { recursive: true });
+  constructor(config: Partial<AutomationConfig> = {}) {
+    this.config = {
+      instanceType: config.instanceType || 'local',
+      remoteUrl: config.remoteUrl,
+      timeout: config.timeout || 30000,
+      actionDelay: config.actionDelay || 1000,
+      verbose: config.verbose || false,
+    };
   }
 
-  // ─── Execute JavaScript in Safari ──────────────────────────
+  /**
+   * Execute JavaScript in Safari and return the result.
+   */
+  async executeJS(js: string): Promise<string> {
+    if (this.config.instanceType === 'remote' && this.config.remoteUrl) {
+      return this.executeRemoteJS(js);
+    }
+    return this.executeLocalJS(js);
+  }
 
-  async executeJS(script: string, timeout = 15000): Promise<string> {
-    const tmpFile = path.join(os.tmpdir(), `medium_js_${Date.now()}.scpt`);
-    const escaped = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    fs.writeFileSync(tmpFile, `tell application "Safari" to do JavaScript "${escaped}" in current tab of front window`);
+  /**
+   * Execute JavaScript in local Safari via AppleScript.
+   * Uses the tracked window/tab when available — avoids "front document" ambiguity.
+   */
+  private async executeLocalJS(js: string): Promise<string> {
+    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
+
+    await fs.writeFile(tempFile, cleanJS);
+
+    // Use tracked tab if we have one; otherwise fall back to front document
+    const tabSpec = (this.trackedWindow && this.trackedTab)
+      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+      : 'front document';
+
+    const script = `
+      set jsCode to read POSIX file "${tempFile}" as «class utf8»
+      tell application "Safari" to do JavaScript jsCode in ${tabSpec}
+    `;
+
     try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout });
+      const { stdout } = await execAsync(
+        `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
+        { timeout: this.config.timeout }
+      );
+      await fs.unlink(tempFile).catch(() => {});
+
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] JS in ${tabSpec}:`, stdout.trim().substring(0, 100));
+      }
+
       return stdout.trim();
-    } finally {
-      try { fs.unlinkSync(tmpFile); } catch {}
+    } catch (error) {
+      await fs.unlink(tempFile).catch(() => {});
+      if (this.config.verbose) {
+        console.error('[SafariDriver] JS error:', error);
+      }
+      throw error;
     }
   }
 
-  // ─── Navigate to URL ──────────────────────────────────────
-
-  async navigate(url: string): Promise<boolean> {
+  /**
+   * Execute JavaScript in a specific window+tab regardless of tracking state.
+   */
+  async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
+    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
+    await fs.writeFile(tempFile, cleanJS);
+    const script = `
+      set jsCode to read POSIX file "${tempFile}" as «class utf8»
+      tell application "Safari" to do JavaScript jsCode in tab ${tabIndex} of window ${windowIndex}
+    `;
     try {
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${url}"'`, { timeout: 10000 });
-      await this.waitForPageLoad(10000);
+      const { stdout } = await execAsync(
+        `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
+        { timeout: this.config.timeout }
+      );
+      await fs.unlink(tempFile).catch(() => {});
+      return stdout.trim();
+    } catch (error) {
+      await fs.unlink(tempFile).catch(() => {});
+      throw error;
+    }
+  }
+
+  /**
+   * Execute JavaScript on remote Safari via HTTP endpoint.
+   */
+  private async executeRemoteJS(js: string): Promise<string> {
+    if (!this.config.remoteUrl) {
+      throw new Error('Remote URL not configured');
+    }
+    
+    const response = await fetch(`${this.config.remoteUrl}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: js }),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Remote execution failed: ${response.statusText}`);
+    }
+    
+    const result = await response.json() as { output?: string };
+    return result.output || '';
+  }
+
+  /**
+   * Navigate Safari to a URL.
+   * Uses the tracked tab if available, otherwise front document.
+   */
+  async navigateTo(url: string): Promise<boolean> {
+    try {
+      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      if (this.config.instanceType === 'local') {
+        if (this.trackedWindow && this.trackedTab) {
+          await execAsync(
+            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
+            { timeout: this.config.timeout }
+          );
+        } else {
+          await execAsync(
+            `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
+            { timeout: this.config.timeout }
+          );
+        }
+      } else {
+        await this.executeRemoteJS(`window.location.href = "${safeUrl}"`);
+      }
+      await this.wait(2000);
       return true;
-    } catch (e) {
-      console.error(`[Medium] Navigate failed: ${e}`);
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error('[SafariDriver] Navigation error:', error);
+      }
       return false;
     }
   }
 
-  // ─── Wait for page load ────────────────────────────────────
-
-  async waitForPageLoad(maxWait = 10000): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < maxWait) {
-      await this.sleep(500);
-      try {
-        const state = await this.executeJS('document.readyState', 3000);
-        if (state === 'complete' || state === 'interactive') return true;
-      } catch {}
-    }
-    return false;
-  }
-
-  // ─── Wait for selector to appear ──────────────────────────
-
-  async waitForSelector(selector: string, maxWait = 10000): Promise<boolean> {
-    const escaped = selector.replace(/'/g, "\\'");
-    const start = Date.now();
-    while (Date.now() - start < maxWait) {
-      try {
-        const result = await this.executeJS(`document.querySelector('${escaped}') ? 'found' : 'waiting'`, 3000);
-        if (result === 'found') return true;
-      } catch {}
-      await this.sleep(500);
-    }
-    return false;
-  }
-
-  // ─── Type text into focused element ────────────────────────
-
-  async typeText(text: string): Promise<boolean> {
-    // Strategy 1: execCommand insertText (works with most React/contenteditable)
+  /**
+   * Get current URL from Safari.
+   */
+  async getCurrentUrl(): Promise<string> {
     try {
-      const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-      const result = await this.executeJS(`
-        (function() {
-          var el = document.activeElement;
-          if (!el) return 'no_focus';
-          document.execCommand('insertText', false, '${escaped}');
-          return 'typed';
-        })()
+      if (this.config.instanceType === 'local') {
+        const { stdout } = await execAsync(
+          `osascript -e 'tell application "Safari" to get URL of front document'`
+        );
+        return stdout.trim();
+      } else {
+        return await this.executeJS('window.location.href');
+      }
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Check if Safari is on Instagram.
+   */
+  async isOnInstagram(): Promise<boolean> {
+    const url = await this.getCurrentUrl();
+    return url.includes('instagram.com');
+  }
+
+  /**
+   * Check if logged in to Instagram.
+   */
+  async isLoggedIn(): Promise<boolean> {
+    const result = await this.executeJS(`
+      (function() {
+        var notLoggedIn = document.querySelector('input[name="username"]') ||
+                          document.querySelector('button[type="submit"]')?.innerText?.includes('Log in');
+        return notLoggedIn ? 'false' : 'true';
+      })()
+    `);
+    return result === 'true';
+  }
+
+  /**
+   * Wait for specified milliseconds.
+   */
+  async wait(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Wait for an element to appear.
+   */
+  async waitForElement(selector: string, maxWaitMs: number = 10000): Promise<boolean> {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < maxWaitMs) {
+      const found = await this.executeJS(`
+        document.querySelector('${selector}') ? 'found' : 'not_found'
       `);
-      if (result === 'typed') return true;
-    } catch {}
-
-    // Strategy 2: OS-level keystrokes
-    try {
-      await execAsync(`osascript -e 'tell application "System Events" to keystroke "${text.replace(/"/g, '\\"')}"'`, { timeout: 10000 });
-      return true;
-    } catch {}
-
-    // Strategy 3: Clipboard paste
-    try {
-      await execAsync(`echo "${text.replace(/"/g, '\\"')}" | pbcopy`);
-      await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
-      await this.sleep(300);
-      return true;
-    } catch {}
-
+      
+      if (found === 'found') return true;
+      await this.wait(500);
+    }
+    
     return false;
   }
 
-  // ─── Type into Slate.js editor (for responses) ────────────
-
-  async typeIntoSlateEditor(selector: string, text: string): Promise<boolean> {
-    const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-    const selEsc = selector.replace(/'/g, "\\'");
-
-    // Focus the Slate editor
-    const focusResult = await this.executeJS(`
-      (function() {
-        var el = document.querySelector('${selEsc}');
-        if (!el) return 'not_found';
-        el.focus();
-        return 'focused';
-      })()
-    `);
-    if (focusResult !== 'focused') return false;
-    await this.sleep(300);
-
-    // Clear existing content + type
-    const typed = await this.executeJS(`
-      (function() {
-        var el = document.querySelector('${selEsc}');
-        if (!el) return 'not_found';
-        el.focus();
-        // Select all and delete
-        document.execCommand('selectAll');
-        document.execCommand('delete');
-        // Insert text
-        document.execCommand('insertText', false, '${escaped}');
-        // Trigger input event
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        return 'typed';
-      })()
-    `);
-
-    return typed === 'typed';
+  /**
+   * Type text using OS-level keystrokes (works with React contenteditable).
+   * This bypasses JavaScript event injection issues.
+   */
+  async typeViaKeystrokes(text: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await this.activateSafari();
+      await this.wait(300);
+      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${escaped}"'`,
+        { timeout: this.config.timeout }
+      );
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] Keystroke error:', error);
+      return false;
+    }
   }
 
-  // ─── Type into Medium's classic editor (graf-based) ────────
-
-  async typeIntoGrafEditor(text: string, isTitle = false): Promise<boolean> {
-    const selector = isTitle ? SELECTORS.EDITOR_TITLE : SELECTORS.EDITOR_BODY;
-    const selEsc = selector.replace(/'/g, "\\'");
-    const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-
-    // Click the element to focus it
-    const clicked = await this.executeJS(`
-      (function() {
-        var el = document.querySelector('${selEsc}');
-        if (!el) return 'not_found';
-        el.click();
-        el.focus();
-        return 'focused';
-      })()
-    `);
-    if (clicked !== 'focused') return false;
-    await this.sleep(300);
-
-    // Select all and replace
-    const result = await this.executeJS(`
-      (function() {
-        document.execCommand('selectAll');
-        document.execCommand('delete');
-        document.execCommand('insertText', false, '${escaped}');
-        return 'typed';
-      })()
-    `);
-    return result === 'typed';
+  /**
+   * Press Enter key via OS-level event.
+   */
+  async pressEnter(): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke return'`,
+        { timeout: this.config.timeout }
+      );
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] Enter key error:', error);
+      return false;
+    }
   }
 
-  // ─── Click element ─────────────────────────────────────────
+  /**
+   * Find a Safari tab by URL pattern across all windows.
+   * Returns the first matching window+tab indices.
+   */
+  async findTabByUrl(urlPattern: string): Promise<SessionInfo> {
+    if (this.config.instanceType !== 'local') {
+      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+    }
+    try {
+      const script = `
+tell application "Safari"
+  set found to false
+  repeat with w from 1 to count of windows
+    repeat with t from 1 to count of tabs of window w
+      set tabURL to URL of tab t of window w
+      if tabURL contains "${urlPattern}" then
+        return (w as text) & ":" & (t as text) & ":" & tabURL
+      end if
+    end repeat
+  end repeat
+  return "not_found:0:0:"
+end tell`;
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      const result = stdout.trim();
+      if (result.startsWith('not_found')) {
+        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      }
+      const parts = result.split(':');
+      const w = parseInt(parts[0], 10);
+      const t = parseInt(parts[1], 10);
+      const url = parts.slice(2).join(':');
+      if (isNaN(w) || isNaN(t)) {
+        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      }
+      return { found: true, windowIndex: w, tabIndex: t, url };
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] findTabByUrl error:', error);
+      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+    }
+  }
 
+  /**
+   * Bring a specific Safari window+tab to the foreground and make it active.
+   */
+  async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
+    try {
+      const script = `
+tell application "Safari"
+  activate
+  set index of window ${windowIndex} to 1
+  set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
+end tell
+tell application "System Events"
+  set frontmost of process "Safari" to true
+  try
+    perform action "AXRaise" of front window of process "Safari"
+  end try
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await this.wait(300);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] activateTab error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get the current URL of a specific Safari tab.
+   * Used for self-healing session verification.
+   */
+  async getTabUrl(windowIndex: number, tabIndex: number): Promise<string> {
+    if (this.config.instanceType !== 'local') return '';
+    try {
+      const { stdout } = await execAsync(
+        `osascript -e 'tell application "Safari" to get URL of tab ${tabIndex} of window ${windowIndex}'`
+      );
+      return stdout.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Verify the tracked session is still valid (tab exists and URL still matches).
+   * Returns true if the session is healthy, false if it needs re-scanning.
+   */
+  async verifySession(urlPattern: string): Promise<boolean> {
+    if (!this.trackedWindow || !this.trackedTab) return false;
+    const url = await this.getTabUrl(this.trackedWindow, this.trackedTab);
+    if (!url) {
+      // Tab may have been closed — invalidate
+      console.warn(`[SafariDriver] Tracked tab w=${this.trackedWindow} t=${this.trackedTab} is gone — resetting`);
+      this.clearTrackedSession();
+      return false;
+    }
+    if (!url.includes(urlPattern)) {
+      // Tab navigated away — invalidate
+      console.warn(`[SafariDriver] Tracked tab drifted: expected '${urlPattern}', got '${url}' — re-scanning`);
+      this.clearTrackedSession();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Ensure the correct Safari tab is active before any operation.
+   *
+   * Self-healing flow:
+   * 1. Fast path: if we have a tracked tab within TTL, verify its URL still matches.
+   *    - URL OK  → re-activate and return immediately.
+   *    - URL drifted / tab gone → invalidate and fall through to full scan.
+   * 2. Full scan: search all Safari windows for a tab matching urlPattern.
+   *    - Found  → activate, track, return.
+   *    - Not found → navigate front document to the URL, wait, re-scan.
+   *
+   * Call this at the start of any operation that must run in a specific Safari session.
+   */
+  async ensureActiveSession(urlPattern: string): Promise<SessionInfo> {
+    const now = Date.now();
+    const withinTTL = this.trackedWindow &&
+      this.trackedTab &&
+      this.sessionUrlPattern === urlPattern &&
+      (now - this.sessionLastVerified) <= SafariDriver.SESSION_VERIFY_TTL_MS;
+
+    if (withinTTL && this.trackedWindow && this.trackedTab) {
+      // Self-healing fast path: verify URL before trusting cached tab
+      const stillValid = await this.verifySession(urlPattern);
+      if (stillValid) {
+        await this.activateTab(this.trackedWindow, this.trackedTab);
+        this.sessionLastVerified = now;
+        return { found: true, windowIndex: this.trackedWindow, tabIndex: this.trackedTab, url: '' };
+      }
+      // Session drifted — clearTrackedSession() already called in verifySession
+    }
+
+    // Full scan
+    const info = await this.findTabByUrl(urlPattern);
+
+    if (info.found) {
+      await this.activateTab(info.windowIndex, info.tabIndex);
+      this.trackedWindow = info.windowIndex;
+      this.trackedTab = info.tabIndex;
+      this.sessionUrlPattern = urlPattern;
+      this.sessionLastVerified = now;
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] Session locked: w=${info.windowIndex} t=${info.tabIndex} url=${info.url}`);
+      }
+      return info;
+    }
+
+    // Not found — create session by navigating in front document
+    console.warn(`[SafariDriver] No tab found for '${urlPattern}' — navigating front document`);
+    await this.navigateTo(`https://www.${urlPattern}`);
+    await this.wait(2500);
+
+    const retry = await this.findTabByUrl(urlPattern);
+    if (retry.found) {
+      await this.activateTab(retry.windowIndex, retry.tabIndex);
+      this.trackedWindow = retry.windowIndex;
+      this.trackedTab = retry.tabIndex;
+      this.sessionUrlPattern = urlPattern;
+      this.sessionLastVerified = now;
+    }
+    return retry;
+  }
+
+  /**
+   * Return current tracked session info for diagnostics.
+   */
+  getSessionInfo(): { windowIndex: number | null; tabIndex: number | null; urlPattern: string | null; lastVerified: number } {
+    return {
+      windowIndex: this.trackedWindow,
+      tabIndex: this.trackedTab,
+      urlPattern: this.sessionUrlPattern,
+      lastVerified: this.sessionLastVerified,
+    };
+  }
+
+  /**
+   * Clear the tracked session (e.g. after a Safari restart).
+   */
+  clearTrackedSession(): void {
+    this.trackedWindow = null;
+    this.trackedTab = null;
+    this.sessionUrlPattern = null;
+    this.sessionLastVerified = 0;
+  }
+
+  /**
+   * Bring Safari to the foreground (generic — no tab targeting).
+   */
+  async activateSafari(): Promise<boolean> {
+    try {
+      const script = `
+tell application "Safari" to activate
+delay 0.2
+tell application "System Events"
+  set frontmost of process "Safari" to true
+  try
+    perform action "AXRaise" of front window of process "Safari"
+  end try
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Click an element matched by CSS selector.
+   */
   async clickElement(selector: string): Promise<boolean> {
-    const selEsc = selector.replace(/'/g, "\\'");
     const result = await this.executeJS(`
       (function() {
-        var el = document.querySelector('${selEsc}');
-        if (!el) return 'not_found';
-        el.click();
-        return 'clicked';
-      })()
-    `);
-    return result === 'clicked';
-  }
-
-  // ─── Click button by text content ──────────────────────────
-
-  async clickButtonByText(text: string): Promise<boolean> {
-    const escaped = text.replace(/'/g, "\\'");
-    const result = await this.executeJS(`
-      (function() {
-        var buttons = document.querySelectorAll('button, div[role="button"], a[role="button"]');
-        for (var i = 0; i < buttons.length; i++) {
-          var btnText = buttons[i].textContent.trim();
-          if (btnText === '${escaped}' && buttons[i].offsetParent !== null) {
-            buttons[i].click();
-            return 'clicked';
-          }
-        }
+        var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (el) { el.click(); return 'clicked'; }
         return 'not_found';
       })()
     `);
     return result === 'clicked';
   }
 
-  // ─── Get text content of an element ────────────────────────
-
-  async getTextContent(selector: string): Promise<string | null> {
-    const selEsc = selector.replace(/'/g, "\\'");
+  /**
+   * Focus an element matched by CSS selector.
+   */
+  async focusElement(selector: string): Promise<boolean> {
     const result = await this.executeJS(`
       (function() {
-        var el = document.querySelector('${selEsc}');
-        return el ? el.textContent.trim() : '';
+        var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (el) { el.focus(); el.click(); return 'focused'; }
+        return 'not_found';
       })()
     `);
-    return result || null;
+    return result === 'focused';
   }
 
-  // ─── Get current URL ───────────────────────────────────────
-
-  async getCurrentURL(): Promise<string> {
-    return this.executeJS('document.URL');
-  }
-
-  // ─── Screenshot ────────────────────────────────────────────
-
-  async captureScreenshot(label: string): Promise<string> {
-    const filename = `medium_${label}_${Date.now()}.png`;
-    const filepath = path.join(this.screenshotDir, filename);
+  /**
+   * Take a screenshot (local only).
+   */
+  async takeScreenshot(outputPath: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') {
+      return false;
+    }
+    
     try {
-      await execAsync(`screencapture -x "${filepath}"`);
-      return filepath;
+      await execAsync(`screencapture -x "${outputPath}"`);
+      return true;
     } catch {
-      return '';
+      return false;
     }
   }
 
-  // ─── Check login status ────────────────────────────────────
-
-  async checkLoginStatus(): Promise<'logged_in' | 'not_logged_in' | 'unknown'> {
-    try {
-      const result = await this.executeJS(`
-        (function() {
-          if (document.querySelector('[data-testid="headerUserIcon"]')) return 'logged_in';
-          if (document.querySelector('[data-testid="headerNotificationButton"]')) return 'logged_in';
-          if (document.querySelector('[data-testid="headerWriteButton"]')) return 'logged_in';
-          if (document.querySelector('a[href*="signin"]') || document.querySelector('a[href*="login"]')) return 'not_logged_in';
-          return 'unknown';
-        })()
-      `);
-      return result as 'logged_in' | 'not_logged_in' | 'unknown';
-    } catch {
-      return 'unknown';
-    }
+  /**
+   * Get the current configuration.
+   */
+  getConfig(): AutomationConfig {
+    return { ...this.config };
   }
 
-  // ─── Helpers ───────────────────────────────────────────────
-
-  async sleep(ms: number): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
+  /**
+   * Update configuration.
+   */
+  setConfig(config: Partial<AutomationConfig>): void {
+    this.config = { ...this.config, ...config };
   }
+}
 
-  async activateSafari(): Promise<void> {
-    await execAsync('osascript -e \'tell application "Safari" to activate\'');
+// Singleton instance for convenience
+let defaultDriver: SafariDriver | null = null;
+
+export function getDefaultDriver(): SafariDriver {
+  if (!defaultDriver) {
+    defaultDriver = new SafariDriver();
   }
+  return defaultDriver;
+}
+
+export function setDefaultDriver(driver: SafariDriver): void {
+  defaultDriver = driver;
 }

@@ -404,10 +404,16 @@ export async function sendDMByUsername(
   })()`);
   
   if (!clickResult.includes('clicked')) {
-    return { success: false, error: 'Could not find Message button on profile', username };
+    // Fallback: use inbox compose flow (works even when profile DM is restricted)
+    console.log(`   ⚠️ No Message button — trying inbox compose flow...`);
+    const inboxOk = await startNewConversation(username, d);
+    if (!inboxOk) {
+      return { success: false, error: 'Could not open DM — profile button missing and inbox compose failed', username };
+    }
+    await d.wait(1500);
+  } else {
+    await d.wait(2000);
   }
-  
-  await d.wait(2000);
   
   // Wait for composer
   let composerReady = false;
@@ -589,6 +595,113 @@ export async function scrollConversation(scrollCount: number = 3, driver?: Safar
   }
   
   return totalMessages;
+}
+
+/**
+ * Scroll the DM list until no new conversations load, then return all.
+ */
+export async function scrollAndListAllConversations(driver?: SafariDriver, maxScrolls = 30): Promise<DMConversation[]> {
+  const d = driver || getDefaultDriver();
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    await d.executeJS(`
+      (function() {
+        var pane = document.querySelector('[data-testid="DMDrawer"]') ||
+                   document.querySelector('[data-testid="DM_timeline"]') ||
+                   document.querySelector('[role="list"]');
+        if (pane) { pane.scrollTop += 900; }
+        else { window.scrollBy(0, 900); }
+      })()
+    `);
+    await d.wait(1200);
+
+    const countRaw = await d.executeJS(
+      `String(document.querySelectorAll('[data-testid="conversation"]').length)`
+    );
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break;
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return listConversations(d);
+}
+
+/**
+ * Scroll up in the current DM thread to load full message history, then read all.
+ */
+export async function readAllMessages(driver?: SafariDriver, maxScrolls = 20): Promise<DMMessage[]> {
+  const d = driver || getDefaultDriver();
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    await d.executeJS(`
+      (function() {
+        var pane = document.querySelector('[data-testid="DM_timeline"]') ||
+                   document.querySelector('[data-testid="dm-conversation-panel"]');
+        if (pane) { pane.scrollTop = 0; }
+        else { window.scrollTo(0, 0); }
+      })()
+    `);
+    await d.wait(1000);
+
+    const countRaw = await d.executeJS(
+      `String(document.querySelectorAll('[data-testid="messageEntry"]').length)`
+    );
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break;
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return readMessages(9999, d);
+}
+
+/**
+ * Fetch contact info from a Twitter/X profile page.
+ */
+export async function enrichContact(username: string, driver?: SafariDriver): Promise<{
+  fullName: string; bio: string; followers: string; following: string; location: string; website: string;
+}> {
+  const d = driver || getDefaultDriver();
+  await d.navigateTo(`https://x.com/${username}`);
+  await d.wait(2500);
+
+  const raw = await d.executeJS(`
+    (function() {
+      var nameEl  = document.querySelector('[data-testid="UserName"] span');
+      var bioEl   = document.querySelector('[data-testid="UserDescription"]');
+      var locEl   = document.querySelector('[data-testid="UserLocation"]');
+      var webEl   = document.querySelector('[data-testid="UserUrl"] a');
+      var stats   = document.querySelectorAll('a[href*="/following"] span, a[href*="/followers"] span, a[href*="/verified_followers"] span');
+      var following = stats[0] ? stats[0].innerText.trim() : '';
+      var followers = stats[2] ? stats[2].innerText.trim() : (stats[1] ? stats[1].innerText.trim() : '');
+      return JSON.stringify({
+        fullName:  nameEl ? nameEl.innerText.trim() : '',
+        bio:       bioEl  ? bioEl.innerText.trim()  : '',
+        followers: followers,
+        following: following,
+        location:  locEl ? locEl.innerText.trim() : '',
+        website:   webEl ? webEl.href : '',
+      });
+    })()
+  `);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { fullName: '', bio: '', followers: '', following: '', location: '', website: '' };
+  }
 }
 
 /**

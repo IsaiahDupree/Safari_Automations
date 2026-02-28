@@ -1,48 +1,48 @@
 /**
  * CRM Client
  * 
- * Thin client for CRM operations. Currently wraps the local crm-core package,
- * but designed to be easily switched to an HTTP client when CRM is offloaded
- * to its own repository and API.
+ * HTTP client for CRMLite — the cross-platform CRM service.
+ * Connects to the CRMLite REST API for contacts, conversations,
+ * interactions, campaigns, RevenueCat, and DM sync.
  */
 
-import type { Contact, Interaction, Campaign, CRMConfig, DEFAULT_CRM_CONFIG } from './types.js';
+import type { Contact, Interaction, Campaign, CRMConfig, Platform } from './types.js';
 
 export class CRMClient {
   private config: CRMConfig;
-  private useLocalMode: boolean;
+  private apiKey: string;
 
-  constructor(config: Partial<CRMConfig> = {}) {
+  constructor(config: Partial<CRMConfig & { apiKey?: string }> = {}) {
     this.config = {
-      apiUrl: 'http://localhost:3020',
-      timeout: 30000,
-      ...config,
+      apiUrl: config.apiUrl || process.env.CRMLITE_URL || 'http://localhost:3020',
+      timeout: config.timeout || 30000,
     };
-    // For now, use local mode since CRM API doesn't exist yet
-    this.useLocalMode = true;
+    this.apiKey = config.apiKey || process.env.CRMLITE_KEY || '';
   }
 
   private async fetch<T>(path: string, options?: RequestInit): Promise<T> {
-    if (this.useLocalMode) {
-      throw new Error('CRM API not available. Using local mode.');
-    }
-
     const url = `${this.config.apiUrl}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeout);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options?.headers as Record<string, string> || {}),
+    };
+    if (this.apiKey) {
+      headers['x-api-key'] = this.apiKey;
+    }
 
     try {
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...options?.headers,
-        },
+        headers,
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const body = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${body.slice(0, 200)}`);
       }
 
       return await response.json() as T;
@@ -51,53 +51,65 @@ export class CRMClient {
     }
   }
 
+  // === HEALTH ===
+
+  async healthCheck(): Promise<{ status: string; service: string }> {
+    return this.fetch('/api/health');
+  }
+
   // === CONTACTS ===
 
   async getContact(id: string): Promise<Contact | null> {
-    if (this.useLocalMode) {
-      // TODO: Import from crm-core when available
-      console.log(`[CRM] Would fetch contact: ${id}`);
+    try {
+      return await this.fetch<Contact>(`/api/contacts/${id}`);
+    } catch {
       return null;
     }
-    return this.fetch<Contact>(`/api/contacts/${id}`);
   }
 
   async getContactByUsername(platform: string, username: string): Promise<Contact | null> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would fetch contact: ${platform}/${username}`);
+    try {
+      return await this.fetch<Contact>(
+        `/api/contacts/by-username/${encodeURIComponent(platform)}/${encodeURIComponent(username)}`
+      );
+    } catch {
       return null;
     }
-    return this.fetch<Contact>(`/api/contacts/by-username/${platform}/${username}`);
   }
 
   async listContacts(options?: {
     platform?: string;
-    tags?: string[];
+    stage?: string;
+    tag?: string;
+    search?: string;
+    revcat_status?: string;
+    sort?: string;
+    order?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
-  }): Promise<Contact[]> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would list contacts with options:`, options);
-      return [];
-    }
+  }): Promise<{ contacts: Contact[]; total: number }> {
     const params = new URLSearchParams();
     if (options?.platform) params.set('platform', options.platform);
-    if (options?.tags) params.set('tags', options.tags.join(','));
+    if (options?.stage) params.set('stage', options.stage);
+    if (options?.tag) params.set('tag', options.tag);
+    if (options?.search) params.set('search', options.search);
+    if (options?.revcat_status) params.set('revcat_status', options.revcat_status);
+    if (options?.sort) params.set('sort', options.sort);
+    if (options?.order) params.set('order', options.order);
     if (options?.limit) params.set('limit', String(options.limit));
     if (options?.offset) params.set('offset', String(options.offset));
-    return this.fetch<Contact[]>(`/api/contacts?${params}`);
+    return this.fetch(`/api/contacts?${params}`);
   }
 
-  async createContact(contact: Omit<Contact, 'id' | 'createdAt' | 'updatedAt'>): Promise<Contact> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would create contact:`, contact.username);
-      return {
-        ...contact,
-        id: `temp_${Date.now()}`,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } as Contact;
-    }
+  async createContact(contact: Partial<Contact> & {
+    platform_accounts?: Array<{
+      platform: Platform;
+      username: string;
+      display_name?: string;
+      platform_user_id?: string;
+      is_primary?: boolean;
+    }>;
+  }): Promise<Contact> {
     return this.fetch<Contact>('/api/contacts', {
       method: 'POST',
       body: JSON.stringify(contact),
@@ -105,91 +117,175 @@ export class CRMClient {
   }
 
   async updateContact(id: string, updates: Partial<Contact>): Promise<Contact> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would update contact ${id}:`, updates);
-      return { id, ...updates } as Contact;
-    }
     return this.fetch<Contact>(`/api/contacts/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(updates),
     });
   }
 
-  async addTag(contactId: string, tag: string): Promise<void> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would add tag ${tag} to contact ${contactId}`);
-      return;
-    }
-    await this.fetch(`/api/contacts/${contactId}/tags`, {
+  async deleteContact(id: string): Promise<void> {
+    await this.fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+  }
+
+  async addTag(contactId: string, tag: string): Promise<{ tags: string[] }> {
+    return this.fetch(`/api/contacts/${contactId}/tags`, {
       method: 'POST',
+      body: JSON.stringify({ tag }),
+    });
+  }
+
+  async removeTag(contactId: string, tag: string): Promise<{ tags: string[] }> {
+    return this.fetch(`/api/contacts/${contactId}/tags`, {
+      method: 'DELETE',
       body: JSON.stringify({ tag }),
     });
   }
 
   // === INTERACTIONS ===
 
-  async logInteraction(interaction: Omit<Interaction, 'id'>): Promise<Interaction> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would log interaction:`, interaction.type);
-      return {
-        ...interaction,
-        id: `temp_${Date.now()}`,
-      } as Interaction;
-    }
-    return this.fetch<Interaction>('/api/interactions', {
+  async logInteraction(contactId: string, interaction: {
+    type: string;
+    platform?: string;
+    summary?: string;
+    outcome?: string;
+    sentiment?: string;
+    value_delivered?: boolean;
+    metadata?: Record<string, unknown>;
+  }): Promise<Interaction> {
+    return this.fetch<Interaction>(`/api/contacts/${contactId}/interactions`, {
       method: 'POST',
       body: JSON.stringify(interaction),
     });
   }
 
-  async getInteractions(contactId: string, limit = 50): Promise<Interaction[]> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would get interactions for contact ${contactId}`);
-      return [];
-    }
-    return this.fetch<Interaction[]>(`/api/contacts/${contactId}/interactions?limit=${limit}`);
+  async getInteractions(contactId: string, limit = 50): Promise<{ interactions: Interaction[] }> {
+    return this.fetch(`/api/contacts/${contactId}/interactions?limit=${limit}`);
+  }
+
+  // === CONVERSATIONS ===
+
+  async listConversations(options?: {
+    platform?: string;
+    contact_id?: string;
+    active?: boolean;
+    limit?: number;
+  }): Promise<{ conversations: unknown[]; total: number }> {
+    const params = new URLSearchParams();
+    if (options?.platform) params.set('platform', options.platform);
+    if (options?.contact_id) params.set('contact_id', options.contact_id);
+    if (options?.active !== undefined) params.set('active', String(options.active));
+    if (options?.limit) params.set('limit', String(options.limit));
+    return this.fetch(`/api/conversations?${params}`);
+  }
+
+  async getConversationMessages(conversationId: string, limit = 50): Promise<{ messages: unknown[] }> {
+    return this.fetch(`/api/conversations/${conversationId}/messages?limit=${limit}`);
   }
 
   // === CAMPAIGNS ===
 
-  async getCampaign(id: string): Promise<Campaign | null> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would fetch campaign: ${id}`);
-      return null;
-    }
-    return this.fetch<Campaign>(`/api/campaigns/${id}`);
+  async listCampaigns(status?: string): Promise<{ campaigns: Campaign[] }> {
+    const params = status ? `?status=${status}` : '';
+    return this.fetch(`/api/campaigns${params}`);
   }
 
-  async listCampaigns(): Promise<Campaign[]> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would list campaigns`);
-      return [];
-    }
-    return this.fetch<Campaign[]>('/api/campaigns');
-  }
-
-  // === UTILITY ===
-
-  async syncFromPlatform(platform: string): Promise<{ synced: number }> {
-    if (this.useLocalMode) {
-      console.log(`[CRM] Would sync from platform: ${platform}`);
-      return { synced: 0 };
-    }
-    return this.fetch<{ synced: number }>(`/api/sync/${platform}`, {
+  async createCampaign(campaign: {
+    name: string;
+    description?: string;
+    type?: string;
+    target_criteria?: Record<string, unknown>;
+    message_templates?: Record<string, unknown>[];
+    platforms?: string[];
+  }): Promise<Campaign> {
+    return this.fetch<Campaign>('/api/campaigns', {
       method: 'POST',
+      body: JSON.stringify(campaign),
     });
   }
 
+  // === REVCAT ===
+
+  async getSubscriber(appUserId: string): Promise<{
+    contact: Contact | null;
+    events: unknown[];
+    live_subscriber: unknown;
+  }> {
+    return this.fetch(`/api/revcat/subscriber/${encodeURIComponent(appUserId)}`);
+  }
+
+  async linkRevCatUser(appUserId: string, contactId: string): Promise<{ linked: boolean; contact: Contact }> {
+    return this.fetch(`/api/revcat/subscriber/${encodeURIComponent(appUserId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ contact_id: contactId }),
+    });
+  }
+
+  // === DM SYNC ===
+
+  async syncDMs(platform: string, conversations: unknown[]): Promise<{
+    synced: boolean;
+    contacts_created: number;
+    contacts_updated: number;
+    conversations_synced: number;
+    messages_synced: number;
+  }> {
+    return this.fetch('/api/sync/dm', {
+      method: 'POST',
+      body: JSON.stringify({ platform, conversations }),
+    });
+  }
+
+  async getSyncHistory(): Promise<{ sync_history: unknown[] }> {
+    return this.fetch('/api/sync/dm');
+  }
+
+  // === STATS ===
+
+  async getStats(): Promise<{
+    contacts: { total: number; by_stage: Record<string, number>; by_platform: Record<string, number> };
+    revenue: { active_subscribers: number; total_revenue: number };
+    conversations: { active: number; total_messages: number };
+    last_sync: unknown;
+  }> {
+    return this.fetch('/api/stats');
+  }
+
+  // === PLATFORM ACCOUNTS ===
+
+  async addPlatformAccount(contactId: string, account: {
+    platform: Platform;
+    username: string;
+    display_name?: string;
+    platform_user_id?: string;
+    is_primary?: boolean;
+  }): Promise<unknown> {
+    return this.fetch('/api/platform-accounts', {
+      method: 'POST',
+      body: JSON.stringify({ contact_id: contactId, ...account }),
+    });
+  }
+
+  async listPlatformAccounts(options?: {
+    platform?: string;
+    contact_id?: string;
+  }): Promise<{ accounts: unknown[] }> {
+    const params = new URLSearchParams();
+    if (options?.platform) params.set('platform', options.platform);
+    if (options?.contact_id) params.set('contact_id', options.contact_id);
+    return this.fetch(`/api/platform-accounts?${params}`);
+  }
+
+  // === CONFIG ===
+
   isConnected(): boolean {
-    return !this.useLocalMode;
+    return !!this.config.apiUrl;
   }
 
-  setApiMode(apiUrl: string): void {
+  setApiUrl(apiUrl: string): void {
     this.config.apiUrl = apiUrl;
-    this.useLocalMode = false;
   }
 
-  setLocalMode(): void {
-    this.useLocalMode = true;
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
   }
 }

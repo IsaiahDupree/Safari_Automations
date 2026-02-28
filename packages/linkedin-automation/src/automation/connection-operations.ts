@@ -166,17 +166,18 @@ export async function extractProfile(profileUrl: string, driver?: SafariDriver):
   if (!nav.success) return null;
 
   await d.wait(5000);
-  // Wait for profile content to render (h2 inside main)
-  const maxWait = 15000;
+  // Wait for the profile name h2 to appear — a non-section-heading h2 inside main.
+  // The generic "h2.length > 2" check fires too early on page skeleton elements.
+  const SECTION_HEADINGS_INLINE = '["activity","experience","education","skills","interests","languages","certifications","recommendations","courses","projects","publications","honors","organizations","volunteering","about","people you may know","you might like","more profiles for you"]';
+  const readyCheck = `(function(){var m=document.querySelector("main");if(!m)return "";var sh=${SECTION_HEADINGS_INLINE};var h2s=m.querySelectorAll("h2");for(var i=0;i<h2s.length;i++){var t=(h2s[i].innerText||"").trim();if(t.length>2&&t.length<60&&sh.indexOf(t.toLowerCase())===-1&&t.indexOf("notification")===-1)return"ready";}return"";})()`
+  const maxWait = 20000;
   const startWait = Date.now();
   while (Date.now() - startWait < maxWait) {
-    const check = await d.executeJS(
-      'var m = document.querySelector("main"); m && m.querySelectorAll("h2").length > 2 ? "ready" : "waiting"'
-    );
+    const check = await d.executeJS(readyCheck);
     if (check === 'ready') break;
     await d.wait(1000);
   }
-  await d.wait(1000);
+  await d.wait(500);
 
   // Single round-trip using combined PROFILE_EXTRACTION_JS (was 5 separate calls)
   const rawResult = await d.executeJS(PROFILE_EXTRACTION_JS);
@@ -261,172 +262,224 @@ export async function sendConnectionRequest(
   driver?: SafariDriver
 ): Promise<ConnectionResult> {
   const d = driver || getDefaultDriver();
+  const log = (msg: string) => console.log(`[Connection] ${msg}`);
+
   const nav = await navigateToProfile(request.profileUrl, d);
   if (!nav.success) return { success: false, status: 'error', reason: 'Failed to load profile' };
 
-  await d.humanDelay(2000, 4000);
-
-  // Check current status — look at profile section buttons AND anchors
-  const statusCheck = await d.executeJS(`
-    (function() {
-      var main = document.querySelector('main');
-      if (!main) return 'no_main';
-      var section = main.querySelector('section');
-      if (!section) return 'no_section';
-      var hasMessage = false, hasPending = false, hasConnect = false, hasFollow = false, hasMore = false;
-      // Check buttons
-      var btns = section.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        var t = btns[i].innerText.trim().toLowerCase();
-        if (a.includes('message')) hasMessage = true;
-        if (a.includes('pending')) hasPending = true;
-        if (a.includes('connect') || a.includes('invite')) hasConnect = true;
-        if (a.includes('follow')) hasFollow = true;
-        if (a === 'more') hasMore = true;
-      }
-      // Check anchors (LinkedIn Feb 2026 renders Connect/Message as <a> tags)
-      var anchors = section.querySelectorAll('a');
-      for (var j = 0; j < anchors.length; j++) {
-        var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
-        var at = anchors[j].innerText.trim().toLowerCase();
-        var ah = (anchors[j].href || '').toLowerCase();
-        if (aa.includes('message') || at === 'message' || ah.includes('/messaging/compose')) hasMessage = true;
-        if (aa.includes('pending') || at === 'pending') hasPending = true;
-        if (aa.includes('connect') || aa.includes('invite') || at === 'connect' || ah.includes('custom-invite')) hasConnect = true;
-        if (aa.includes('follow') || at === 'follow') hasFollow = true;
-      }
-      if (hasPending) return 'pending';
-      if (hasMessage && !hasConnect && !hasFollow) return 'already_connected';
-      if (hasConnect) return 'can_connect_direct';
-      if (hasFollow && hasMore) return 'can_connect_via_more';
-      if (hasMore) return 'can_connect_via_more';
-      return 'unknown';
-    })()
-  `);
-
-  console.log(`[Connection] Status check for ${request.profileUrl}: ${statusCheck}`);
-
-  if (statusCheck === 'already_connected' && request.skipIfConnected) {
-    return { success: true, status: 'already_connected' };
+  // Wait for profile section action buttons to actually render (not fixed delay)
+  const pageReady = await d.waitForCondition(
+    `(function(){var m=document.querySelector('main');if(!m)return '';var s=m.querySelector('section');if(!s)return '';var has=s.querySelector('a[href*="custom-invite"],button[aria-label*="Pending" i],a[href*="/messaging/compose"],button[aria-label*="message" i],button[aria-label*="invite" i]');return has?'ready':'';})()`,
+    10000
+  );
+  if (!pageReady) {
+    log('Profile section buttons did not load within 10s');
   }
-  if (statusCheck === 'pending' && request.skipIfPending) {
-    return { success: true, status: 'pending' };
+  await d.wait(3000);
+
+  // ── Step 1: Read actual page state from the DOM ──────────────
+  const PAGE_STATE_JS = `(function(){var m=document.querySelector('main');if(!m)return'no_main';var s=m.querySelector('section');if(!s)return'no_section';var r={connect:null,message:null,pending:null,follow:null,more:null};var el;el=s.querySelector('a[href*="custom-invite"]');if(el)r.connect={tag:'a',label:el.getAttribute('aria-label')||'',href:el.href};if(!r.connect){el=s.querySelector('button[aria-label*="invite" i]');if(el)r.connect={tag:'button',label:el.getAttribute('aria-label')||''};}el=s.querySelector('a[href*="/messaging/compose"]');if(el)r.message={tag:'a',href:el.href};if(!r.message){el=s.querySelector('button[aria-label*="message" i]');if(el)r.message={tag:'button'};}el=s.querySelector('button[aria-label*="Pending" i]');if(!el)el=s.querySelector('a[aria-label*="Pending" i]');if(el)r.pending={label:el.getAttribute('aria-label')||''};el=s.querySelector('button[aria-label="More"]');if(!el)el=s.querySelector('button[aria-label="more" i]');if(el)r.more=true;var allEls=s.querySelectorAll('button,a');for(var i=0;i<allEls.length;i++){var lbl=(allEls[i].getAttribute('aria-label')||'').toLowerCase();var txt=(allEls[i].innerText||'').trim().toLowerCase();if((txt==='follow'||lbl==='follow')&&!lbl.includes('unfollow')&&txt!=='unfollow'){r.follow=true;break;}}return JSON.stringify(r);})()`;
+
+  const rawState = await d.executeJS(PAGE_STATE_JS);
+  if (rawState === 'no_main' || rawState === 'no_section') {
+    return { success: false, status: 'error', reason: `Profile DOM not ready: ${rawState}` };
   }
 
-  // Direct Connect button or anchor
-  if (statusCheck === 'can_connect_direct') {
-    await d.executeJS(`
-      (function() {
-        var main = document.querySelector('main');
-        var section = main.querySelector('section');
-        // Try buttons first
-        var btns = section.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) {
-          var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-          if (a.includes('connect') || a.includes('invite')) { btns[i].click(); return 'clicked_btn'; }
-        }
-        // Try anchors (LinkedIn Feb 2026 uses <a> for Connect)
-        var anchors = section.querySelectorAll('a');
-        for (var j = 0; j < anchors.length; j++) {
-          var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
-          var at = anchors[j].innerText.trim().toLowerCase();
-          if (aa.includes('connect') || aa.includes('invite') || at === 'connect') { anchors[j].click(); return 'clicked_anchor'; }
-        }
-        return 'not_found';
-      })()
-    `);
+  let state: { connect: any; message: any; pending: any; follow: any; more: any };
+  try { state = JSON.parse(rawState); } catch {
+    return { success: false, status: 'error', reason: `Bad state JSON: ${rawState.substring(0, 80)}` };
+  }
+
+  log(`State: connect=${!!state.connect} message=${!!state.message} pending=${!!state.pending} follow=${!!state.follow} more=${!!state.more}`);
+
+  // LinkedIn SPA race: page briefly shows Connect anchor before settling on Pending.
+  // If Connect is found, poll up to 5s for Pending to appear (catches the transition).
+  if (state.connect && !state.pending) {
+    const pendingPoll = await d.waitForCondition(
+      `(function(){var m=document.querySelector('main');var s=m?m.querySelector('section'):null;if(!s)return '';var p=s.querySelector('button[aria-label*="Pending" i]');return p?p.getAttribute('aria-label'):'';})()`,
+      5000, 500
+    );
+    if (pendingPoll) {
+      log(`SPA transition caught: Connect→Pending (${pendingPoll.substring(0, 60)})`);
+      try { state = JSON.parse(await d.executeJS(PAGE_STATE_JS)); } catch {}
+      log(`State (settled): connect=${!!state.connect} message=${!!state.message} pending=${!!state.pending} follow=${!!state.follow} more=${!!state.more}`);
+    }
+  }
+
+  // ── Step 2: Determine status from actual DOM elements ────────
+  if (state.pending) {
+    if (request.skipIfPending) return { success: true, status: 'pending' };
+    return { success: false, status: 'pending', reason: state.pending.label };
+  }
+  if (state.message && !state.connect) {
+    if (request.skipIfConnected) return { success: true, status: 'already_connected' };
+    return { success: false, status: 'already_connected' };
+  }
+
+  // ── Step 3: Determine if we can connect and extract vanityName ──
+  const wantsNote = !!request.note;
+  let vanityName = '';
+
+  if (state.connect) {
+    // Extract vanityName from the Connect anchor href or profile URL
+    if (state.connect.href) {
+      const vnMatch = state.connect.href.match(/vanityName=([^&]+)/);
+      if (vnMatch) vanityName = vnMatch[1];
+    }
+    if (!vanityName) {
+      const urlMatch = request.profileUrl.match(/\/in\/([^/?]+)/);
+      if (urlMatch) vanityName = urlMatch[1].replace(/\/$/, '');
+    }
+  } else if (state.more) {
+    // Check if Connect is in the More dropdown
+    log('No direct Connect — opening More dropdown...');
+    await d.executeJS(`(function(){var m=document.querySelector('main');var s=m.querySelector('section');var btn=s.querySelector('button[aria-label="More"]');if(btn)btn.click();})()`);
+
+    const menuAppeared = await d.waitForCondition(
+      `document.querySelector('[role="menuitem"]') ? 'yes' : ''`, 5000
+    );
+    if (!menuAppeared) {
+      return { success: false, status: 'cannot_connect', reason: 'More dropdown did not open' };
+    }
+
+    const menuItems = await d.executeJS(
+      `(function(){var items=document.querySelectorAll('[role="menuitem"],.artdeco-dropdown__content-inner li');var r=[];for(var i=0;i<items.length;i++)r.push(items[i].innerText.trim().toLowerCase());return JSON.stringify(r);})()`
+    );
+    log(`More menu items: ${menuItems}`);
+
+    let menuList: string[] = [];
+    try { menuList = JSON.parse(menuItems); } catch {}
+
+    if (!menuList.some(t => t === 'connect')) {
+      // Close dropdown
+      await d.executeJS(`document.body.click()`);
+      if (state.follow) {
+        return { success: false, status: 'cannot_connect', reason: 'Follow-only profile — Connect not in More menu' };
+      }
+      return { success: false, status: 'cannot_connect', reason: `Connect not in More menu. Items: ${menuList.join(', ')}` };
+    }
+    // Close dropdown before proceeding
+    await d.executeJS(`document.body.click()`);
+    await d.wait(500);
+
+    // Extract vanityName from profile URL
+    const urlMatch = request.profileUrl.match(/\/in\/([^/?]+)/);
+    if (urlMatch) vanityName = urlMatch[1].replace(/\/$/, '');
+  } else if (state.follow) {
+    return { success: false, status: 'cannot_connect', reason: 'Follow-only profile — no Connect option available' };
+  } else {
+    return { success: false, status: 'cannot_connect', reason: 'No Connect, Message, Follow, or More found on profile' };
+  }
+
+  // ── Step 4: Send the connection request ──────────────────────
+  let noteSent = false;
+
+  if (wantsNote && vanityName) {
+    // ── Path A: Navigate to custom-invite page for note form ──
+    const customInviteUrl = `https://www.linkedin.com/preload/custom-invite/?vanityName=${vanityName}`;
+    log(`Navigating to custom-invite for note: ${customInviteUrl}`);
+    await d.navigateTo(customInviteUrl);
     await d.wait(2000);
 
-  } else if (statusCheck === 'can_connect_via_more') {
-    // Open More dropdown in profile section
-    await d.executeJS(`
-      (function() {
-        var main = document.querySelector('main');
-        var section = main.querySelector('section');
-        var btn = section.querySelector('button[aria-label="More"]');
-        if (btn) btn.click();
-      })()
-    `);
-    await d.wait(1500);
+    // Wait for the custom-invite page buttons
+    const pageLoaded = await d.waitForCondition(
+      `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='add a note')return 'ready';}return '';})()`,
+      8000
+    );
+    if (!pageLoaded) {
+      log('Custom-invite page did not load — falling back to no-note send');
+    } else {
+      // Click "Add a note" to reveal textarea
+      await d.executeJS(
+        `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='add a note'){btns[i].click();return 'clicked';}}return 'miss';})()`
+      );
+      await d.wait(1000);
 
-    // Click Connect in dropdown
-    const connectClicked = await d.executeJS(`
-      (function() {
-        var items = document.querySelectorAll('[role="menuitem"], .artdeco-dropdown__content-inner li, .artdeco-dropdown__item');
-        for (var i = 0; i < items.length; i++) {
-          if (items[i].innerText.trim().toLowerCase() === 'connect') {
-            items[i].click();
-            return 'clicked';
-          }
+      // Type the note via JS value + input event (works with Ember textarea)
+      const noteText = request.note!.substring(0, 300).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+      const typed = await d.executeJS(
+        `(function(){var ta=document.querySelector('textarea#custom-message,textarea[name="message"]');if(!ta)return 'no_textarea';ta.focus();ta.value='${noteText}';ta.dispatchEvent(new Event('input',{bubbles:true}));ta.dispatchEvent(new Event('change',{bubbles:true}));return 'typed:'+ta.value.length;})()`
+      );
+      log(`Note: ${typed}`);
+
+      if (typed.startsWith('typed:')) {
+        await d.wait(500);
+
+        // Wait for Send button to become enabled
+        const sendReady = await d.waitForCondition(
+          `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled)return 'ready';}return '';})()`,
+          3000
+        );
+
+        if (sendReady) {
+          await d.executeJS(
+            `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled){btns[i].click();return 'sent';}}return 'miss';})()`
+          );
+          log('Clicked Send (with note)');
+          noteSent = true;
+        } else {
+          log('Send button did not enable — clicking "Send without a note" as fallback');
         }
-        return 'not_found';
-      })()
-    `);
+      }
 
-    console.log(`[Connection] Connect from More dropdown: ${connectClicked}`);
-    if (connectClicked === 'not_found') {
-      return { success: false, status: 'cannot_connect', reason: 'Connect not in More menu' };
+      // Fallback: if typing failed, send without note
+      if (!noteSent) {
+        await d.executeJS(
+          `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='send without a note'){btns[i].click();return 'sent';}}return 'miss';})()`
+        );
+        log('Sent without note (fallback)');
+      }
     }
     await d.wait(2000);
+
+  } else if (wantsNote && !vanityName) {
+    // ── Path A fallback: can't extract vanityName, send without note ──
+    log('Cannot extract vanityName for custom-invite — sending without note');
+    await d.executeJS(`(function(){var m=document.querySelector('main');var s=m.querySelector('section');var el=s.querySelector('a[href*="custom-invite"]');if(!el)el=s.querySelector('button[aria-label*="invite" i]');if(el)el.click();})()`);
+    await d.wait(3000);
 
   } else {
-    return { success: false, status: statusCheck as any, reason: `Status: ${statusCheck}` };
+    // ── Path B: No note — JS click sends invitation directly ──
+    log(`JS-clicking Connect (no note): ${state.connect?.label || ''}`);
+    await d.executeJS(`(function(){var m=document.querySelector('main');var s=m.querySelector('section');var el=s.querySelector('a[href*="custom-invite"]');if(!el)el=s.querySelector('button[aria-label*="invite" i]');if(el)el.click();})()`);
+    await d.wait(3000);
   }
 
-  // Add note if provided
-  if (request.note) {
-    const addNoteClicked = await d.executeJS(`
-      (function() {
-        var btns = document.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) {
-          var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-          var t = btns[i].innerText.trim().toLowerCase();
-          if (a.includes('add a note') || t === 'add a note') { btns[i].click(); return 'clicked'; }
-        }
-        return 'not_found';
-      })()
-    `);
-
-    console.log(`[Connection] Add note button: ${addNoteClicked}`);
-    if (addNoteClicked === 'clicked') {
-      await d.wait(1500);
-
-      // Focus and type into the note textarea
-      await d.focusElement('textarea#custom-message, textarea[name="message"]');
-      await d.wait(300);
-      await d.typeViaClipboard(request.note.substring(0, 300));
-      await d.wait(500);
-    }
+  // ── Step 5: Verify Pending ──────
+  // If we navigated away (custom-invite path), go back to profile first
+  const currentUrl = await d.getCurrentUrl();
+  if (!currentUrl.includes(vanityName || '___none___') || currentUrl.includes('/preload/')) {
+    await d.navigateTo(request.profileUrl);
+    await d.wait(3000);
   }
 
-  // Click Send — try multiple selectors for the invitation button
-  const sent = await d.executeJS(`
-    (function() {
-      var btns = document.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        var t = btns[i].innerText.trim().toLowerCase();
-        if ((a.includes('send invitation') || a.includes('send now') ||
-             t === 'send invitation' || t === 'send' || t === 'send now' ||
-             a === 'send without a note' || t === 'send without a note') &&
-            !btns[i].disabled) {
-          btns[i].click();
-          return 'sent';
-        }
-      }
-      return 'not_found';
-    })()
-  `);
+  // Poll for Pending to appear (SPA may need time)
+  const pendingVerified = await d.waitForCondition(
+    `(function(){var m=document.querySelector('main');var s=m?m.querySelector('section'):null;if(!s)return '';var p=s.querySelector('button[aria-label*="Pending" i]');return p?p.getAttribute('aria-label'):'';})()`,
+    8000, 500
+  );
 
-  console.log(`[Connection] Send invitation: ${sent}`);
-  await d.wait(2000);
-
-  if (sent === 'sent') {
-    return { success: true, status: 'sent', noteSent: !!request.note };
+  if (pendingVerified) {
+    log(`✓ Verified: Pending confirmed${noteSent ? ' (with note)' : ''}`);
+    return { success: true, status: 'sent', noteSent };
   }
 
-  return { success: false, status: 'error', reason: 'Could not send invitation' };
+  // Final fallback: re-read full state
+  const finalState = await d.executeJS(PAGE_STATE_JS);
+  let final: any = {};
+  try { final = JSON.parse(finalState); } catch {}
+
+  if (final.pending) {
+    log(`✓ Verified: Pending confirmed (final check)${noteSent ? ' (with note)' : ''}`);
+    return { success: true, status: 'sent', noteSent };
+  }
+  if (!final.connect && final.message) {
+    log('✓ Final: already connected (Connect gone, Message present)');
+    return { success: true, status: 'already_connected' };
+  }
+
+  log(`✗ Could not verify. Final state: ${finalState.substring(0, 120)}`);
+  return { success: false, status: 'error', reason: 'Connection click did not produce Pending state' };
 }
 
 // ─── Pending Requests ────────────────────────────────────────
@@ -511,63 +564,60 @@ export async function acceptRequest(profileUrl: string, driver?: SafariDriver): 
 const SEARCH_EXTRACTION_JS = `
 (function() {
   var results = [];
-  var processedLis = [];
   var mainEl = document.querySelector('main, [role="main"]');
   if (!mainEl) return '[]';
-  var allLis = mainEl.querySelectorAll('li');
 
-  for (var i = 0; i < allLis.length; i++) {
-    var li = allLis[i];
-    if (processedLis.indexOf(li) !== -1) continue;
-    var links = li.querySelectorAll('a[href*="/in/"]');
+  var cards = mainEl.querySelectorAll('[data-view-name="people-search-result"]');
+  if (cards.length === 0) cards = mainEl.querySelectorAll('li');
+
+  for (var i = 0; i < cards.length; i++) {
+    var card = cards[i];
+    var links = card.querySelectorAll('a[href*="/in/"]');
     if (links.length === 0) continue;
     var href = '';
     for (var x = 0; x < links.length; x++) {
       var h = links[x].href.split('?')[0];
-      if (h.indexOf('ACoAA') === -1) { href = h; break; }
+      if (h.indexOf('ACoAA') === -1 && h.indexOf('/in/') !== -1) { href = h; break; }
     }
     if (!href) href = links[0].href.split('?')[0];
-    processedLis.push(li);
 
-    var nameSpans = [];
-    var spans = li.querySelectorAll('span[aria-hidden="true"]');
-    for (var j = 0; j < spans.length; j++) {
-      var cl = spans[j].className || '';
-      if (cl.indexOf('visually-hidden') !== -1) continue;
-      var st = spans[j].innerText.trim();
-      if (st.length > 2 && st.length < 150 && st.indexOf('Status') !== 0) nameSpans.push(st);
-    }
+    var rawLink = (links[0].innerText || links[0].textContent || '').trim();
+    var bulletIdx = rawLink.indexOf('\u2022');
+    var name = bulletIdx > 0 ? rawLink.substring(0, bulletIdx).trim() : rawLink.split('\n')[0].trim();
+    name = name.replace(/\s*(1st|2nd|3rd)\s*$/, '').trim();
 
-    var name = '';
-    for (var k = 0; k < nameSpans.length; k++) {
-      if (nameSpans[k].charAt(0) !== '\\u2022' && nameSpans[k].indexOf('degree') === -1) {
-        name = nameSpans[k]; break;
+    if (!name || name.length < 2) {
+      var spans = card.querySelectorAll('span[aria-hidden="true"]');
+      for (var j = 0; j < spans.length; j++) {
+        var st = (spans[j].innerText || '').trim();
+        if (st.length > 2 && st.length < 100 && st.charAt(0) !== '\u2022') { name = st; break; }
       }
     }
 
     var degree = '';
-    for (var dd = 0; dd < nameSpans.length; dd++) {
-      if (nameSpans[dd].indexOf('1st') !== -1) { degree = '1st'; break; }
-      if (nameSpans[dd].indexOf('2nd') !== -1) { degree = '2nd'; break; }
-      if (nameSpans[dd].indexOf('3rd') !== -1) { degree = '3rd'; break; }
-    }
+    var allText = card.innerText || '';
+    if (allText.indexOf('1st') !== -1) degree = '1st';
+    else if (allText.indexOf('2nd') !== -1) degree = '2nd';
+    else if (allText.indexOf('3rd') !== -1) degree = '3rd';
 
     var headline = '';
+    var linkLines = rawLink.split('\\n');
+    if (linkLines.length > 1) headline = linkLines[1].trim().substring(0, 150);
+
     var location = '';
-    var divs = li.querySelectorAll('div');
+    var divs = card.querySelectorAll('div');
     for (var di = 0; di < divs.length; di++) {
       var div = divs[di];
       if (div.children.length > 0) continue;
-      var dt = div.innerText.trim();
+      var dt = (div.innerText || '').trim();
       if (dt.length < 5 || dt.length > 200) continue;
-      if (dt === name || dt.indexOf('degree') !== -1 || dt === 'Connect' || dt === 'Message' || dt === 'Follow') continue;
-      if (!headline) { headline = dt; }
-      else if (!location && dt.length < 60) { location = dt; break; }
+      if (dt === name || dt === headline || dt.indexOf('degree') !== -1 || dt === 'Connect' || dt === 'Message' || dt === 'Follow') continue;
+      if (!headline) { headline = dt.substring(0, 150); }
+      else if (!location && dt.length < 80) { location = dt; break; }
     }
 
     var mutual = 0;
-    var allText = li.innerText;
-    var mutMatch = allText.match(/(\\\\d+)\\\\s*mutual/i);
+    var mutMatch = allText.match(/(\\d+)\\s*mutual/i);
     if (mutMatch) mutual = parseInt(mutMatch[1]);
 
     if (name && href) {
@@ -593,36 +643,72 @@ export async function searchPeople(
   driver?: SafariDriver
 ): Promise<SearchResult[]> {
   const d = driver || getDefaultDriver();
+  const log = (msg: string) => console.log(`[Search] ${msg}`);
 
   const params = new URLSearchParams();
   if (config.keywords?.length) params.set('keywords', config.keywords.join(' '));
   if (config.title) params.set('titleFreeText', config.title);
   if (config.company) params.set('company', config.company);
 
+  // Connection degree filter: F=1st, S=2nd, O=3rd+
+  if (config.connectionDegree) {
+    const degreeMap: Record<string, string> = { '1st': 'F', '2nd': 'S', '3rd+': 'O' };
+    const degrees = Array.isArray(config.connectionDegree) ? config.connectionDegree : [config.connectionDegree];
+    const codes = degrees.map(d => degreeMap[d]).filter(Boolean);
+    if (codes.length) {
+      params.set('network', JSON.stringify(codes));
+      params.set('origin', 'FACETED_SEARCH');
+    }
+  }
+
+  // Pagination
+  if (config.page && config.page > 1) {
+    params.set('page', String(config.page));
+  }
+
+  // Origin override
+  if (config.origin) params.set('origin', config.origin);
+
   const searchUrl = `${LINKEDIN_SEARCH}?${params.toString()}`;
+  log(`Navigating: ${searchUrl}`);
   await d.navigateTo(searchUrl);
   await d.wait(5000);
 
   // Wait for search results to render inside main (not just nav links)
-  const maxWait = 15000;
-  const startWait = Date.now();
-  while (Date.now() - startWait < maxWait) {
-    const check = await d.executeJS(
-      'var m = document.querySelector("main"); m && m.querySelectorAll("a[href*=\\"/in/\\"]").length > 0 ? "ready" : "waiting"'
-    );
-    if (check === 'ready') break;
-    await d.wait(1000);
+  const resultsReady = await d.waitForCondition(
+    'var m=document.querySelector("main");m&&m.querySelectorAll("a[href*=\\"/in/\\"]").length>0?"ready":""',
+    15000, 1000
+  );
+  if (!resultsReady) {
+    log('No search results found within 15s');
+    return [];
   }
   await d.wait(1000);
 
-  const resultsJson = await d.executeJS(SEARCH_EXTRACTION_JS);
-  
+  // Scroll to load all lazy-loaded results on the current page
+  await d.executeJS(`(function(){
+    var scrollCount = 0;
+    var interval = setInterval(function(){
+      window.scrollBy(0, 600);
+      scrollCount++;
+      if (scrollCount >= 8 || (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 200) {
+        clearInterval(interval);
+      }
+    }, 300);
+  })()`);
+  await d.wait(3000);
 
+  const resultsJson = await d.executeJS(SEARCH_EXTRACTION_JS);
+
+  let results: SearchResult[] = [];
   try {
-    return JSON.parse(resultsJson || '[]') as SearchResult[];
+    results = JSON.parse(resultsJson || '[]') as SearchResult[];
   } catch {
-    return [];
+    results = [];
   }
+
+  log(`Found ${results.length} results on page ${config.page || 1}`);
+  return results;
 }
 
 // ─── Lead Scoring ────────────────────────────────────────────

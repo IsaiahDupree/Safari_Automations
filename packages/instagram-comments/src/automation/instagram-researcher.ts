@@ -54,6 +54,9 @@ export interface InstagramCreator {
   handle: string;
   displayName: string;
   isVerified: boolean;
+  followers: number;            // scraped from profile page
+  following: number;            // scraped from profile page
+  bio: string;                  // scraped from profile page
   postCount: number;
   totalLikes: number;
   totalComments: number;
@@ -61,6 +64,7 @@ export interface InstagramCreator {
   avgEngagement: number;
   topPostUrl: string;
   topPostEngagement: number;
+  topPosts: Array<{ url: string; likes: number; comments: number; views: number; engagement: number }>;
   niche: string;
 }
 
@@ -76,9 +80,53 @@ export interface InstagramNicheResult {
   durationMs: number;
 }
 
+export interface CompetitorPost {
+  id: string;                   // shortcode
+  url: string;
+  type: 'reel' | 'post';
+  likes: number;
+  comments: number;
+  views: number;                // reels only (0 for posts)
+  engagementScore: number;      // likes + comments*2 + views*0.1
+  caption: string;
+  hashtags: string[];
+  timestamp: string;
+  collectedAt: string;
+}
+
+export interface CompetitorProfile {
+  username: string;
+  fullName: string;
+  bio: string;
+  followers: number;
+  following: number;
+  postsCount: number;
+  isVerified: boolean;
+}
+
+export interface CompetitorResult {
+  username: string;
+  profile: CompetitorProfile;
+  posts: CompetitorPost[];
+  topPosts: CompetitorPost[];   // top 20 by engagementScore
+  stats: {
+    totalCollected: number;
+    avgLikes: number;
+    avgComments: number;
+    avgViews: number;
+    avgEngagement: number;
+    topPostLikes: number;
+    topPostViews: number;
+    topPostUrl: string;
+  };
+  collectedAt: string;
+  durationMs: number;
+}
+
 export interface InstagramResearchConfig {
   postsPerNiche: number;
   creatorsPerNiche: number;
+  enrichTopCreators: number;    // how many top creators to enrich with profile visit (default 10)
   scrollPauseMs: number;
   maxScrollsPerSearch: number;
   detailedScrapeTop: number;    // how many top posts to open for detailed metrics
@@ -90,6 +138,7 @@ export interface InstagramResearchConfig {
 export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
   postsPerNiche: 1000,
   creatorsPerNiche: 100,
+  enrichTopCreators: 10,
   scrollPauseMs: 1800,
   maxScrollsPerSearch: 200,
   detailedScrapeTop: 50,
@@ -107,6 +156,11 @@ export class InstagramResearcher {
 
   constructor(config: Partial<InstagramResearchConfig> = {}) {
     this.config = { ...DEFAULT_IG_RESEARCH_CONFIG, ...config };
+  }
+
+  private log(msg: string): void {
+    const ts = new Date().toTimeString().slice(0, 8);
+    console.log(`[${ts}] [IG] ${msg}`);
   }
 
   // ─── Low-level Safari helpers ──────────────────────────────
@@ -502,6 +556,43 @@ export class InstagramResearcher {
     return posts.map(p => detailedMap.get(p.id) || p);
   }
 
+  // ─── Profile Enrichment ────────────────────────────────────
+
+  async getCreatorProfile(handle: string): Promise<{ followers: number; following: number; bio: string } | null> {
+    const url = `https://www.instagram.com/${handle}/`;
+    const ok = await this.navigate(url);
+    if (!ok) return null;
+
+    const loaded = await this.waitForSelector('header, [role="main"], main', 12000);
+    if (!loaded) return null;
+
+    await this.wait(1500);
+
+    const raw = await this.executeJS(`(function() {
+      function parseCount(s) {
+        if (!s) return 0;
+        s = s.trim().replace(/,/g, '');
+        if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+        if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+        return parseInt(s) || 0;
+      }
+      var result = { followers: 0, following: 0, bio: '' };
+      var items = document.querySelectorAll('header li, [role="main"] li');
+      var counts = [];
+      items.forEach(function(li) { var n = li.querySelector('span[title], span'); if (n) counts.push(n.textContent || n.getAttribute('title') || ''); });
+      if (counts.length >= 3) { result.following = parseCount(counts[0]); result.followers = parseCount(counts[1]); }
+      var bioEl = document.querySelector('header h1 ~ span, [data-testid="user-bio"], .-vDIg span, header section > div:last-child span');
+      if (bioEl) result.bio = bioEl.textContent.trim().slice(0, 300);
+      return JSON.stringify(result);
+    })()`);
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
   // ─── Creator Ranking ───────────────────────────────────────
 
   rankCreators(posts: InstagramPost[], niche: string, topN: number = this.config.creatorsPerNiche): InstagramCreator[] {
@@ -609,6 +700,23 @@ export class InstagramResearcher {
 
     const creators = this.rankCreators(postArray, niche);
 
+    // Enrich top creators with profile data (followers/following/bio)
+    const enrichCount = Math.min(this.config.enrichTopCreators, creators.length);
+    if (enrichCount > 0) {
+      console.log(`[IG Research] Enriching top ${enrichCount} creators with profile data...`);
+      for (let i = 0; i < enrichCount; i++) {
+        const c = creators[i];
+        console.log(`[IG Research] Profile: @${c.handle} (${i + 1}/${enrichCount})`);
+        const profile = await this.getCreatorProfile(c.handle);
+        if (profile) {
+          c.followers = profile.followers;
+          c.following = profile.following;
+          c.bio = profile.bio;
+        }
+        if (i < enrichCount - 1) await this.wait(1500);
+      }
+    }
+
     const result: InstagramNicheResult = {
       niche,
       query: queries[0],
@@ -710,6 +818,279 @@ export class InstagramResearcher {
       }
     }
     return Array.from(merged.values()).sort((a, b) => b.totalEngagement - a.totalEngagement);
+  }
+
+  // ─── Competitor Research (account-specific) ─────────────────
+
+  /**
+   * Navigate to an Instagram profile and extract follower count, bio, etc.
+   */
+  async scrapeCompetitorProfile(username: string): Promise<CompetitorProfile> {
+    const profile: CompetitorProfile = { username, fullName: '', bio: '', followers: 0, following: 0, postsCount: 0, isVerified: false };
+    const ok = await this.navigate(`https://www.instagram.com/${username}/`);
+    if (!ok) return profile;
+
+    await this.waitForSelector('header, main section', 12000);
+    await this.wait(2000);
+
+    const raw = await this.executeJS(`(function() {
+      function parseCount(s) {
+        if (!s) return 0;
+        s = s.trim().replace(/,/g,'');
+        if (s.includes('M')) return Math.round(parseFloat(s)*1000000);
+        if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s)*1000);
+        return parseInt(s) || 0;
+      }
+      var r = { fullName:'', bio:'', followers:0, following:0, postsCount:0, isVerified:false };
+      // Verified badge
+      r.isVerified = !!document.querySelector('svg[aria-label="Verified"]');
+      // Full name — h2 or h1 near header
+      var nameEl = document.querySelector('header h2, header h1, section h1, section h2');
+      if (nameEl) r.fullName = nameEl.textContent.trim();
+      // Stats list — Instagram renders follower/following/posts in a list of <li>
+      var listItems = document.querySelectorAll('header ul li, section ul li');
+      var counts = [];
+      listItems.forEach(function(li) {
+        var t = li.innerText || '';
+        var m = t.match(/([\\d.,]+[KkMm]?)/);
+        if (m) counts.push(parseCount(m[1]));
+      });
+      if (counts.length >= 3) { r.postsCount = counts[0]; r.followers = counts[1]; r.following = counts[2]; }
+      else if (counts.length === 2) { r.followers = counts[0]; r.following = counts[1]; }
+      // Fallback body text match
+      if (r.followers === 0) {
+        var bodyText = document.body.innerText || '';
+        var fm = bodyText.match(/([\\d.,]+[KkMm]?)\\s*[Ff]ollowers/);
+        if (fm) r.followers = parseCount(fm[1]);
+      }
+      // Bio — paragraph or span after the stats
+      var bioEl = document.querySelector('header section > div > span, header section p, section > div > span[class]');
+      if (bioEl) r.bio = bioEl.textContent.trim().substring(0, 300);
+      return JSON.stringify(r);
+    })()`);
+
+    try {
+      const parsed = JSON.parse(raw || '{}');
+      return { ...profile, ...parsed };
+    } catch { return profile; }
+  }
+
+  /**
+   * Extract post cards (reels + posts) from the current profile grid page.
+   */
+  async extractCompetitorPostCards(username: string): Promise<CompetitorPost[]> {
+    const raw = await this.executeJS(`(function() {
+      var results = [];
+      var seen = new Set();
+      var links = document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]');
+      links.forEach(function(link) {
+        var href = link.getAttribute('href') || '';
+        var m = href.match(/\/(reel|p)\/([A-Za-z0-9_-]+)/);
+        if (!m) return;
+        var type = m[1] === 'reel' ? 'reel' : 'post';
+        var id = m[2];
+        if (seen.has(id)) return;
+        seen.add(id);
+        var url = href.startsWith('http') ? href : 'https://www.instagram.com' + href;
+        results.push({ id: id, url: url, type: type });
+      });
+      return JSON.stringify(results);
+    })()`);
+
+    try {
+      const parsed = JSON.parse(raw || '[]') as Array<{ id: string; url: string; type: string }>;
+      const now = new Date().toISOString();
+      return parsed.map(p => ({
+        id: p.id, url: p.url, type: (p.type === 'reel' ? 'reel' : 'post') as 'reel' | 'post',
+        likes: 0, comments: 0, views: 0, engagementScore: 0,
+        caption: '', hashtags: [], timestamp: '', collectedAt: now,
+      }));
+    } catch { return []; }
+  }
+
+  /**
+   * Scroll the profile reels/posts grid and collect up to maxPosts cards.
+   */
+  async scrollCompetitorGrid(username: string, maxPosts: number): Promise<CompetitorPost[]> {
+    const seen = new Map<string, CompetitorPost>();
+    let noNewCount = 0;
+    let scrollCount = 0;
+    const maxScrolls = 200;
+
+    this.log(`competitor scroll: @${username} — target ${maxPosts} posts`);
+
+    while (seen.size < maxPosts && scrollCount < maxScrolls) {
+      const batch = await this.extractCompetitorPostCards(username);
+      let newCount = 0;
+      for (const p of batch) {
+        if (!seen.has(p.id)) { seen.set(p.id, p); newCount++; }
+      }
+
+      if (newCount === 0) {
+        noNewCount++;
+        if (noNewCount >= 5) { this.log(`No new posts after 5 scrolls — stopping at ${seen.size}`); break; }
+      } else { noNewCount = 0; }
+
+      if (scrollCount % 5 === 0) this.log(`scroll ${scrollCount}: ${seen.size}/${maxPosts} cards`);
+
+      await this.executeJS(`window.scrollBy(0, window.innerHeight * 2)`);
+      await this.wait(1800);
+
+      const err = await this.executeJS(`(function(){ var b=document.body.innerText||''; if(b.includes('Action Blocked'))return 'blocked'; if(b.includes('Try Again'))return 'rate_limit'; return ''; })()`);
+      if (err === 'rate_limit' || err === 'blocked') {
+        this.log(`⚠ ${err} — waiting 60s...`);
+        await this.wait(60000);
+      }
+      scrollCount++;
+    }
+
+    this.log(`✓ collected ${seen.size} cards in ${scrollCount} scrolls`);
+    return Array.from(seen.values());
+  }
+
+  /**
+   * Open an individual reel/post and extract engagement metrics.
+   */
+  async scrapeCompetitorPostDetail(post: CompetitorPost): Promise<CompetitorPost> {
+    try {
+      await this.navigate(post.url);
+      await this.wait(2500);
+
+      const raw = await this.executeJS(`(function() {
+        function parseNum(s) {
+          if (!s) return 0;
+          s = s.trim().replace(/,/g,'');
+          if (s.includes('M')) return Math.round(parseFloat(s)*1000000);
+          if (s.includes('K')||s.includes('k')) return Math.round(parseFloat(s)*1000);
+          return parseInt(s)||0;
+        }
+        var d = { likes:0, comments:0, views:0, caption:'', hashtags:[], timestamp:'' };
+        var bodyText = (document.querySelector('article')||document.body).innerText||'';
+        // Likes
+        var lm = bodyText.match(/([\\d.,]+[KkMm]?)\\s*like/i);
+        if (lm) d.likes = parseNum(lm[1]);
+        // Comments
+        var cm = bodyText.match(/([\\d.,]+[KkMm]?)\\s*comment/i);
+        if (cm) d.comments = parseNum(cm[1]);
+        // Views (reels)
+        var vm = bodyText.match(/([\\d.,]+[KkMm]?)\\s*(?:view|play)/i);
+        if (vm) d.views = parseNum(vm[1]);
+        // Fallback: look for views in meta
+        if (d.views === 0) {
+          var meta = document.querySelector('meta[property="og:description"]');
+          if (meta) {
+            var mc = meta.getAttribute('content')||'';
+            var mv = mc.match(/([\\d.,]+[KkMm]?)\\s*view/i);
+            if (mv) d.views = parseNum(mv[1]);
+          }
+        }
+        // Caption from article h1 or first span with content
+        var capEl = document.querySelector('article h1, article div[class] > span');
+        if (capEl) d.caption = capEl.textContent.trim().substring(0, 500);
+        // Hashtags
+        document.querySelectorAll('a[href*="/explore/tags/"]').forEach(function(l){
+          var t=l.textContent.trim(); if(t.startsWith('#')&&!d.hashtags.includes(t)) d.hashtags.push(t);
+        });
+        // Timestamp
+        var te = document.querySelector('time');
+        d.timestamp = te ? (te.getAttribute('datetime')||te.innerText||'') : '';
+        return JSON.stringify(d);
+      })()`);
+
+      const det = JSON.parse(raw || '{}');
+      const likes = det.likes || 0;
+      const comments = det.comments || 0;
+      const views = det.views || 0;
+      return {
+        ...post,
+        likes, comments, views,
+        engagementScore: likes + comments * 2 + Math.round(views * 0.1),
+        caption: det.caption || '',
+        hashtags: det.hashtags || [],
+        timestamp: det.timestamp || '',
+      };
+    } catch { return post; }
+  }
+
+  /**
+   * Full competitor research pipeline for a single Instagram account:
+   * 1. Scrape profile (followers, bio)
+   * 2. Scroll reels/posts grid to collect URLs
+   * 3. Open top N posts for engagement details
+   * Returns CompetitorResult with profile + posts + stats.
+   */
+  async competitorResearch(
+    username: string,
+    maxPosts: number = 100,
+    detailedScrapeTop: number = 30,
+  ): Promise<CompetitorResult> {
+    const startTime = Date.now();
+    const collectedAt = new Date().toISOString();
+
+    this.log(`${'═'.repeat(55)}`);
+    this.log(`COMPETITOR: @${username} — scrape ${maxPosts} posts, detail top ${detailedScrapeTop}`);
+    this.log(`${'═'.repeat(55)}`);
+
+    // 1. Profile
+    this.log(`→ scraping profile...`);
+    const profile = await this.scrapeCompetitorProfile(username);
+    this.log(`  followers=${profile.followers.toLocaleString()} following=${profile.following} posts=${profile.postsCount}`);
+
+    // 2. Navigate to reels tab and scroll
+    this.log(`→ navigating to reels grid...`);
+    const reelsOk = await this.navigate(`https://www.instagram.com/${username}/reels/`);
+    if (reelsOk) {
+      await this.waitForSelector('a[href*="/reel/"], a[href*="/p/"]', 12000);
+      await this.wait(1500);
+    }
+    let posts = await this.scrollCompetitorGrid(username, maxPosts);
+
+    // 3. Fallback to profile posts tab if reels tab was empty
+    if (posts.length < 3) {
+      this.log(`→ reels tab sparse — trying posts grid...`);
+      await this.navigate(`https://www.instagram.com/${username}/`);
+      await this.waitForSelector('a[href*="/p/"], a[href*="/reel/"]', 12000);
+      await this.wait(1500);
+      posts = await this.scrollCompetitorGrid(username, maxPosts);
+    }
+
+    this.log(`→ collected ${posts.length} post cards, opening top ${Math.min(detailedScrapeTop, posts.length)} for engagement...`);
+
+    // 4. Scrape details for top N
+    const toDetail = posts.slice(0, detailedScrapeTop);
+    const detailed: CompetitorPost[] = [];
+    for (let i = 0; i < toDetail.length; i++) {
+      if (i % 5 === 0) this.log(`  detail ${i + 1}/${toDetail.length}: @${username} — ${toDetail[i].url.split('/').slice(-2, -1)[0]}`);
+      const d = await this.scrapeCompetitorPostDetail(toDetail[i]);
+      detailed.push(d);
+      await this.wait(800);
+    }
+
+    // Merge detailed back in
+    const detailMap = new Map(detailed.map(p => [p.id, p]));
+    const allPosts = posts.map(p => detailMap.get(p.id) || p)
+      .sort((a, b) => b.engagementScore - a.engagementScore);
+
+    const topPosts = allPosts.slice(0, 20);
+
+    // Stats
+    const withData = allPosts.filter(p => p.likes > 0 || p.views > 0);
+    const n = withData.length || 1;
+    const stats = {
+      totalCollected: allPosts.length,
+      avgLikes: Math.round(withData.reduce((s, p) => s + p.likes, 0) / n),
+      avgComments: Math.round(withData.reduce((s, p) => s + p.comments, 0) / n),
+      avgViews: Math.round(withData.reduce((s, p) => s + p.views, 0) / n),
+      avgEngagement: Math.round(withData.reduce((s, p) => s + p.engagementScore, 0) / n),
+      topPostLikes: topPosts[0]?.likes || 0,
+      topPostViews: topPosts[0]?.views || 0,
+      topPostUrl: topPosts[0]?.url || '',
+    };
+
+    const durationMs = Date.now() - startTime;
+    this.log(`✓ COMPETITOR @${username} done: ${allPosts.length} posts, avg ${stats.avgLikes} likes, top ${stats.topPostLikes} likes in ${(durationMs/1000).toFixed(1)}s`);
+
+    return { username, profile, posts: allPosts, topPosts, stats, collectedAt, durationMs };
   }
 
   printSummary(results: InstagramNicheResult[]): void {

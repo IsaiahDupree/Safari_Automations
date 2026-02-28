@@ -109,8 +109,10 @@ export interface PeopleSearchConfig {
   title?: string;
   company?: string;
   location?: string;
-  connectionDegree?: '1st' | '2nd' | '3rd+';
+  connectionDegree?: '1st' | '2nd' | '3rd+' | ('1st' | '2nd' | '3rd+')[];
   industry?: string;
+  page?: number;
+  origin?: string;
 }
 
 export interface SearchResult {

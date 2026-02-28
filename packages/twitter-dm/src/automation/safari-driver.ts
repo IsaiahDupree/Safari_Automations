@@ -1,5 +1,5 @@
 /**
- * Safari Automation Driver for Twitter/X
+ * Safari Automation Driver
  * Handles low-level Safari/AppleScript interactions.
  * Works with both local and remote Safari instances.
  */
@@ -13,9 +13,21 @@ import type { AutomationConfig } from './types.js';
 
 const execAsync = promisify(exec);
 
+export interface SessionInfo {
+  found: boolean;
+  windowIndex: number;
+  tabIndex: number;
+  url: string;
+}
+
 export class SafariDriver {
   private config: AutomationConfig;
-  
+  private trackedWindow: number | null = null;
+  private trackedTab: number | null = null;
+  private sessionUrlPattern: string | null = null;
+  private sessionLastVerified: number = 0;
+  private static SESSION_VERIFY_TTL_MS = 5000; // re-verify every 5s
+
   constructor(config: Partial<AutomationConfig> = {}) {
     this.config = {
       instanceType: config.instanceType || 'local',
@@ -38,35 +50,65 @@ export class SafariDriver {
 
   /**
    * Execute JavaScript in local Safari via AppleScript.
+   * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
-    
+
     await fs.writeFile(tempFile, cleanJS);
-    
+
+    // Use tracked tab if we have one; otherwise fall back to front document
+    const tabSpec = (this.trackedWindow && this.trackedTab)
+      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+      : 'front document';
+
     const script = `
       set jsCode to read POSIX file "${tempFile}" as «class utf8»
-      tell application "Safari" to do JavaScript jsCode in front document
+      tell application "Safari" to do JavaScript jsCode in ${tabSpec}
     `;
-    
+
     try {
       const { stdout } = await execAsync(
         `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
         { timeout: this.config.timeout }
       );
       await fs.unlink(tempFile).catch(() => {});
-      
+
       if (this.config.verbose) {
-        console.log('[SafariDriver] JS result:', stdout.trim().substring(0, 100));
+        console.log(`[SafariDriver] JS in ${tabSpec}:`, stdout.trim().substring(0, 100));
       }
-      
+
       return stdout.trim();
     } catch (error) {
       await fs.unlink(tempFile).catch(() => {});
       if (this.config.verbose) {
         console.error('[SafariDriver] JS error:', error);
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Execute JavaScript in a specific window+tab regardless of tracking state.
+   */
+  async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
+    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
+    await fs.writeFile(tempFile, cleanJS);
+    const script = `
+      set jsCode to read POSIX file "${tempFile}" as «class utf8»
+      tell application "Safari" to do JavaScript jsCode in tab ${tabIndex} of window ${windowIndex}
+    `;
+    try {
+      const { stdout } = await execAsync(
+        `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
+        { timeout: this.config.timeout }
+      );
+      await fs.unlink(tempFile).catch(() => {});
+      return stdout.trim();
+    } catch (error) {
+      await fs.unlink(tempFile).catch(() => {});
       throw error;
     }
   }
@@ -79,7 +121,7 @@ export class SafariDriver {
       throw new Error('Remote URL not configured');
     }
     
-    const response = await fetch(`${this.config.remoteUrl}/api/execute`, {
+    const response = await fetch(`${this.config.remoteUrl}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ script: js }),
@@ -95,15 +137,23 @@ export class SafariDriver {
 
   /**
    * Navigate Safari to a URL.
+   * Uses the tracked tab if available, otherwise front document.
    */
   async navigateTo(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
-          { timeout: this.config.timeout }
-        );
+        if (this.trackedWindow && this.trackedTab) {
+          await execAsync(
+            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
+            { timeout: this.config.timeout }
+          );
+        } else {
+          await execAsync(
+            `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
+            { timeout: this.config.timeout }
+          );
+        }
       } else {
         await this.executeRemoteJS(`window.location.href = "${safeUrl}"`);
       }
@@ -136,27 +186,25 @@ export class SafariDriver {
   }
 
   /**
-   * Check if Safari is on Twitter/X.
+   * Check if Safari is on Instagram.
    */
-  async isOnTwitter(): Promise<boolean> {
+  async isOnInstagram(): Promise<boolean> {
     const url = await this.getCurrentUrl();
-    return url.includes('x.com') || url.includes('twitter.com');
+    return url.includes('instagram.com');
   }
 
   /**
-   * Check if logged in to Twitter/X.
+   * Check if logged in to Instagram.
    */
   async isLoggedIn(): Promise<boolean> {
     const result = await this.executeJS(`
       (function() {
-        var accountSwitcher = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-        var loginButton = document.querySelector('[data-testid="loginButton"]');
-        if (accountSwitcher) return 'logged_in';
-        if (loginButton) return 'not_logged_in';
-        return 'unknown';
+        var notLoggedIn = document.querySelector('input[name="username"]') ||
+                          document.querySelector('button[type="submit"]')?.innerText?.includes('Log in');
+        return notLoggedIn ? 'false' : 'true';
       })()
     `);
-    return result === 'logged_in';
+    return result === 'true';
   }
 
   /**
@@ -186,6 +234,7 @@ export class SafariDriver {
 
   /**
    * Type text using OS-level keystrokes (works with React contenteditable).
+   * This bypasses JavaScript event injection issues.
    */
   async typeViaKeystrokes(text: string): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
@@ -198,7 +247,8 @@ export class SafariDriver {
         { timeout: this.config.timeout }
       );
       return true;
-    } catch {
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] Keystroke error:', error);
       return false;
     }
   }
@@ -214,25 +264,216 @@ export class SafariDriver {
         { timeout: this.config.timeout }
       );
       return true;
-    } catch {
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] Enter key error:', error);
       return false;
     }
   }
 
   /**
-   * Bring Safari to the foreground.
+   * Find a Safari tab by URL pattern across all windows.
+   * Returns the first matching window+tab indices.
+   */
+  async findTabByUrl(urlPattern: string): Promise<SessionInfo> {
+    if (this.config.instanceType !== 'local') {
+      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+    }
+    try {
+      const script = `
+tell application "Safari"
+  set found to false
+  repeat with w from 1 to count of windows
+    repeat with t from 1 to count of tabs of window w
+      set tabURL to URL of tab t of window w
+      if tabURL contains "${urlPattern}" then
+        return (w as text) & ":" & (t as text) & ":" & tabURL
+      end if
+    end repeat
+  end repeat
+  return "not_found:0:0:"
+end tell`;
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      const result = stdout.trim();
+      if (result.startsWith('not_found')) {
+        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      }
+      const parts = result.split(':');
+      const w = parseInt(parts[0], 10);
+      const t = parseInt(parts[1], 10);
+      const url = parts.slice(2).join(':');
+      if (isNaN(w) || isNaN(t)) {
+        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      }
+      return { found: true, windowIndex: w, tabIndex: t, url };
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] findTabByUrl error:', error);
+      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+    }
+  }
+
+  /**
+   * Bring a specific Safari window+tab to the foreground and make it active.
+   */
+  async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
+    try {
+      const script = `
+tell application "Safari"
+  activate
+  set index of window ${windowIndex} to 1
+  set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
+end tell
+tell application "System Events"
+  set frontmost of process "Safari" to true
+  try
+    perform action "AXRaise" of front window of process "Safari"
+  end try
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await this.wait(300);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] activateTab error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get the current URL of a specific Safari tab.
+   * Used for self-healing session verification.
+   */
+  async getTabUrl(windowIndex: number, tabIndex: number): Promise<string> {
+    if (this.config.instanceType !== 'local') return '';
+    try {
+      const { stdout } = await execAsync(
+        `osascript -e 'tell application "Safari" to get URL of tab ${tabIndex} of window ${windowIndex}'`
+      );
+      return stdout.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Verify the tracked session is still valid (tab exists and URL still matches).
+   * Returns true if the session is healthy, false if it needs re-scanning.
+   */
+  async verifySession(urlPattern: string): Promise<boolean> {
+    if (!this.trackedWindow || !this.trackedTab) return false;
+    const url = await this.getTabUrl(this.trackedWindow, this.trackedTab);
+    if (!url) {
+      // Tab may have been closed — invalidate
+      console.warn(`[SafariDriver] Tracked tab w=${this.trackedWindow} t=${this.trackedTab} is gone — resetting`);
+      this.clearTrackedSession();
+      return false;
+    }
+    if (!url.includes(urlPattern)) {
+      // Tab navigated away — invalidate
+      console.warn(`[SafariDriver] Tracked tab drifted: expected '${urlPattern}', got '${url}' — re-scanning`);
+      this.clearTrackedSession();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Ensure the correct Safari tab is active before any operation.
+   *
+   * Self-healing flow:
+   * 1. Fast path: if we have a tracked tab within TTL, verify its URL still matches.
+   *    - URL OK  → re-activate and return immediately.
+   *    - URL drifted / tab gone → invalidate and fall through to full scan.
+   * 2. Full scan: search all Safari windows for a tab matching urlPattern.
+   *    - Found  → activate, track, return.
+   *    - Not found → navigate front document to the URL, wait, re-scan.
+   *
+   * Call this at the start of any operation that must run in a specific Safari session.
+   */
+  async ensureActiveSession(urlPattern: string): Promise<SessionInfo> {
+    const now = Date.now();
+    const withinTTL = this.trackedWindow &&
+      this.trackedTab &&
+      this.sessionUrlPattern === urlPattern &&
+      (now - this.sessionLastVerified) <= SafariDriver.SESSION_VERIFY_TTL_MS;
+
+    if (withinTTL && this.trackedWindow && this.trackedTab) {
+      // Self-healing fast path: verify URL before trusting cached tab
+      const stillValid = await this.verifySession(urlPattern);
+      if (stillValid) {
+        await this.activateTab(this.trackedWindow, this.trackedTab);
+        this.sessionLastVerified = now;
+        return { found: true, windowIndex: this.trackedWindow, tabIndex: this.trackedTab, url: '' };
+      }
+      // Session drifted — clearTrackedSession() already called in verifySession
+    }
+
+    // Full scan
+    const info = await this.findTabByUrl(urlPattern);
+
+    if (info.found) {
+      await this.activateTab(info.windowIndex, info.tabIndex);
+      this.trackedWindow = info.windowIndex;
+      this.trackedTab = info.tabIndex;
+      this.sessionUrlPattern = urlPattern;
+      this.sessionLastVerified = now;
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] Session locked: w=${info.windowIndex} t=${info.tabIndex} url=${info.url}`);
+      }
+      return info;
+    }
+
+    // Not found — create session by navigating in front document
+    console.warn(`[SafariDriver] No tab found for '${urlPattern}' — navigating front document`);
+    await this.navigateTo(`https://www.${urlPattern}`);
+    await this.wait(2500);
+
+    const retry = await this.findTabByUrl(urlPattern);
+    if (retry.found) {
+      await this.activateTab(retry.windowIndex, retry.tabIndex);
+      this.trackedWindow = retry.windowIndex;
+      this.trackedTab = retry.tabIndex;
+      this.sessionUrlPattern = urlPattern;
+      this.sessionLastVerified = now;
+    }
+    return retry;
+  }
+
+  /**
+   * Return current tracked session info for diagnostics.
+   */
+  getSessionInfo(): { windowIndex: number | null; tabIndex: number | null; urlPattern: string | null; lastVerified: number } {
+    return {
+      windowIndex: this.trackedWindow,
+      tabIndex: this.trackedTab,
+      urlPattern: this.sessionUrlPattern,
+      lastVerified: this.sessionLastVerified,
+    };
+  }
+
+  /**
+   * Clear the tracked session (e.g. after a Safari restart).
+   */
+  clearTrackedSession(): void {
+    this.trackedWindow = null;
+    this.trackedTab = null;
+    this.sessionUrlPattern = null;
+    this.sessionLastVerified = 0;
+  }
+
+  /**
+   * Bring Safari to the foreground (generic — no tab targeting).
    */
   async activateSafari(): Promise<boolean> {
     try {
-      await execAsync(`osascript -e '
+      const script = `
 tell application "Safari" to activate
 delay 0.2
 tell application "System Events"
-    set frontmost of process "Safari" to true
-    try
-        perform action "AXRaise" of front window of process "Safari"
-    end try
-end tell'`);
+  set frontmost of process "Safari" to true
+  try
+    perform action "AXRaise" of front window of process "Safari"
+  end try
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
       return true;
     } catch {
       return false;

@@ -293,8 +293,8 @@ app.post('/api/linkedin/connections/request', async (req: Request, res: Response
     if (connectionsToday >= rateLimits.connectionRequestsPerDay) {
       return res.status(429).json({ error: 'Daily connection request limit reached', limit: rateLimits.connectionRequestsPerDay });
     }
-    if (!isWithinActiveHours()) {
-      return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}` });
+    if (!isWithinActiveHours() && !req.body.force) {
+      return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
     }
 
     const request: ConnectionRequest = {

@@ -144,10 +144,12 @@ export async function openConversation(participantName: string, driver?: SafariD
   // Step 1: Find and scroll the conversation into view
   const scrollResult = await d.executeJS(`
     (function() {
-      var items = document.querySelectorAll('.msg-conversation-listitem');
+      var items = document.querySelectorAll('.msg-conversation-listitem, li.msg-conversation-listitem__link');
+      if (!items.length) items = document.querySelectorAll('.msg-conversations-container__conversations-list li');
       for (var i = 0; i < items.length; i++) {
         var nameEl = items[i].querySelector('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names');
-        if (nameEl && nameEl.innerText.trim().toLowerCase().includes('${searchName}')) {
+        var nameText = nameEl ? nameEl.innerText.trim().toLowerCase() : items[i].innerText.trim().toLowerCase();
+        if (nameText.includes('${searchName}')) {
           items[i].scrollIntoView({block: 'center'});
           return '' + i;
         }
@@ -167,7 +169,8 @@ export async function openConversation(participantName: string, driver?: SafariD
   // Step 2: Read bounding rect of the scrolled item
   const posResult = await d.executeJS(`
     (function() {
-      var items = document.querySelectorAll('.msg-conversation-listitem');
+      var items = document.querySelectorAll('.msg-conversation-listitem, li.msg-conversation-listitem__link');
+      if (!items.length) items = document.querySelectorAll('.msg-conversations-container__conversations-list li');
       var idx = ${scrollResult};
       if (idx >= 0 && idx < items.length) {
         var r = items[idx].getBoundingClientRect();

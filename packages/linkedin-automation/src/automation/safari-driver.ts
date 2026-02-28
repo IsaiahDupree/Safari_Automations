@@ -53,7 +53,7 @@ export class SafariDriver {
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
@@ -93,7 +93,7 @@ export class SafariDriver {
    * Execute JavaScript in a specific window+tab regardless of tracking state.
    */
   async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
     await fs.writeFile(tempFile, cleanJS);
     const script = `
@@ -194,6 +194,14 @@ export class SafariDriver {
   }
 
   /**
+   * Check if Safari is on LinkedIn.
+   */
+  async isOnLinkedIn(): Promise<boolean> {
+    const url = await this.getCurrentUrl();
+    return url.includes('linkedin.com');
+  }
+
+  /**
    * Check if logged in to Instagram.
    */
   async isLoggedIn(): Promise<boolean> {
@@ -241,6 +249,24 @@ export class SafariDriver {
   }
 
   /**
+   * Poll a JS expression until it returns a truthy, non-empty string.
+   * Returns the result string on success, or '' on timeout.
+   */
+  async waitForCondition(jsCondition: string, maxWaitMs: number = 10000, pollMs: number = 400): Promise<string> {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const result = await this.executeJS(jsCondition);
+        if (result && result !== 'false' && result !== 'null' && result !== 'undefined') {
+          return result;
+        }
+      } catch { /* keep polling */ }
+      await this.wait(pollMs);
+    }
+    return '';
+  }
+
+  /**
    * Type text using OS-level keystrokes (works with React contenteditable).
    * This bypasses JavaScript event injection issues.
    */
@@ -257,6 +283,25 @@ export class SafariDriver {
       return true;
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] Keystroke error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Type text by copying to clipboard and pasting (works for contenteditable).
+   */
+  async typeViaClipboard(text: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+      await execAsync(`printf "%s" "${escaped}" | pbcopy`);
+      await this.wait(200);
+      await this.activateSafari();
+      await this.wait(200);
+      await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
       return false;
     }
   }
@@ -484,6 +529,81 @@ end tell`;
       await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
       return true;
     } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Perform a real OS-level mouse click on an element matched by CSS selector.
+   * Unlike JS .click(), this triggers Ember.js/SPA event handlers (needed for modals).
+   * Gets element position via JS, then uses AppleScript System Events to click.
+   */
+  async nativeClickSelector(selector: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      const safeSelector = selector.replace(/'/g, "\\'").replace(/"/g, '\\"');
+      const posJson = await this.executeJS(
+        `(function(){var el=document.querySelector("${safeSelector}");if(!el)return '';var r=el.getBoundingClientRect();if(r.width===0||r.height===0)return '';return JSON.stringify({x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2),vw:window.innerWidth,vh:window.innerHeight});})()`
+      );
+      if (!posJson) return false;
+      const pos = JSON.parse(posJson);
+
+      const winInfo = await execAsync(
+        `osascript -e 'tell application "Safari" to get bounds of front window'`,
+        { timeout: 5000 }
+      );
+      const bounds = winInfo.stdout.trim().split(', ').map(Number);
+      const winX = bounds[0];
+      const winY = bounds[1];
+      const winW = bounds[2] - bounds[0];
+      const winH = bounds[3] - bounds[1];
+
+      const toolbarOffset = winH - pos.vh;
+      const screenX = winX + pos.x;
+      const screenY = winY + toolbarOffset + pos.y;
+
+      await this.activateSafari();
+      await this.wait(200);
+
+      const clickScript = `
+tell application "System Events"
+  click at {${screenX}, ${screenY}}
+end tell`;
+      await execAsync(`osascript -e '${clickScript.replace(/'/g, "'\"'\"'")}'`, { timeout: 5000 });
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] nativeClick error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Click at a viewport (CSS pixel) coordinate using a native OS-level Quartz event.
+   * Used when the caller already has the element's bounding rect.
+   */
+  async clickAtViewportPosition(x: number, y: number): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      const vpJson = await this.executeJS('JSON.stringify({w:window.innerWidth,h:window.innerHeight})');
+      const vp = JSON.parse(vpJson || '{"w":1200,"h":800}');
+      const winInfo = await execAsync(
+        `osascript -e 'tell application "Safari" to get bounds of front window'`,
+        { timeout: 5000 }
+      );
+      const bounds = winInfo.stdout.trim().split(', ').map(Number);
+      const winX = bounds[0];
+      const winY = bounds[1];
+      const winH = bounds[3] - bounds[1];
+      const toolbarOffset = winH - vp.h;
+      const screenX = winX + x;
+      const screenY = winY + toolbarOffset + y;
+      await this.activateSafari();
+      await this.wait(200);
+      const clickScript = `tell application "System Events"\n  click at {${screenX}, ${screenY}}\nend tell`;
+      await execAsync(`osascript -e '${clickScript.replace(/'/g, "'\"'\"'")}'`, { timeout: 5000 });
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] clickAtViewportPosition error:', error);
       return false;
     }
   }

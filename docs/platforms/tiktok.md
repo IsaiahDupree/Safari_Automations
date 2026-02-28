@@ -1,14 +1,21 @@
 # TikTok Platform Guide
 
+> **This file is outdated.** See the full reference: `docs/TIKTOK_AUTOMATION_COMPLETE.md`
+
 ## Overview
 
-TikTok adapter supports:
-- For You Page (FYP) navigation
-- Video post discovery and extraction
-- Like/unlike actions
-- Comment posting
-- Profile viewing
-- **No DM support** (TikTok DMs require mobile app)
+TikTok automation has **three independent services**:
+
+| Service | Port | Capabilities |
+|---------|------|-------------|
+| TikTok DM | 3102 | Send/receive DMs, inbox list, contact enrichment, CRM sync |
+| TikTok Comments | 3006 | Post comments, read comments, navigate to videos |
+| Market Research | 3106 | Search videos, rank top creators, engagement extraction |
+
+> **Note:** DM support IS available via web (tiktok.com/messages). The mobile-only limitation no longer applies to this automation stack.
+
+For full documentation including API endpoints, selectors, architecture, and debugging:  
+→ **`docs/TIKTOK_AUTOMATION_COMPLETE.md`**
 
 ## URLs and Navigation
 

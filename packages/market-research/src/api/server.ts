@@ -15,6 +15,9 @@
  *   POST /api/research/:platform/niche        — research a single niche (full pipeline)
  *   POST /api/research/:platform/full         — multi-niche research (the big one)
  *   POST /api/research/all/full               — run across ALL platforms
+ *   POST /api/research/twitter/top100        — top 100 Twitter creators (10 niches × 10)
+ *   POST /api/research/threads/top100        — top 100 Threads creators (10 niches × 10)
+ *   POST /api/research/instagram/competitor  — account-specific: profile+reels+engagement
  *
  *   GET  /api/research/status                 — current job status
  *   GET  /api/research/results                — list saved result files
@@ -199,7 +202,8 @@ const DEFAULT_OUTPUT_DIR = path.join(os.homedir(), 'Documents/market-research');
 // ─── State ───────────────────────────────────────────────────────
 
 const jobs: Map<string, ResearchJob> = new Map();
-let currentJob: ResearchJob | null = null;
+let currentJob: ResearchJob | null = null;  // legacy — kept for /api/research/status
+const runningByPlatform: Map<string, ResearchJob> = new Map(); // per-platform lock
 
 // ─── Researcher Factory ──────────────────────────────────────────
 
@@ -211,6 +215,7 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
       return new TwitterResearcher({
         tweetsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
+        enrichTopCreators: config.enrichTopCreators ?? 10,
         scrollPauseMs: config.scrollPauseMs || 2000,
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
@@ -220,6 +225,7 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
       return new ThreadsResearcher({
         postsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
+        enrichTopCreators: config.enrichTopCreators ?? 10,
         scrollPauseMs: config.scrollPauseMs || 2000,
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
@@ -355,27 +361,42 @@ app.post('/api/research/:platform/search', async (req: Request, res: Response) =
   try {
     const researcher = createResearcher(platform, config || {});
 
-    // Search and extract visible posts
-    let searchOk: boolean;
-    if (platform === 'instagram') {
-      searchOk = await (researcher as InstagramResearcher).searchHashtag(query);
-    } else {
-      searchOk = await (researcher as any).search(query);
-    }
+    // TikTok deep-scrape: searchAndDeepScrape handles its own search() internally
+    const deepScrape = (config?.deepScrape !== false) && platform === 'tiktok';
 
-    if (!searchOk) {
-      res.json({ success: false, error: 'Search returned no results or failed to load', platform, query });
-      return;
+    if (!deepScrape) {
+      // Non-deep-scrape path: navigate first, check page loaded
+      let searchOk: boolean;
+      if (platform === 'instagram') {
+        searchOk = await (researcher as InstagramResearcher).searchHashtag(query);
+      } else {
+        searchOk = await (researcher as any).search(query);
+      }
+      if (!searchOk) {
+        res.json({ success: false, error: 'Search returned no results or failed to load', platform, query });
+        return;
+      }
     }
 
     // Extract visible posts
     let posts: any[];
     if (platform === 'instagram') {
       posts = await (researcher as InstagramResearcher).extractPostUrls(query);
+    } else if (platform === 'tiktok' && deepScrape) {
+      const maxDeep = config?.postsPerQuery || config?.maxPosts || 8;
+      posts = await (researcher as TikTokResearcher).searchAndDeepScrape(query, query, maxDeep);
     } else if (platform === 'tiktok') {
       posts = await (researcher as TikTokResearcher).extractVisibleVideos(query);
+    } else if (platform === 'twitter') {
+      posts = await (researcher as TwitterResearcher).extractVisibleTweets(query);
     } else {
-      posts = await (researcher as any).extractVisiblePosts(query);
+      // threads and others — try extractVisibleTweets then fall back to extractVisiblePosts
+      const r = researcher as any;
+      posts = typeof r.extractVisibleTweets === 'function'
+        ? await r.extractVisibleTweets(query)
+        : typeof r.extractVisiblePosts === 'function'
+          ? await r.extractVisiblePosts(query)
+          : [];
     }
 
     res.json({ success: true, platform, query, posts, count: posts.length });
@@ -399,8 +420,9 @@ app.post('/api/research/:platform/niche', async (req: Request, res: Response) =>
     return;
   }
 
-  if (currentJob && currentJob.status === 'running') {
-    res.status(409).json({ error: 'A research job is already running', currentJob: { id: currentJob.id, platform: currentJob.platform } });
+  const existingForPlatform = runningByPlatform.get(platform);
+  if (existingForPlatform && existingForPlatform.status === 'running') {
+    res.status(409).json({ error: 'A research job is already running for this platform', currentJob: { id: existingForPlatform.id, platform } });
     return;
   }
 
@@ -413,9 +435,37 @@ app.post('/api/research/:platform/niche', async (req: Request, res: Response) =>
     progress: { currentNiche: niche, nichesCompleted: 0, totalNiches: 1 },
   };
   jobs.set(job.id, job);
-  currentJob = job;
+  runningByPlatform.set(platform, job);
+  currentJob = job;  // keep legacy field updated
 
-  // Return immediately with job ID
+  // sync:true — await results and return them directly (useful for tests and small configs)
+  if (config?.sync === true) {
+    try {
+      const researcher = createResearcher(platform, config || {});
+      const result = await (researcher as any).researchNiche(niche);
+      const filepath = await (researcher as any).saveResults([result], 'niche');
+      job.status = 'completed';
+      job.completedAt = new Date().toISOString();
+      job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+      job.resultFile = filepath;
+      job.progress = { currentNiche: niche, nichesCompleted: 1, totalNiches: 1 };
+      runningByPlatform.delete(platform);
+      if (currentJob?.id === job.id) currentJob = null;
+      res.json({ success: true, jobId: job.id, platform, niche,
+        topCreators: result.creators || [], tweets: result.tweets || [],
+        durationMs: job.durationMs });
+    } catch (e) {
+      job.status = 'failed';
+      job.error = String(e);
+      job.completedAt = new Date().toISOString();
+      runningByPlatform.delete(platform);
+      if (currentJob?.id === job.id) currentJob = null;
+      res.status(500).json({ error: String(e), platform, niche });
+    }
+    return;
+  }
+
+  // Return immediately with job ID (async default)
   res.json({ jobId: job.id, status: 'running', platform, niche });
 
   // Run async
@@ -434,7 +484,8 @@ app.post('/api/research/:platform/niche', async (req: Request, res: Response) =>
     job.error = String(e);
     job.completedAt = new Date().toISOString();
   }
-  currentJob = null;
+  runningByPlatform.delete(platform);
+  if (currentJob?.id === job.id) currentJob = null;
 });
 
 // ─── Multi-niche research (async, returns job ID) ────────────────
@@ -489,6 +540,299 @@ app.post('/api/research/:platform/full', async (req: Request, res: Response) => 
     job.completedAt = new Date().toISOString();
   }
   currentJob = null;
+});
+
+// ─── Twitter top-100 creators (sync, 10 niches × 10 creators) ───
+
+app.post('/api/research/twitter/top100', async (req: Request, res: Response) => {
+  const existingForPlatform = runningByPlatform.get('twitter');
+  if (existingForPlatform && existingForPlatform.status === 'running') {
+    res.status(409).json({ error: 'A Twitter research job is already running', currentJob: { id: existingForPlatform.id } });
+    return;
+  }
+
+  const {
+    niches: reqNiches,
+    postsPerNiche = 20,
+    creatorsPerNiche = 10,
+    enrichTopCreators = 10,
+    config: extraConfig = {},
+  } = req.body;
+
+  const TWITTER_NICHES_DEFAULT = [
+    'AI automation',
+    'AI copywriting',
+    'content marketing',
+    'solopreneur',
+    'personal branding',
+    'digital marketing',
+    'social media growth',
+    'email marketing',
+    'entrepreneurship',
+    'creator economy',
+  ];
+  const niches: string[] = (reqNiches && Array.isArray(reqNiches) && reqNiches.length > 0)
+    ? reqNiches.slice(0, 10)
+    : TWITTER_NICHES_DEFAULT;
+
+  const job: ResearchJob = {
+    id: generateJobId(),
+    platform: 'twitter',
+    niches,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    progress: { currentNiche: niches[0], nichesCompleted: 0, totalNiches: niches.length },
+  };
+  jobs.set(job.id, job);
+  runningByPlatform.set('twitter', job);
+  currentJob = job;
+
+  console.log(`[top100] Starting Twitter top-100: ${niches.length} niches × ${creatorsPerNiche} creators each`);
+
+  try {
+    const researcher = new TwitterResearcher({
+      tweetsPerNiche: postsPerNiche,
+      creatorsPerNiche,
+      enrichTopCreators,
+      scrollPauseMs: 1500,
+      maxScrollsPerSearch: 50,
+      ...extraConfig,
+    });
+
+    const allCreators: any[] = [];
+    const nicheResults: any[] = [];
+
+    for (let i = 0; i < niches.length; i++) {
+      const niche = niches[i];
+      job.progress = { currentNiche: niche, nichesCompleted: i, totalNiches: niches.length };
+      console.log(`[top100] Niche ${i + 1}/${niches.length}: "${niche}"`);
+      try {
+        const result = await researcher.researchNiche(niche);
+        nicheResults.push({ niche, creatorCount: result.creators.length, tweetCount: result.tweets.length });
+        for (const c of result.creators) {
+          allCreators.push(c);
+        }
+      } catch (e) {
+        console.log(`[top100] Niche "${niche}" failed: ${e}`);
+        nicheResults.push({ niche, error: String(e) });
+      }
+      if (i < niches.length - 1) await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // Deduplicate and merge creators across niches (by handle, keep highest engagement)
+    const merged = new Map<string, any>();
+    for (const c of allCreators) {
+      const existing = merged.get(c.handle);
+      if (!existing || c.totalEngagement > existing.totalEngagement) {
+        merged.set(c.handle, c);
+      }
+    }
+    const top100 = Array.from(merged.values())
+      .sort((a, b) => b.totalEngagement - a.totalEngagement)
+      .slice(0, 100);
+
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+    job.progress = { currentNiche: niches[niches.length - 1], nichesCompleted: niches.length, totalNiches: niches.length };
+    runningByPlatform.delete('twitter');
+    if (currentJob?.id === job.id) currentJob = null;
+
+    res.json({
+      success: true,
+      jobId: job.id,
+      platform: 'twitter',
+      niches,
+      topCreators: top100,
+      nicheResults,
+      totalCreators: top100.length,
+      durationMs: job.durationMs,
+    });
+  } catch (e) {
+    job.status = 'failed';
+    job.error = String(e);
+    job.completedAt = new Date().toISOString();
+    runningByPlatform.delete('twitter');
+    if (currentJob?.id === job.id) currentJob = null;
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Threads top-100 creators (sync, 10 niches × 10 creators) ───
+
+app.post('/api/research/threads/top100', async (req: Request, res: Response) => {
+  const existingForPlatform = runningByPlatform.get('threads');
+  if (existingForPlatform && existingForPlatform.status === 'running') {
+    res.status(409).json({ error: 'A Threads research job is already running', currentJob: { id: existingForPlatform.id } });
+    return;
+  }
+
+  const {
+    niches: reqNiches,
+    postsPerNiche = 20,
+    creatorsPerNiche = 10,
+    enrichTopCreators = 10,
+    config: extraConfig = {},
+  } = req.body;
+
+  const THREADS_NICHES_DEFAULT = [
+    'AI tools',
+    'content creation',
+    'solopreneur',
+    'personal branding',
+    'digital marketing',
+    'entrepreneurship',
+    'social media growth',
+    'productivity',
+    'creator economy',
+    'business growth',
+  ];
+  const niches: string[] = (reqNiches && Array.isArray(reqNiches) && reqNiches.length > 0)
+    ? reqNiches.slice(0, 10)
+    : THREADS_NICHES_DEFAULT;
+
+  const job: ResearchJob = {
+    id: generateJobId(),
+    platform: 'threads',
+    niches,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    progress: { currentNiche: niches[0], nichesCompleted: 0, totalNiches: niches.length },
+  };
+  jobs.set(job.id, job);
+  runningByPlatform.set('threads', job);
+  currentJob = job;
+
+  console.log(`[top100-threads] Starting Threads top-100: ${niches.length} niches × ${creatorsPerNiche} creators each`);
+
+  try {
+    const researcher = new ThreadsResearcher({
+      postsPerNiche,
+      creatorsPerNiche,
+      enrichTopCreators,
+      scrollPauseMs: 1500,
+      maxScrollsPerSearch: 50,
+      ...extraConfig,
+    });
+
+    const allCreators: any[] = [];
+    const nicheResults: any[] = [];
+
+    for (let i = 0; i < niches.length; i++) {
+      const niche = niches[i];
+      job.progress = { currentNiche: niche, nichesCompleted: i, totalNiches: niches.length };
+      console.log(`[top100-threads] Niche ${i + 1}/${niches.length}: "${niche}"`);
+      try {
+        const result = await researcher.researchNiche(niche);
+        nicheResults.push({ niche, creatorCount: result.creators.length, postCount: result.posts.length });
+        for (const c of result.creators) allCreators.push(c);
+      } catch (e) {
+        console.log(`[top100-threads] Niche "${niche}" failed: ${e}`);
+        nicheResults.push({ niche, error: String(e) });
+      }
+      if (i < niches.length - 1) await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // Deduplicate by handle, keep highest engagement
+    const merged = new Map<string, any>();
+    for (const c of allCreators) {
+      const existing = merged.get(c.handle);
+      if (!existing || c.totalEngagement > existing.totalEngagement) merged.set(c.handle, c);
+    }
+    const top100 = Array.from(merged.values())
+      .sort((a, b) => b.totalEngagement - a.totalEngagement)
+      .slice(0, 100);
+
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+    job.progress = { currentNiche: niches[niches.length - 1], nichesCompleted: niches.length, totalNiches: niches.length };
+    runningByPlatform.delete('threads');
+    if (currentJob?.id === job.id) currentJob = null;
+
+    res.json({
+      success: true,
+      jobId: job.id,
+      platform: 'threads',
+      niches,
+      topCreators: top100,
+      nicheResults,
+      totalCreators: top100.length,
+      durationMs: job.durationMs,
+    });
+  } catch (e) {
+    job.status = 'failed';
+    job.error = String(e);
+    job.completedAt = new Date().toISOString();
+    runningByPlatform.delete('threads');
+    if (currentJob?.id === job.id) currentJob = null;
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─── Instagram competitor research (account-specific) ───────────
+
+app.post('/api/research/instagram/competitor', async (req: Request, res: Response) => {
+  const existingForPlatform = runningByPlatform.get('instagram');
+  if (existingForPlatform && existingForPlatform.status === 'running') {
+    res.status(409).json({ error: 'An Instagram research job is already running', currentJob: { id: existingForPlatform.id } });
+    return;
+  }
+
+  const {
+    username,
+    maxPosts = 100,
+    detailedScrapeTop = 30,
+  } = req.body;
+
+  if (!username || typeof username !== 'string') {
+    res.status(400).json({ error: 'username is required' });
+    return;
+  }
+
+  const handle = username.replace(/^@/, '').trim();
+
+  const job: ResearchJob = {
+    id: generateJobId(),
+    platform: 'instagram',
+    niches: [handle],
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    progress: { currentNiche: handle, nichesCompleted: 0, totalNiches: 1 },
+  };
+  jobs.set(job.id, job);
+  runningByPlatform.set('instagram', job);
+  currentJob = job;
+
+  console.log(`[competitor-ig] @${handle}: maxPosts=${maxPosts} detailedTop=${detailedScrapeTop}`);
+
+  try {
+    const researcher = new InstagramResearcher({ timeout: 45000 });
+    const result = await researcher.competitorResearch(handle, maxPosts, detailedScrapeTop);
+
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+    job.progress = { currentNiche: handle, nichesCompleted: 1, totalNiches: 1 };
+    runningByPlatform.delete('instagram');
+    if (currentJob?.id === job.id) currentJob = null;
+
+    console.log(`[competitor-ig] @${handle} done: ${result.stats.totalCollected} posts, followers=${result.profile.followers}`);
+
+    res.json({
+      success: true,
+      jobId: job.id,
+      ...result,
+      durationMs: job.durationMs,
+    });
+  } catch (e) {
+    job.status = 'failed';
+    job.error = String(e);
+    job.completedAt = new Date().toISOString();
+    runningByPlatform.delete('instagram');
+    if (currentJob?.id === job.id) currentJob = null;
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // ─── Cross-platform research (all 5 platforms) ───────────────────

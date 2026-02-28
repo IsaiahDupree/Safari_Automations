@@ -142,8 +142,52 @@ export async function listConversations(driver?: SafariDriver): Promise<DMConver
           }
         });
       }
+
+      // Strategy 3: New Instagram DOM (2025+) — Thread list with span-grouped rows
+      // Instagram removed a[href*="/direct/t/"] from the inbox list; conversations are
+      // DIV rows (~72px tall) inside [aria-label="Thread list"] containing leaf SPANs.
+      if (conversations.length === 0) {
+        var threadList = document.querySelector('[aria-label="Thread list"]');
+        if (threadList) {
+          var allSpans = threadList.querySelectorAll('span');
+          var rowMap: Record<number, string[]> = {};
+          allSpans.forEach(function(sp) {
+            var t = (sp.innerText || '').trim();
+            if (sp.children.length === 0 && t.length > 1 && t.length < 80) {
+              var el: Element | null = sp;
+              for (var j = 0; j < 10; j++) {
+                el = el ? el.parentElement : null;
+                if (!el) break;
+                var r = el.getBoundingClientRect();
+                if (r.height > 65 && r.height < 90 && r.width > 300) {
+                  var key = Math.round(r.top);
+                  if (!rowMap[key]) rowMap[key] = [];
+                  rowMap[key].push(t);
+                  break;
+                }
+              }
+            }
+          });
+          var rowKeys = Object.keys(rowMap).map(Number).sort(function(a, b) { return a - b; });
+          rowKeys.forEach(function(key) {
+            var texts = rowMap[key];
+            var name = texts[0] || '';
+            // Skip "Hidden requests" header row
+            if (!name || name === 'Hidden requests' || name.length < 2) return;
+            var lastMsg = texts.length > 1 ? texts[texts.length - 1] : '';
+            if (!seen[name]) {
+              seen[name] = true;
+              conversations.push(JSON.stringify({
+                username: name,
+                threadId: '',
+                lastMessage: lastMsg.substring(0, 100)
+              }));
+            }
+          });
+        }
+      }
       
-      return '[' + conversations.slice(0, 30).join(',') + ']';
+      return '[' + conversations.slice(0, 50).join(',') + ']';
     })()
   `);
   
@@ -608,30 +652,157 @@ export async function smartSendDM(
 }
 
 /**
- * Get all conversations from all tabs.
+ * Scroll the conversation list until no new conversations load, then list all.
+ * Guarantees every visible chat is captured, not just the top ~30.
+ */
+export async function scrollAndListAllConversations(driver?: SafariDriver, maxScrolls = 30): Promise<DMConversation[]> {
+  const d = driver || getDefaultDriver();
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    // Scroll the Thread list container
+    await d.executeJS(`
+      (function() {
+        var c = document.querySelector('[aria-label="Thread list"]') ||
+                document.querySelector('div[role="list"]') ||
+                document.querySelector('div[class*="inbox"]');
+        if (c) { c.scrollTop += 800; }
+        else { window.scrollBy(0, 800); }
+      })()
+    `);
+    await d.wait(1200);
+
+    const countRaw = await d.executeJS(`
+      (function() {
+        var links = document.querySelectorAll('a[href*="/direct/t/"]');
+        var rows = document.querySelector('[aria-label="Thread list"]');
+        return String(links.length || (rows ? rows.querySelectorAll('span').length : 0));
+      })()
+    `);
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break; // stable for 2 consecutive scrolls — we're at the bottom
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return listConversations(d);
+}
+
+/**
+ * Scroll up in the current open conversation to load full message history,
+ * then read all messages.
+ */
+export async function readAllMessages(driver?: SafariDriver, maxScrolls = 20): Promise<DMMessage[]> {
+  const d = driver || getDefaultDriver();
+  let prevCount = -1;
+  let stableRounds = 0;
+
+  for (let i = 0; i < maxScrolls; i++) {
+    await d.executeJS(`
+      (function() {
+        var pane = document.querySelector('[role="main"] [class*="messages"], div[class*="MessageList"]') ||
+                   document.querySelector('[role="main"]');
+        if (pane) { pane.scrollTop -= 1200; }
+        else { window.scrollBy(0, -1200); }
+      })()
+    `);
+    await d.wait(1000);
+
+    const countRaw = await d.executeJS(`
+      (function() {
+        return String(document.querySelectorAll('div[role="row"], div[class*="message"]').length);
+      })()
+    `);
+    const count = parseInt(countRaw) || 0;
+    if (count === prevCount) {
+      stableRounds++;
+      if (stableRounds >= 2) break;
+    } else {
+      stableRounds = 0;
+    }
+    prevCount = count;
+  }
+
+  return readMessages(9999, d);
+}
+
+/**
+ * Fetch contact info from a user's Instagram profile page.
+ * Returns bio, follower count, following count, post count, full name.
+ */
+export async function enrichContact(username: string, driver?: SafariDriver): Promise<{
+  fullName: string; bio: string; followers: string; following: string; posts: string; isPrivate: boolean;
+}> {
+  const d = driver || getDefaultDriver();
+  const profileUrl = `https://www.instagram.com/${username.replace('@', '')}/`;
+  await d.navigateTo(profileUrl);
+  await d.wait(2500);
+
+  const raw = await d.executeJS(`
+    (function() {
+      var metas = document.querySelectorAll('meta[name="description"]');
+      var descMeta = '';
+      for (var i = 0; i < metas.length; i++) {
+        var c = metas[i].getAttribute('content') || '';
+        if (c.includes('Followers') || c.includes('Following')) { descMeta = c; break; }
+      }
+      // "12.5K Followers, 500 Following, 87 Posts - See Instagram photos..."
+      var fMatch = descMeta.match(/([\d.,KMk]+)\\s*Followers/i);
+      var ngMatch = descMeta.match(/([\d.,KMk]+)\\s*Following/i);
+      var pMatch  = descMeta.match(/([\d.,KMk]+)\\s*Posts/i);
+      var nameEl = document.querySelector('h1, h2, [class*="FullName"], span[class*="_ap3a"]');
+      var bioEl  = document.querySelector('[class*="_aa_c"], [class*="bio"], .-vDIg span, [data-testid="user-bio"]');
+      var isPrivate = document.body.innerText.includes('This account is private') ||
+                      !!document.querySelector('[class*="PrivateAccount"]');
+      return JSON.stringify({
+        fullName:  nameEl ? nameEl.innerText.trim() : '',
+        bio:       bioEl  ? bioEl.innerText.trim()  : '',
+        followers: fMatch  ? fMatch[1]  : '',
+        following: ngMatch ? ngMatch[1] : '',
+        posts:     pMatch  ? pMatch[1]  : '',
+        isPrivate: isPrivate,
+      });
+    })()
+  `);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { fullName: '', bio: '', followers: '', following: '', posts: '', isPrivate: false };
+  }
+}
+
+/**
+ * Get all conversations from all tabs by navigating directly to each inbox URL.
+ * 2025+ Instagram removed [role="tab"] elements — each section is a separate URL.
+ * Scrolls each section until stable before scraping.
  */
 export async function getAllConversations(driver?: SafariDriver): Promise<Record<DMTab, DMConversation[]>> {
   const d = driver || getDefaultDriver();
-  
-  await navigateToInbox(d);
-  
+
+  const TAB_URLS: Record<DMTab, string> = {
+    primary:         'https://www.instagram.com/direct/inbox/',
+    general:         'https://www.instagram.com/direct/general/',
+    requests:        'https://www.instagram.com/direct/requests/',
+    hidden_requests: 'https://www.instagram.com/direct/requests/hidden/',
+  };
+
   const results: Record<DMTab, DMConversation[]> = {
     primary: [],
     general: [],
     requests: [],
     hidden_requests: [],
   };
-  
-  const tabs: DMTab[] = ['primary', 'general', 'requests'];
-  
-  for (const tab of tabs) {
-    await switchTab(tab, d);
-    results[tab] = await listConversations(d);
+
+  for (const tab of (['primary', 'general', 'requests', 'hidden_requests'] as DMTab[])) {
+    await d.navigateTo(TAB_URLS[tab]);
+    await d.wait(3000);
+    results[tab] = await scrollAndListAllConversations(d, 20);
   }
-  
-  // Try hidden requests
-  await switchTab('hidden_requests', d);
-  results.hidden_requests = await listConversations(d);
-  
+
   return results;
 }

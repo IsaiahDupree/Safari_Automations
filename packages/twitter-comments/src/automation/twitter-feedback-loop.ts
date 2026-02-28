@@ -28,6 +28,36 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
+const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
+const CHECKBACKS_HOLDER = 'twitter-feedback-loop';
+
+async function acquireGatewayLock(task: string, timeoutMs = 120000): Promise<boolean> {
+  try {
+    const res = await fetch(`${GATEWAY_URL}/gateway/lock/acquire`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holder: CHECKBACKS_HOLDER, platform: 'twitter', task, timeoutMs }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as { acquired?: boolean };
+    return data.acquired === true;
+  } catch {
+    return false;
+  }
+}
+
+async function releaseGatewayLock(): Promise<void> {
+  try {
+    await fetch(`${GATEWAY_URL}/gateway/lock/release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holder: CHECKBACKS_HOLDER }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -203,6 +233,11 @@ export class TweetPerformanceTracker {
   // ─── Extract metrics from a tweet URL via Safari ───────────
 
   async extractMetrics(tweetUrl: string): Promise<TweetMetrics | null> {
+    const lockAcquired = await acquireGatewayLock(`checkback: ${tweetUrl.slice(-40)}`);
+    if (!lockAcquired) {
+      console.log(`[Tracker] Could not acquire Safari lock for ${tweetUrl} — skipping`);
+      return null;
+    }
     try {
       // Navigate to the tweet
       const safeUrl = tweetUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -322,6 +357,8 @@ export class TweetPerformanceTracker {
     } catch (e) {
       console.log(`[Tracker] Failed to extract metrics: ${e}`);
       return null;
+    } finally {
+      await releaseGatewayLock();
     }
   }
 
@@ -378,6 +415,12 @@ export class TweetPerformanceTracker {
   // ─── Run all due check-backs ───────────────────────────────
 
   async runAllCheckBacks(): Promise<{ checked: number; results: TrackedTweet[] }> {
+    // Guard: only run if explicitly enabled — prevents unsolicited Safari browser takeover
+    if (process.env.SAFARI_CHECKBACKS_ENABLED !== 'true') {
+      console.log('[Tracker] Check-backs are disabled (SAFARI_CHECKBACKS_ENABLED != true) — skipping');
+      return { checked: 0, results: [] };
+    }
+
     const due = this.getDueForCheckBack();
     if (due.length === 0) {
       console.log('[Tracker] No tweets due for check-back');

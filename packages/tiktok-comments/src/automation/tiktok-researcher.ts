@@ -22,13 +22,10 @@
  *   - Video URLs: tiktok.com/@user/video/ID
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-
-const execAsync = promisify(exec);
+import { TikTokDriver } from './tiktok-driver.js';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -59,6 +56,9 @@ export interface TikTokCreator {
   displayName: string;
   url: string;
   isVerified: boolean;
+  followers: number;            // scraped from profile page
+  following: number;            // scraped from profile page
+  bio: string;                  // scraped from profile page
   videoCount: number;
   totalViews: number;
   totalLikes: number;
@@ -68,6 +68,7 @@ export interface TikTokCreator {
   avgEngagement: number;
   topVideoUrl: string;
   topVideoEngagement: number;
+  topVideos: Array<{ url: string; views: number; likes: number; comments: number; shares: number; engagement: number }>;
   niche: string;
 }
 
@@ -86,6 +87,7 @@ export interface TikTokNicheResult {
 export interface TikTokResearchConfig {
   videosPerNiche: number;
   creatorsPerNiche: number;
+  enrichTopCreators: number;    // how many top creators to enrich with profile visit (default 10)
   scrollPauseMs: number;
   maxScrollsPerSearch: number;
   timeout: number;
@@ -96,6 +98,7 @@ export interface TikTokResearchConfig {
 export const DEFAULT_TT_RESEARCH_CONFIG: TikTokResearchConfig = {
   videosPerNiche: 1000,
   creatorsPerNiche: 100,
+  enrichTopCreators: 10,
   scrollPauseMs: 1800,
   maxScrollsPerSearch: 200,
   timeout: 30000,
@@ -115,26 +118,14 @@ export class TikTokResearcher {
   }
 
   // ─── Low-level Safari helpers ──────────────────────────────
+  // Uses TikTokDriver — the proven implementation from port 3006 (search-cards,
+  // video-metrics, comments). JS passed to executeJS must use \\' for CSS
+  // attribute values so they survive TikTokDriver's " → \" AppleScript embedding.
 
-  private async executeJS(script: string): Promise<string> {
-    const tmpFile = path.join(os.tmpdir(), `safari_tt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
-    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
-    fs.writeFileSync(tmpFile, appleScript);
-    try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
-      return stdout.trim();
-    } finally {
-      try { fs.unlinkSync(tmpFile); } catch {}
-    }
-  }
+  private _driver = new TikTokDriver();
 
   private async navigate(url: string): Promise<boolean> {
-    try {
-      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
-      return true;
-    } catch { return false; }
+    return this._driver.navigateToPost(url);
   }
 
   private async wait(ms: number): Promise<void> {
@@ -144,7 +135,7 @@ export class TikTokResearcher {
   private async waitForSelector(selector: string, timeoutMs = 12000): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const found = await this.executeJS(`(function(){ return document.querySelector('${selector}') ? 'found' : ''; })()`);
+      const found = await this._driver.executeJS(`(function(){ return document.querySelector('${selector}') ? 'found' : ''; })()`);
       if (found === 'found') return true;
       await this.wait(600);
     }
@@ -160,185 +151,139 @@ export class TikTokResearcher {
   async search(query: string): Promise<boolean> {
     const url = `https://www.tiktok.com/search/video?q=${encodeURIComponent(query)}`;
     console.log(`[TT Research] Searching: "${query}"`);
-    const ok = await this.navigate(url);
-    if (!ok) return false;
-
-    // Wait for video cards to appear
-    const loaded = await this.waitForSelector(
-      'div[data-e2e="search_video-item"], div[data-e2e="search-card-desc"], a[href*="/video/"]',
-      15000
-    );
-    if (!loaded) {
-      const error = await this.executeJS(`
-        (function() {
-          var body = document.body.innerText || '';
-          if (body.includes('No results found')) return 'no_results';
-          if (body.includes('Log in')) return 'login_wall';
-          return '';
-        })()
-      `);
-      if (error) {
-        console.log(`[TT Research] Search issue: ${error}`);
-        return false;
-      }
-    }
-    return loaded;
+    const ok = await this.navigate(url);  // includes 3s internal wait
+    if (!ok) { console.log('[TT Research] navigate failed'); return false; }
+    // Fixed wait — waitForSelector via osascript polling is too slow (~1-2s/call)
+    // and unreliable when concurrent platform researchers navigate Safari concurrently.
+    await this.wait(7000);
+    console.log('[TT Research] navigation wait complete, proceeding to extract');
+    return true;
   }
 
   // ─── Extract visible videos ────────────────────────────────
 
   async extractVisibleVideos(niche: string): Promise<TikTokVideo[]> {
-    const raw = await this.executeJS(`
-      (function() {
-        var results = [];
-        var seen = {};
+    // Use TikTokDriver.executeJS with \\' selectors (same as search-cards endpoint on port 3006).
+    // \\' in TS template literal → \' in JS string → survives TikTokDriver's " → \" transform.
+    // Diagnostic: check card count and URL right before extraction
+    const preCheck = await this._driver.executeJS(
+      `(function(){ var c=document.querySelectorAll('[data-e2e="search_video-item"]'); return 'cards:'+c.length+' url:'+window.location.href.substring(0,80); })()`
+    ).catch(e => 'diag-error:' + e.message);
+    console.log('[TT extractVideos] pre-extract:', preCheck);
 
-        // TikTok search results: look for video links
-        var videoLinks = document.querySelectorAll('a[href*="/video/"]');
+    // Build single-line JS — TikTokDriver embeds JS in an AppleScript double-quoted string
+    // using \\n for newlines which AppleScript interprets as line-breaks, breaking multi-
+    // statement execution. Collapsing to one line before calling executeJS avoids this.
+    const extractJS = `(function() { var results = []; var seen = {}; var cards = document.querySelectorAll('[data-e2e="search_video-item"]'); for (var i = 0; i < cards.length; i++) { var card = cards[i]; var link = card.querySelector('a[href*="/video/"]'); if (!link) continue; var href = link.getAttribute('href') || ''; var idMatch = href.match(/\\/video\\/(\\d+)/); if (!idMatch) continue; var videoId = idMatch[1]; if (seen[videoId]) continue; seen[videoId] = true; var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href; var userMatch = href.match(/@([^\\/]+)\\/video/); var author = userMatch ? userMatch[1] : ''; var descEl = card.querySelector('[data-e2e="search-card-video-caption"]') || card.querySelector('[data-e2e="search-card-desc"]'); var desc = descEl ? descEl.textContent.trim().substring(0, 300) : ''; var vwEl = card.querySelector('[data-e2e="video-views"]'); var viewsRaw = vwEl ? vwEl.textContent.trim() : '0'; results.push({ id: videoId, url: url, author: author, desc: desc, viewsRaw: viewsRaw }); } return JSON.stringify(results); })()`;
 
-        for (var i = 0; i < videoLinks.length; i++) {
-          var link = videoLinks[i];
-          var href = link.getAttribute('href') || '';
-
-          // Extract video ID from URL
-          var idMatch = href.match(/\\/video\\/(\\d+)/);
-          if (!idMatch) continue;
-          var videoId = idMatch[1];
-          if (seen[videoId]) continue;
-          seen[videoId] = true;
-
-          var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href;
-
-          // Extract username from URL pattern /@username/video/ID
-          var userMatch = href.match(/@([^/]+)\\/video/);
-          var author = userMatch ? userMatch[1] : '';
-          var authorUrl = author ? 'https://www.tiktok.com/@' + author : '';
-
-          // Try to find the card container
-          var card = link.closest('[data-e2e="search_video-item"]')
-                  || link.closest('[data-e2e="search-card"]')
-                  || link.closest('div[class*="DivVideoCard"]')
-                  || link.closest('div[class*="video-card"]')
-                  || link.parentElement;
-
-          // Description
-          var desc = '';
-          if (card) {
-            var descEl = card.querySelector('[data-e2e="search-card-desc"], [data-e2e="video-desc"], span[class*="SpanText"]');
-            if (descEl) desc = descEl.textContent.trim().substring(0, 500);
-            if (!desc) {
-              var spans = card.querySelectorAll('span, p');
-              for (var s = 0; s < spans.length; s++) {
-                var t = spans[s].textContent.trim();
-                if (t.length > 15 && !t.match(/^[\\d.]+[KkMm]?$/)) { desc = t.substring(0, 500); break; }
-              }
-            }
-          }
-
-          // Hashtags from description
-          var hashtags = [];
-          var hashMatches = desc.match(/#[\\w]+/g);
-          if (hashMatches) hashtags = hashMatches;
-
-          // Display name
-          var displayName = '';
-          if (card) {
-            var nameEl = card.querySelector('[data-e2e="search-card-user-name"], [data-e2e="video-author-uniqueid"]');
-            if (nameEl) displayName = nameEl.textContent.trim();
-          }
-
-          // Verified badge
-          var isVerified = false;
-          if (card) {
-            isVerified = !!card.querySelector('svg[data-e2e="verify-badge"], svg[class*="Verify"]');
-          }
-
-          // Engagement metrics — look for strong/span elements with numbers
-          var views = 0, likes = 0, comments = 0, shares = 0;
-          if (card) {
-            var strongEls = card.querySelectorAll('strong, span[data-e2e]');
-            for (var e = 0; e < strongEls.length; e++) {
-              var txt = (strongEls[e].textContent || '').trim();
-              var numMatch = txt.match(/^([\\d.]+)\\s*([KkMm]?)$/);
-              if (!numMatch) continue;
-              var val = parseFloat(numMatch[1]) || 0;
-              if (numMatch[2].toLowerCase() === 'k') val *= 1000;
-              if (numMatch[2].toLowerCase() === 'm') val *= 1000000;
-              val = Math.round(val);
-
-              // Determine which metric by nearby icon or data-e2e attr
-              var parent = strongEls[e].parentElement;
-              var parentAttr = parent ? (parent.getAttribute('data-e2e') || '') : '';
-              var parentHtml = parent ? (parent.innerHTML || '') : '';
-
-              if (parentAttr.includes('like') || parentHtml.includes('Like')) { likes = val; }
-              else if (parentAttr.includes('comment') || parentHtml.includes('Comment')) { comments = val; }
-              else if (parentAttr.includes('share') || parentHtml.includes('Share')) { shares = val; }
-              else if (parentAttr.includes('view') || parentHtml.includes('View') || val > 10000) { views = val; }
-              else if (likes === 0) { likes = val; }
-            }
-          }
-
-          // Fallback: look for view count text like "1.2M views"
-          if (views === 0 && card) {
-            var allText = card.innerText || '';
-            var viewMatch = allText.match(/([\\d.]+[KkMm]?)\\s*views?/i);
-            if (viewMatch) {
-              var vv = viewMatch[1];
-              views = parseFloat(vv) || 0;
-              if (vv.includes('K') || vv.includes('k')) views *= 1000;
-              if (vv.includes('M') || vv.includes('m')) views *= 1000000;
-              views = Math.round(views);
-            }
-          }
-
-          results.push({
-            id: videoId,
-            url: url,
-            description: desc,
-            author: author,
-            authorUrl: authorUrl,
-            authorDisplayName: displayName || author,
-            isVerified: isVerified,
-            views: views,
-            likes: likes,
-            comments: comments,
-            shares: shares,
-            hashtags: hashtags,
-            sound: '',
-            timestamp: ''
-          });
-        }
-
-        return JSON.stringify(results);
-      })()
-    `);
+    let raw = '';
+    try {
+      raw = await this._driver.executeJS(extractJS);
+    } catch (e: any) {
+      console.log('[TT extractVideos] executeJS threw:', e.message?.substring(0, 200));
+      return [];
+    }
 
     try {
       const parsed = JSON.parse(raw || '[]') as Array<any>;
+      console.log(`[TT extractVideos] raw length=${raw.length} parsed=${parsed.length} cards`);
       const now = new Date().toISOString();
+
+      function parseAbbrev(s: string): number {
+        if (!s) return 0;
+        const t = s.trim().replace(/,/g, '');
+        const m = t.match(/^([\d.]+)\s*([KkMmBb]?)$/);
+        if (!m) return 0;
+        let v = parseFloat(m[1]) || 0;
+        const su = m[2].toUpperCase();
+        if (su === 'K') v *= 1e3;
+        else if (su === 'M') v *= 1e6;
+        else if (su === 'B') v *= 1e9;
+        return Math.round(v);
+      }
+
       return parsed.map((v: any) => ({
         id: v.id,
         url: v.url,
-        description: v.description || '',
+        description: v.desc || '',
         author: v.author || '',
-        authorUrl: v.authorUrl || '',
-        authorDisplayName: v.authorDisplayName || '',
-        isVerified: v.isVerified || false,
-        views: v.views || 0,
-        likes: v.likes || 0,
-        comments: v.comments || 0,
-        shares: v.shares || 0,
-        engagementScore: (v.likes || 0) + (v.comments || 0) * 2 + (v.shares || 0) * 3,
-        hashtags: v.hashtags || [],
-        sound: v.sound || '',
-        timestamp: v.timestamp || '',
+        authorUrl: v.author ? `https://www.tiktok.com/@${v.author}` : '',
+        authorDisplayName: v.author || '',
+        isVerified: false,
+        views: parseAbbrev(v.viewsRaw || '0'),
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        engagementScore: 0,
+        hashtags: [],
+        sound: '',
+        timestamp: '',
         niche,
         collectedAt: now,
       }));
     } catch {
       return [];
     }
+  }
+
+  // ─── Deep scrape: navigate INTO video page for full metrics ──
+
+  /**
+   * Navigate to a single video URL and extract full engagement data.
+   * Returns partial overrides — merges back onto the card-level video object.
+   * Falls back gracefully if page doesn't load.
+   */
+  async deepScrapeVideo(videoUrl: string): Promise<{ views: number; likes: number; comments: number; shares: number } | null> {
+    // Delegate to TikTokDriver.navigateToPost + getVideoMetrics — the same proven
+    // code used by GET /api/tiktok/video-metrics on port 3006.
+    try {
+      await this._driver.navigateToPost(videoUrl);  // includes 3s internal wait
+      await this.wait(3000);                         // extra wait for video page render
+      const m = await this._driver.getVideoMetrics();
+      console.log(`[TT deepScrape] ${m.currentUrl.substring(0, 80)} → likes=${m.likes} cmt=${m.comments} shares=${m.shares}`);
+      return { views: m.views, likes: m.likes, comments: m.comments, shares: m.shares };
+    } catch (e) {
+      console.log('[TT deepScrape] error:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Search for a query, collect up to maxVideos from search page,
+   * then deep-scrape each video URL for full engagement data.
+   */
+  async searchAndDeepScrape(query: string, niche: string, maxVideos = 8): Promise<TikTokVideo[]> {
+    const ok = await this.search(query);
+    if (!ok) return [];
+    // Wait for cards to fully render after search (inbox panel can delay results)
+    await this.wait(3000);
+
+
+    let videos = await this.extractVisibleVideos(niche);
+    // Retry once if first extraction caught the page mid-render
+    if (videos.length === 0) {
+      console.log('[TT Research] 0 cards on first pass — retrying in 2s...');
+      await this.wait(2000);
+      videos = await this.extractVisibleVideos(niche);
+    }
+    const limited = videos.slice(0, maxVideos);
+
+    // Always deep-scrape: search cards only have view counts, not likes/comments/shares.
+    // Engagement data requires navigating INTO each video post.
+    console.log(`[TT Research] Deep-scraping ${limited.length} videos for full engagement...`);
+    for (let i = 0; i < limited.length; i++) {
+      const v = limited[i];
+      if (!v.url) continue;
+      const deep = await this.deepScrapeVideo(v.url);
+      if (deep) {
+        if (deep.views    > 0) v.views    = deep.views;
+        if (deep.likes    > 0) v.likes    = deep.likes;
+        if (deep.comments > 0) v.comments = deep.comments;
+        if (deep.shares   > 0) v.shares   = deep.shares;
+        v.engagementScore = v.views + v.likes + v.comments * 2 + v.shares * 3;
+      }
+    }
+    return limited;
   }
 
   // ─── Scroll & Collect ──────────────────────────────────────
@@ -374,11 +319,11 @@ export class TikTokResearcher {
         console.log(`[TT Research] Scroll ${scrollCount}: ${seen.size}/${targetCount} videos collected`);
       }
 
-      await this.executeJS(`window.scrollBy(0, window.innerHeight * 2)`);
+      await this._driver.executeJS(`window.scrollBy(0, window.innerHeight * 2)`);
       await this.wait(this.config.scrollPauseMs);
 
       // Error detection
-      const error = await this.executeJS(`
+      const error = await this._driver.executeJS(`
         (function() {
           var body = (document.body.innerText || '').toLowerCase();
           if (body.includes('something went wrong')) return 'error';
@@ -396,6 +341,38 @@ export class TikTokResearcher {
 
     console.log(`[TT Research] Finished: ${seen.size} unique videos in ${scrollCount} scrolls`);
     return Array.from(seen.values());
+  }
+
+  // ─── Profile Enrichment ────────────────────────────────────
+
+  async getCreatorProfile(handle: string): Promise<{ followers: number; following: number; bio: string } | null> {
+    const url = `https://www.tiktok.com/@${handle}`;
+    const ok = await this.navigate(url);
+    if (!ok) return null;
+
+    await this.wait(2000);
+
+    const raw = await this.executeJS(`(function() {
+      function parseCount(s) {
+        if (!s) return 0;
+        s = s.trim().replace(/,/g, '');
+        if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+        if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+        return parseInt(s) || 0;
+      }
+      var result = { followers: 0, following: 0, bio: '' };
+      var stats = document.querySelectorAll('[data-e2e="followers-count"], [data-e2e="following-count"]');
+      if (stats.length >= 2) { result.following = parseCount(stats[0].textContent); result.followers = parseCount(stats[1].textContent); }
+      var bioEl = document.querySelector('[data-e2e="user-bio"], [class*="ShareDesc"]');
+      if (bioEl) result.bio = bioEl.textContent.trim().slice(0, 300);
+      return JSON.stringify(result);
+    })()`);
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
   }
 
   // ─── Creator Ranking ───────────────────────────────────────
@@ -500,6 +477,23 @@ export class TikTokResearcher {
       .sort((a, b) => b.engagementScore - a.engagementScore);
 
     const creators = this.rankCreators(videoArray, niche);
+
+    // Enrich top creators with profile data (followers/following/bio)
+    const enrichCount = Math.min(this.config.enrichTopCreators, creators.length);
+    if (enrichCount > 0) {
+      console.log(`[TT Research] Enriching top ${enrichCount} creators with profile data...`);
+      for (let i = 0; i < enrichCount; i++) {
+        const c = creators[i];
+        console.log(`[TT Research] Profile: @${c.handle} (${i + 1}/${enrichCount})`);
+        const profile = await this.getCreatorProfile(c.handle);
+        if (profile) {
+          c.followers = profile.followers;
+          c.following = profile.following;
+          c.bio = profile.bio;
+        }
+        if (i < enrichCount - 1) await this.wait(1500);
+      }
+    }
 
     const result: TikTokNicheResult = {
       niche,

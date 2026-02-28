@@ -50,6 +50,9 @@ export interface ThreadsCreator {
   handle: string;
   displayName: string;
   isVerified: boolean;
+  followers: number;            // scraped from profile page
+  following: number;            // scraped from profile page
+  bio: string;                  // scraped from profile page
   postCount: number;            // how many posts we found from them
   totalLikes: number;
   totalReplies: number;
@@ -58,6 +61,7 @@ export interface ThreadsCreator {
   avgEngagement: number;
   topPostUrl: string;
   topPostEngagement: number;
+  topPosts: Array<{ url: string; text: string; likes: number; replies: number; reposts: number; engagement: number }>;
   niche: string;
 }
 
@@ -76,6 +80,7 @@ export interface ThreadsNicheResult {
 export interface ThreadsResearchConfig {
   postsPerNiche: number;
   creatorsPerNiche: number;
+  enrichTopCreators: number;    // how many top creators to enrich with profile visit (default 10)
   scrollPauseMs: number;
   maxScrollsPerSearch: number;
   timeout: number;
@@ -86,6 +91,7 @@ export interface ThreadsResearchConfig {
 export const DEFAULT_THREADS_RESEARCH_CONFIG: ThreadsResearchConfig = {
   postsPerNiche: 1000,
   creatorsPerNiche: 100,
+  enrichTopCreators: 10,
   scrollPauseMs: 1500,
   maxScrollsPerSearch: 200,
   timeout: 30000,
@@ -102,6 +108,11 @@ export class ThreadsResearcher {
 
   constructor(config: Partial<ThreadsResearchConfig> = {}) {
     this.config = { ...DEFAULT_THREADS_RESEARCH_CONFIG, ...config };
+  }
+
+  private log(msg: string): void {
+    const ts = new Date().toTimeString().slice(0, 8);
+    console.log(`[${ts}] [Threads] ${msg}`);
   }
 
   // ─── Low-level Safari helpers ──────────────────────────────
@@ -141,6 +152,58 @@ export class ThreadsResearcher {
       await this.wait(500);
     }
     return false;
+  }
+
+  // ─── Profile Enrichment ────────────────────────────────────
+
+  /**
+   * Visit a Threads profile page and extract followers, following, and bio.
+   * Returns null on failure so callers can gracefully skip.
+   */
+  async getCreatorProfile(handle: string): Promise<{ followers: number; following: number; bio: string } | null> {
+    const url = `https://www.threads.net/@${handle}`;
+    const ok = await this.navigate(url);
+    if (!ok) return null;
+
+    // Wait for profile to load
+    const loaded = await this.waitForSelector('[data-pressable-container="true"], h1, [role="main"]', 12000);
+    if (!loaded) return null;
+
+    await this.wait(1500);
+
+    const raw = await this.executeJS(`(function() {
+      function parseCount(s) {
+        if (!s) return 0;
+        s = s.trim().replace(/,/g, '');
+        if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+        if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+        return parseInt(s) || 0;
+      }
+      var result = { followers: 0, following: 0, bio: '' };
+      var bodyText = document.body.innerText || '';
+      var followerMatch = bodyText.match(/([\\d.,]+[KkMm]?)\\s*follower/i);
+      if (followerMatch) result.followers = parseCount(followerMatch[1]);
+      var followingMatch = bodyText.match(/([\\d.,]+[KkMm]?)\\s*following/i);
+      if (followingMatch) result.following = parseCount(followingMatch[1]);
+      var descEl = document.querySelector('[data-pressable-container] + div, [class*="description"], [class*="bio"]');
+      if (!descEl) {
+        var divs = document.querySelectorAll('div');
+        for (var i = 0; i < divs.length; i++) {
+          var t = (divs[i].innerText || '').trim();
+          if (t.length > 20 && t.length < 300 && !t.includes('followers') && !t.includes('@')) {
+            descEl = divs[i]; break;
+          }
+        }
+      }
+      if (descEl) result.bio = (descEl.innerText || '').trim().substring(0, 300);
+      return JSON.stringify(result);
+    })()`);
+
+    try {
+      return JSON.parse(raw || 'null');
+    } catch {
+      return null;
+    }
   }
 
   // ─── Search Navigation ─────────────────────────────────────
@@ -337,7 +400,7 @@ export class ThreadsResearcher {
     let noNewCount = 0;
     let scrollCount = 0;
 
-    console.log(`[Threads Research] Collecting up to ${targetCount} posts for "${niche}"`);
+    this.log(`scrollAndCollect: up to ${targetCount} posts for "${niche}"`);
 
     while (seen.size < targetCount && scrollCount < this.config.maxScrollsPerSearch) {
       const batch = await this.extractVisiblePosts(niche);
@@ -352,15 +415,15 @@ export class ThreadsResearcher {
       if (newCount === 0) {
         noNewCount++;
         if (noNewCount >= 5) {
-          console.log(`[Threads Research] No new posts after 5 scrolls, stopping at ${seen.size}`);
+          this.log(`No new posts after 5 scrolls — stopping at ${seen.size}`);
           break;
         }
       } else {
         noNewCount = 0;
       }
 
-      if (scrollCount % 10 === 0) {
-        console.log(`[Threads Research] Scroll ${scrollCount}: ${seen.size}/${targetCount} posts collected`);
+      if (scrollCount % 5 === 0) {
+        this.log(`scroll ${scrollCount}: ${seen.size}/${targetCount} collected`);
       }
 
       await this.executeJS(`window.scrollBy(0, window.innerHeight * 2)`);
@@ -376,10 +439,10 @@ export class ThreadsResearcher {
         })()
       `);
       if (error === 'rate_limit') {
-        console.log('[Threads Research] Rate limited, waiting 60s...');
+        this.log('⚠ Rate limited — waiting 60s...');
         await this.wait(60000);
       } else if (error === 'error') {
-        console.log('[Threads Research] Error detected, refreshing...');
+        this.log('⚠ Page error — refreshing...');
         await this.executeJS(`window.location.reload()`);
         await this.wait(5000);
       }
@@ -387,7 +450,7 @@ export class ThreadsResearcher {
       scrollCount++;
     }
 
-    console.log(`[Threads Research] Finished: ${seen.size} unique posts in ${scrollCount} scrolls`);
+    this.log(`✓ Finished: ${seen.size} unique posts in ${scrollCount} scrolls`);
     return Array.from(seen.values());
   }
 
@@ -395,6 +458,7 @@ export class ThreadsResearcher {
 
   rankCreators(posts: ThreadsPost[], niche: string, topN: number = this.config.creatorsPerNiche): ThreadsCreator[] {
     const creatorMap = new Map<string, ThreadsCreator>();
+    const creatorPosts = new Map<string, ThreadsPost[]>();
 
     for (const post of posts) {
       const existing = creatorMap.get(post.author);
@@ -410,11 +474,15 @@ export class ThreadsResearcher {
           existing.topPostEngagement = post.engagementScore;
         }
         if (post.isVerified) existing.isVerified = true;
+        creatorPosts.get(post.author)!.push(post);
       } else {
         creatorMap.set(post.author, {
           handle: post.author,
           displayName: post.authorDisplayName,
           isVerified: post.isVerified,
+          followers: 0,
+          following: 0,
+          bio: '',
           postCount: 1,
           totalLikes: post.likes,
           totalReplies: post.replies,
@@ -423,9 +491,26 @@ export class ThreadsResearcher {
           avgEngagement: post.engagementScore,
           topPostUrl: post.url,
           topPostEngagement: post.engagementScore,
+          topPosts: [],
           niche,
         });
+        creatorPosts.set(post.author, [post]);
       }
+    }
+
+    // Populate topPosts (top 3 by engagement)
+    for (const [handle, creator] of creatorMap) {
+      const sorted = (creatorPosts.get(handle) || [])
+        .sort((a, b) => b.engagementScore - a.engagementScore)
+        .slice(0, 3);
+      creator.topPosts = sorted.map(p => ({
+        url: p.url,
+        text: p.text,
+        likes: p.likes,
+        replies: p.replies,
+        reposts: p.reposts,
+        engagement: p.engagementScore,
+      }));
     }
 
     return Array.from(creatorMap.values())
@@ -455,10 +540,9 @@ export class ThreadsResearcher {
     const queries = this.buildSearchQueries(niche);
     const targetPerQuery = Math.ceil(this.config.postsPerNiche / queries.length);
 
-    console.log(`\n${'═'.repeat(60)}`);
-    console.log(`[Threads Research] NICHE: "${niche}" — target ${this.config.postsPerNiche} posts`);
-    console.log(`[Threads Research] Running ${queries.length} search queries`);
-    console.log(`${'═'.repeat(60)}`);
+    this.log(`${'═'.repeat(55)}`);
+    this.log(`NICHE: "${niche}" — target ${this.config.postsPerNiche} posts across ${queries.length} queries`);
+    this.log(`${'═'.repeat(55)}`);
 
     for (const query of queries) {
       if (allPosts.size >= this.config.postsPerNiche) break;
@@ -468,7 +552,7 @@ export class ThreadsResearcher {
 
       const searched = await this.search(query);
       if (!searched) {
-        console.log(`[Threads Research] Search failed for "${query}", skipping`);
+        this.log(`✗ Search failed for "${query}", skipping`);
         continue;
       }
 
@@ -480,7 +564,7 @@ export class ThreadsResearcher {
           newCount++;
         }
       }
-      console.log(`[Threads Research] Query "${query}": ${posts.length} collected, ${newCount} new (total: ${allPosts.size})`);
+      this.log(`query "${query}": ${posts.length} collected, ${newCount} new → total ${allPosts.size}`);
 
       await this.wait(3000);
     }
@@ -489,6 +573,23 @@ export class ThreadsResearcher {
       .sort((a, b) => b.engagementScore - a.engagementScore);
 
     const creators = this.rankCreators(postArray, niche);
+
+    // Enrich top creators with profile data (followers/following/bio)
+    const enrichCount = Math.min(this.config.enrichTopCreators, creators.length);
+    if (enrichCount > 0) {
+      this.log(`→ Enriching top ${enrichCount} creators with profile data...`);
+      for (let i = 0; i < enrichCount; i++) {
+        const c = creators[i];
+        this.log(`  profile [${i + 1}/${enrichCount}] @${c.handle}`);
+        const profile = await this.getCreatorProfile(c.handle);
+        if (profile) {
+          c.followers = profile.followers;
+          c.following = profile.following;
+          c.bio = profile.bio;
+        }
+        if (i < enrichCount - 1) await this.wait(1500);
+      }
+    }
 
     const result: ThreadsNicheResult = {
       niche,
@@ -502,7 +603,7 @@ export class ThreadsResearcher {
       durationMs: Date.now() - startTime,
     };
 
-    console.log(`[Threads Research] NICHE "${niche}" complete: ${postArray.length} posts, ${creators.length} creators in ${result.durationMs}ms`);
+    this.log(`✓ NICHE "${niche}" complete: ${postArray.length} posts, ${creators.length} creators in ${(result.durationMs/1000).toFixed(1)}s`);
     return result;
   }
 
@@ -515,18 +616,17 @@ export class ThreadsResearcher {
     const startTime = Date.now();
     const results: ThreadsNicheResult[] = [];
 
-    console.log(`\n${'═'.repeat(60)}`);
-    console.log(`[Threads Research] FULL RESEARCH — ${niches.length} niches`);
-    console.log(`[Threads Research] Target: ${this.config.postsPerNiche} posts × ${niches.length} niches = ${this.config.postsPerNiche * niches.length} total`);
-    console.log(`${'═'.repeat(60)}\n`);
+    this.log(`${'═'.repeat(55)}`);
+    this.log(`FULL RESEARCH — ${niches.length} niches, target ${this.config.postsPerNiche * niches.length} posts total`);
+    this.log(`${'═'.repeat(55)}`);
 
     for (let i = 0; i < niches.length; i++) {
-      console.log(`\n[Threads Research] ── Niche ${i + 1}/${niches.length}: "${niches[i]}" ──`);
+      this.log(`── niche ${i + 1}/${niches.length}: "${niches[i]}" ──`);
       const result = await this.researchNiche(niches[i]);
       results.push(result);
       await this.saveResults(results, 'intermediate');
       if (i < niches.length - 1) {
-        console.log('[Threads Research] Pausing 5s between niches...');
+        this.log('pausing 5s between niches...');
         await this.wait(5000);
       }
     }
@@ -540,9 +640,9 @@ export class ThreadsResearcher {
 
     await this.saveResults(results, 'final');
 
-    console.log(`\n${'═'.repeat(60)}`);
-    console.log(`[Threads Research] COMPLETE: ${summary.totalPosts} posts, ${summary.totalCreators} creators`);
-    console.log(`${'═'.repeat(60)}\n`);
+    this.log(`${'═'.repeat(55)}`);
+    this.log(`✓ COMPLETE: ${summary.totalPosts} posts, ${summary.totalCreators} creators in ${(summary.totalDurationMs/1000).toFixed(1)}s`);
+    this.log(`${'═'.repeat(55)}`);
 
     return { results, summary };
   }
@@ -565,7 +665,7 @@ export class ThreadsResearcher {
     };
 
     fs.writeFileSync(filepath, JSON.stringify(output, null, 2));
-    console.log(`[Threads Research] Saved: ${filepath}`);
+    this.log(`saved → ${filepath}`);
     return filepath;
   }
 

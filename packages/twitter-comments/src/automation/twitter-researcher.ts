@@ -25,6 +25,36 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
+const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
+const RESEARCH_HOLDER = 'twitter-researcher';
+
+async function acquireGatewayLock(task: string, timeoutMs = 300000): Promise<boolean> {
+  try {
+    const res = await fetch(`${GATEWAY_URL}/gateway/lock/acquire`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holder: RESEARCH_HOLDER, platform: 'twitter', task, timeoutMs }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as { acquired?: boolean };
+    return data.acquired === true;
+  } catch {
+    return false;
+  }
+}
+
+async function releaseGatewayLock(): Promise<void> {
+  try {
+    await fetch(`${GATEWAY_URL}/gateway/lock/release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holder: RESEARCH_HOLDER }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -51,6 +81,9 @@ export interface Creator {
   handle: string;
   displayName: string;
   isVerified: boolean;
+  followers: number;            // scraped from profile page
+  following: number;            // scraped from profile page
+  bio: string;                  // scraped from profile page
   tweetCount: number;           // how many tweets we found from them
   totalLikes: number;
   totalRetweets: number;
@@ -60,6 +93,7 @@ export interface Creator {
   avgEngagement: number;        // totalEngagement / tweetCount
   topTweetUrl: string;          // their highest-engagement tweet
   topTweetEngagement: number;
+  topTweets: Array<{ url: string; text: string; likes: number; retweets: number; views: number; engagement: number }>;
   niche: string;
 }
 
@@ -78,6 +112,7 @@ export interface NicheResult {
 export interface ResearchConfig {
   tweetsPerNiche: number;       // target tweets to collect per niche (default 1000)
   creatorsPerNiche: number;     // top N creators to return (default 100)
+  enrichTopCreators: number;    // how many top creators to enrich with profile visit (default 10)
   scrollPauseMs: number;        // pause between scrolls (default 1500)
   maxScrollsPerSearch: number;  // safety limit on scrolls (default 200)
   searchTab: 'top' | 'latest';  // which search tab to use
@@ -89,6 +124,7 @@ export interface ResearchConfig {
 export const DEFAULT_RESEARCH_CONFIG: ResearchConfig = {
   tweetsPerNiche: 1000,
   creatorsPerNiche: 100,
+  enrichTopCreators: 10,
   scrollPauseMs: 1500,
   maxScrollsPerSearch: 200,
   searchTab: 'top',
@@ -143,6 +179,58 @@ export class TwitterResearcher {
       await this.wait(400);
     }
     return false;
+  }
+
+  // ─── Profile Enrichment ────────────────────────────────────
+
+  /**
+   * Visit a Twitter profile page and extract followers, following, and bio.
+   * Returns null on failure so callers can gracefully skip.
+   */
+  async getCreatorProfile(handle: string): Promise<{ followers: number; following: number; bio: string } | null> {
+    const url = `https://x.com/${handle}`;
+    const ok = await this.navigate(url);
+    if (!ok) return null;
+
+    // Wait for profile to load — UserDescription or UserName testid
+    const loaded = await this.waitForSelector('[data-testid="UserName"]', 12000);
+    if (!loaded) return null;
+
+    const raw = await this.executeJS(`(function() {
+      function parseCount(s) {
+        if (!s) return 0;
+        s = s.trim().replace(/,/g, '');
+        if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+        if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+        return parseInt(s) || 0;
+      }
+      var result = { followers: 0, following: 0, bio: '' };
+      var links = document.querySelectorAll('a[href$="/followers"], a[href$="/verified_followers"]');
+      if (links.length > 0) {
+        var spans = links[0].querySelectorAll('span');
+        for (var i = 0; i < spans.length; i++) {
+          var t = (spans[i].innerText || '').trim();
+          if (/^[\\d.,]+[KkMm]?$/.test(t)) { result.followers = parseCount(t); break; }
+        }
+      }
+      var flLinks = document.querySelectorAll('a[href$="/following"]');
+      if (flLinks.length > 0) {
+        var spans2 = flLinks[0].querySelectorAll('span');
+        for (var j = 0; j < spans2.length; j++) {
+          var t2 = (spans2[j].innerText || '').trim();
+          if (/^[\\d.,]+[KkMm]?$/.test(t2)) { result.following = parseCount(t2); break; }
+        }
+      }
+      var bioEl = document.querySelector('[data-testid="UserDescription"]');
+      if (bioEl) result.bio = (bioEl.innerText || '').trim().substring(0, 300);
+      return JSON.stringify(result);
+    })()`);
+
+    try {
+      return JSON.parse(raw || 'null');
+    } catch {
+      return null;
+    }
   }
 
   // ─── Search Navigation ─────────────────────────────────────
@@ -397,6 +485,8 @@ export class TwitterResearcher {
    */
   rankCreators(tweets: ResearchTweet[], niche: string, topN: number = this.config.creatorsPerNiche): Creator[] {
     const creatorMap = new Map<string, Creator>();
+    // track all tweets per creator for topTweets selection
+    const creatorTweets = new Map<string, ResearchTweet[]>();
 
     for (const tweet of tweets) {
       const existing = creatorMap.get(tweet.author);
@@ -413,11 +503,15 @@ export class TwitterResearcher {
           existing.topTweetEngagement = tweet.engagementScore;
         }
         if (tweet.isVerified) existing.isVerified = true;
+        creatorTweets.get(tweet.author)!.push(tweet);
       } else {
         creatorMap.set(tweet.author, {
           handle: tweet.author,
           displayName: tweet.authorDisplayName,
           isVerified: tweet.isVerified,
+          followers: 0,
+          following: 0,
+          bio: '',
           tweetCount: 1,
           totalLikes: tweet.likes,
           totalRetweets: tweet.retweets,
@@ -427,9 +521,26 @@ export class TwitterResearcher {
           avgEngagement: tweet.engagementScore,
           topTweetUrl: tweet.url,
           topTweetEngagement: tweet.engagementScore,
+          topTweets: [],
           niche,
         });
+        creatorTweets.set(tweet.author, [tweet]);
       }
+    }
+
+    // Populate topTweets (top 3 by engagement) for each creator
+    for (const [handle, creator] of creatorMap) {
+      const sorted = (creatorTweets.get(handle) || [])
+        .sort((a, b) => b.engagementScore - a.engagementScore)
+        .slice(0, 3);
+      creator.topTweets = sorted.map(t => ({
+        url: t.url,
+        text: t.text,
+        likes: t.likes,
+        retweets: t.retweets,
+        views: t.views,
+        engagement: t.engagementScore,
+      }));
     }
 
     // Sort by totalEngagement descending, then by avgEngagement
@@ -463,6 +574,16 @@ export class TwitterResearcher {
    * rank creators, return structured result.
    */
   async researchNiche(niche: string): Promise<NicheResult> {
+    // Guard: only run if explicitly enabled — prevents unsolicited Safari browser takeover
+    if (process.env.SAFARI_RESEARCH_ENABLED !== 'true') {
+      throw new Error('Twitter research is disabled. Set SAFARI_RESEARCH_ENABLED=true to enable.');
+    }
+
+    const lockAcquired = await acquireGatewayLock(`research niche: ${niche}`);
+    if (!lockAcquired) {
+      console.log(`[Research] Warning: Safari Gateway lock not acquired (port 3000 may be down) — continuing without lock`);
+    }
+
     const startTime = Date.now();
     const startISO = new Date().toISOString();
     const allTweets = new Map<string, ResearchTweet>();
@@ -474,6 +595,7 @@ export class TwitterResearcher {
     console.log(`[Research] Running ${queries.length} search queries (${targetPerQuery} each)`);
     console.log(`${'═'.repeat(60)}`);
 
+    try {
     for (const query of queries) {
       if (allTweets.size >= this.config.tweetsPerNiche) {
         console.log(`[Research] Already at ${allTweets.size} tweets, skipping remaining queries`);
@@ -508,6 +630,23 @@ export class TwitterResearcher {
 
     const creators = this.rankCreators(tweetArray, niche);
 
+    // Enrich top creators with profile data (followers/following/bio)
+    const enrichCount = Math.min(this.config.enrichTopCreators, creators.length);
+    if (enrichCount > 0) {
+      console.log(`[Research] Enriching top ${enrichCount} creators with profile data...`);
+      for (let i = 0; i < enrichCount; i++) {
+        const c = creators[i];
+        console.log(`[Research] Profile: @${c.handle} (${i + 1}/${enrichCount})`);
+        const profile = await this.getCreatorProfile(c.handle);
+        if (profile) {
+          c.followers = profile.followers;
+          c.following = profile.following;
+          c.bio = profile.bio;
+        }
+        if (i < enrichCount - 1) await this.wait(1500);
+      }
+    }
+
     const result: NicheResult = {
       niche,
       query: queries[0],
@@ -522,6 +661,9 @@ export class TwitterResearcher {
 
     console.log(`[Research] NICHE "${niche}" complete: ${tweetArray.length} tweets, ${creators.length} creators in ${result.durationMs}ms`);
     return result;
+    } finally {
+      await releaseGatewayLock();
+    }
   }
 
   // ─── Multi-Niche Orchestrator ──────────────────────────────
@@ -530,7 +672,7 @@ export class TwitterResearcher {
    * Run research across multiple niches.
    * Default: 1000 tweets per niche, 50-100 top creators per niche.
    */
-  async runFullResearch(niches: string[]): Promise<{
+  async runFullResearch(niches: string[]): Promise<{ // SAFARI_RESEARCH_ENABLED guard checked per-niche inside researchNiche()
     results: NicheResult[];
     summary: {
       totalTweets: number;

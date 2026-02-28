@@ -110,14 +110,27 @@ export const TIKTOK_SELECTORS = {
   // After opening conversation, header contains recipient identity
   chatHeaderLink: (handle: string) => `a[href="/@${handle}"]`,
   
-  // === COMPOSER (validated 2026-02-06) ===
-  // TikTok uses Draft.js for the message input
-  messageInputDraft: '.public-DraftEditor-content[contenteditable="true"]',
-  messageInputCE: '[contenteditable="true"]',
+  // === COMPOSER (validated 2026-02-26 via XPath + CSS audit) ===
+  // Full chat bottom section: #main-content-messages > div > div:nth-child(3) > div:nth-child(4)
+  chatBottom: '[class*="DivChatBottom"]',
+  // Message input + send button wrapper
+  messageInputAndSendButton: '[class*="DivMessageInputAndSendButton"]',
+  // Draft.js editor container
+  editorContainer: '[class*="DivEditorContainer"]',
+  // The actual contenteditable Draft.js root (most specific — validated path)
+  messageInputDraft: '[class*="DivEditorContainer"] .DraftEditor-root .DraftEditor-editorContainer [contenteditable="true"]',
+  // Simpler fallbacks in priority order
+  messageInputCE: '.public-DraftEditor-content[contenteditable="true"]',
+  messageInputCEFallback: '[contenteditable="true"]',
   messageInputFallback: '[data-e2e="message-input"]',
+  // Send button: data-e2e="message-send" SVG — click its parent div
   sendButton: '[data-e2e="message-send"]',
+  sendButtonParent: '[class*="DivMessageInputAndSendButton"] [data-e2e="message-send"]',
   sendButtonAlt: 'svg[data-e2e="message-send"]',
   sendButtonFallback: '[data-e2e="send-message-btn"]',
+  // Character/emoji picker (more-acton-icon-0 → div[1]/div[2])
+  emojiPickerTrigger: '#more-acton-icon-0',
+  emojiPickerFirstItem: '#more-acton-icon-0 > div:first-child > div:nth-child(2)',
   
   // === NAVIGATION (validated 2026-02-06) ===
   navMessages: '[aria-label="Messages"]',

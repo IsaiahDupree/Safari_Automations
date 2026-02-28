@@ -36,7 +36,7 @@ export class TikTokDriver {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  private async executeJS(script: string): Promise<string> {
+  async executeJS(script: string): Promise<string> {
     // Use temp file approach to avoid shell escaping issues (same as ThreadsDriver)
     const fs = await import('fs');
     const os = await import('os');
@@ -88,15 +88,74 @@ export class TikTokDriver {
     return this.navigate(postUrl);
   }
 
+  async getVideoMetrics(): Promise<{ views: number; likes: number; comments: number; shares: number; currentUrl: string }> {
+    const raw = await this.executeJS(`
+      (function() {
+        function parse(el) {
+          if (!el) return 0;
+          var t = (el.textContent || el.innerText || '').trim().replace(/,/g,'');
+          if (!t) return 0;
+          var m = parseFloat(t);
+          if (isNaN(m)) return 0;
+          if (t.match(/[Kk]$/)) return Math.round(m * 1000);
+          if (t.match(/[Mm]$/)) return Math.round(m * 1000000);
+          return Math.round(m);
+        }
+        var lk = document.querySelector('[data-e2e="like-count"]');
+        var cm = document.querySelector('[data-e2e="comment-count"]');
+        var sh = document.querySelector('[data-e2e="share-count"]');
+        var vw = document.querySelector('[data-e2e="video-views"]') || document.querySelector('[data-e2e="play-count"]');
+        return JSON.stringify({ views: parse(vw), likes: parse(lk), comments: parse(cm), shares: parse(sh), currentUrl: window.location.href.substring(0, 100) });
+      })()
+    `);
+    try {
+      const m = JSON.parse(raw || 'null');
+      return m ?? { views: 0, likes: 0, comments: 0, shares: 0, currentUrl: '' };
+    } catch { return { views: 0, likes: 0, comments: 0, shares: 0, currentUrl: '' }; }
+  }
+
   async getComments(limit = 50): Promise<Array<{ username: string; text: string }>> {
+    // Click comment icon if comments panel is not yet open
+    const hasItems = await this.executeJS(`
+      (function() {
+        if (document.querySelectorAll('[data-e2e="comment-item"]').length > 0) return 'open';
+        var btn = document.querySelector('[data-e2e="comment-icon"]');
+        if (btn) { btn.click(); return 'clicked'; }
+        return 'none';
+      })()
+    `).catch(() => 'none');
+    if (hasItems === 'clicked') {
+      await new Promise(r => setTimeout(r, 3000));
+    }
     const result = await this.executeJS(`
       (function() {
         var comments = [];
+        // Primary: data-e2e attribute selector
         var items = document.querySelectorAll('[data-e2e="comment-item"]');
+        // Fallback: class-based selectors used by TikTok video pages
+        if (items.length === 0) {
+          items = document.querySelectorAll('[class*="DivCommentObjectWrapper"], [class*="DivCommentItemWrapper"]');
+        }
+        var seen = {};
         for (var i = 0; i < Math.min(items.length, ${limit}); i++) {
-          var user = items[i].querySelector('a[href*="/@"]');
-          var text = items[i].querySelector('p, span');
-          if (user && text) comments.push({ username: user.href.split('/@').pop(), text: text.innerText.substring(0, 500) });
+          var item = items[i];
+          var userEl = item.querySelector('a[href*="/@"]');
+          var headerEl = item.querySelector('[class*="DivCommentHeaderWrapper"]');
+          var contentEl = item.querySelector('[class*="DivCommentContentWrapper"]');
+          var textEl = contentEl || item.querySelector('p') || item.querySelector('span[class*="text"]');
+          var username = '';
+          if (userEl) { username = userEl.href.split('/@').pop() || ''; }
+          else if (headerEl) { username = (headerEl.innerText || '').split('\\n')[0].trim().substring(0, 40); }
+          var text = '';
+          if (contentEl) {
+            var spans = contentEl.querySelectorAll('span:not([class*="Sub"]):not([class*="Footer"])');
+            if (spans.length) { text = Array.from(spans).map(function(s) { return s.innerText || ''; }).join(' ').trim(); }
+            else { text = (contentEl.innerText || '').split('\\n').filter(function(l) { return l.trim() && !l.match(/^\\d{4}-\\d|Reply|^\\d+ /); }).join(' ').trim(); }
+          } else if (textEl) { text = (textEl.innerText || '').substring(0, 500); }
+          if (!username && !text) continue;
+          var key = username + '|' + text.substring(0, 30);
+          if (seen[key]) continue; seen[key] = true;
+          comments.push({ username: username, text: text.substring(0, 500) });
         }
         return JSON.stringify(comments);
       })();
