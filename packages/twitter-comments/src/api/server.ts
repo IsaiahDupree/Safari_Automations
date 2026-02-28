@@ -5,7 +5,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { TwitterDriver, type TwitterConfig, type ComposeOptions } from '../automation/twitter-driver.js';
+import { TwitterDriver, type TwitterConfig, type ComposeOptions, type SearchResult, type TweetDetail } from '../automation/twitter-driver.js';
 
 const app = express();
 app.use(cors());
@@ -165,7 +165,7 @@ Rules:
 // ─── Compose Tweet ──────────────────────────────────────────
 app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
   try {
-    const { text, useAI, topic, style, context, replySettings, poll, schedule, location, media, thread } = req.body;
+    const { text, useAI, topic, style, context, audience, replySettings, poll, schedule, location, media, thread } = req.body;
 
     let tweetText = text;
     if (useAI || (!text && topic)) {
@@ -182,6 +182,7 @@ app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
 
     // Build compose options from request body
     const options: ComposeOptions = {};
+    if (audience) options.audience = audience;
     if (replySettings) options.replySettings = replySettings;
     if (poll) options.poll = poll;
     if (schedule) options.schedule = schedule;
@@ -202,6 +203,104 @@ app.post('/api/twitter/tweet/generate', async (req: Request, res: Response) => {
     if (!topic) { res.status(400).json({ error: 'topic required' }); return; }
     const tweet = await generateAITweet(topic, style, context);
     res.json({ success: true, tweet, charCount: tweet.length, maxChars: 280, usedAI: !!OPENAI_API_KEY });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Tweet Search ──────────────────────────────────────────
+app.post('/api/twitter/search', async (req: Request, res: Response) => {
+  try {
+    const { query, tab, maxResults, scrolls } = req.body;
+    if (!query) { res.status(400).json({ error: 'query required' }); return; }
+    const result = await getDriver().searchTweets(query, { tab, maxResults, scrolls });
+    res.json({ success: true, ...result, count: result.tweets.length });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Tweet Detail ──────────────────────────────────────────
+app.post('/api/twitter/tweet/detail', async (req: Request, res: Response) => {
+  try {
+    const { url } = req.body;
+    if (!url) { res.status(400).json({ error: 'url required' }); return; }
+    const detail = await getDriver().getTweetDetail(url);
+    if (!detail) { res.status(404).json({ error: 'Tweet not found or failed to extract' }); return; }
+    res.json({ success: true, tweet: detail });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Reply to Tweet ────────────────────────────────────────
+app.post('/api/twitter/tweet/reply', async (req: Request, res: Response) => {
+  try {
+    const { url, text, useAI, topic, style, context } = req.body;
+    if (!url) { res.status(400).json({ error: 'url required' }); return; }
+
+    let replyText = text;
+    if (useAI || (!text && topic)) {
+      if (!topic && !text) { res.status(400).json({ error: 'text or topic required for reply' }); return; }
+      replyText = await generateAITweet(topic || text, style, context);
+      console.log(`[AI Reply] Generated (${replyText.length} chars): "${replyText}"`);
+    }
+    if (!replyText) { res.status(400).json({ error: 'text or topic required' }); return; }
+    if (replyText.length > 280) replyText = replyText.substring(0, 277) + '...';
+
+    const result = await getDriver().replyToTweet(url, replyText);
+    res.json({ ...result, replyText, charCount: replyText.length, usedAI: !!(useAI || (!text && topic)) });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── User Timeline ─────────────────────────────────────────
+app.post('/api/twitter/timeline', async (req: Request, res: Response) => {
+  try {
+    const { handle, maxResults } = req.body;
+    if (!handle) { res.status(400).json({ error: 'handle required' }); return; }
+    const result = await getDriver().getUserTimeline(handle, maxResults);
+    res.json({ success: true, ...result, count: result.tweets.length });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Home Feed ─────────────────────────────────────────────
+app.post('/api/twitter/feed', async (req: Request, res: Response) => {
+  try {
+    const { tab, maxResults } = req.body;
+    const result = await getDriver().getHomeFeed(tab || 'foryou', maxResults);
+    res.json({ success: true, ...result, count: result.tweets.length });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Search + Reply (find posts and reply) ─────────────────
+app.post('/api/twitter/search-and-reply', async (req: Request, res: Response) => {
+  try {
+    const { query, tab, replyText, useAI, topic, style, context, maxReplies } = req.body;
+    if (!query) { res.status(400).json({ error: 'query required' }); return; }
+    if (!replyText && !useAI && !topic) { res.status(400).json({ error: 'replyText or useAI+topic required' }); return; }
+
+    const limit = maxReplies || 1;
+    const searchResult = await getDriver().searchTweets(query, { tab, maxResults: limit + 5 });
+    if (searchResult.tweets.length === 0) {
+      res.json({ success: false, error: 'No tweets found', query });
+      return;
+    }
+
+    const replies: { tweetUrl: string; author: string; replyText: string; result: any }[] = [];
+    for (let i = 0; i < Math.min(limit, searchResult.tweets.length); i++) {
+      const tweet = searchResult.tweets[i];
+      if (!tweet.tweetUrl) continue;
+
+      let text = replyText;
+      if (useAI || (!replyText && topic)) {
+        const ctx = `Replying to @${tweet.handle}: "${tweet.text.substring(0, 100)}"`;
+        text = await generateAITweet(topic || query, style, ctx);
+      }
+      if (!text) continue;
+      if (text.length > 280) text = text.substring(0, 277) + '...';
+
+      const result = await getDriver().replyToTweet(tweet.tweetUrl, text);
+      replies.push({ tweetUrl: tweet.tweetUrl, author: tweet.handle, replyText: text, result });
+
+      // Small delay between replies
+      if (i < limit - 1) await new Promise(r => setTimeout(r, 3000));
+    }
+
+    res.json({ success: true, query, tweetsFound: searchResult.tweets.length, replies, repliesPosted: replies.filter(r => r.result?.success).length });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

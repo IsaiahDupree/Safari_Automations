@@ -126,6 +126,8 @@ export interface PostResult {
 export interface ComposeOptions {
   /** Who can reply: everyone | following | verified | mentioned */
   replySettings?: 'everyone' | 'following' | 'verified' | 'mentioned';
+  /** Audience: 'everyone' (default) or a community name */
+  audience?: string;
   /** Create a poll with 2-4 options */
   poll?: {
     options: string[];
@@ -139,6 +141,38 @@ export interface ComposeOptions {
   media?: string[];
   /** Post as a thread: array of additional tweet texts */
   thread?: string[];
+}
+
+export interface SearchResult {
+  tweetUrl: string;
+  author: string;
+  handle: string;
+  text: string;
+  likes: number;
+  retweets: number;
+  replies: number;
+  bookmarks: number;
+  views: number;
+  timestamp: string;
+  hasMedia: boolean;
+  isVerified: boolean;
+}
+
+export interface TweetDetail {
+  url: string;
+  author: string;
+  handle: string;
+  text: string;
+  likes: number;
+  retweets: number;
+  replies: number;
+  bookmarks: number;
+  views: number;
+  timestamp: string;
+  hasMedia: boolean;
+  isVerified: boolean;
+  quotedTweet?: { author: string; text: string };
+  replyingTo?: string;
 }
 
 interface StepResult {
@@ -666,6 +700,11 @@ export class TwitterDriver {
         if (options) {
           console.log('[Twitter] Compose Step 4: Applying options');
 
+          if (options.audience && options.audience.toLowerCase() !== 'everyone') {
+            const ok = await this.applyAudience(options.audience);
+            if (ok) optionsApplied.push(`audience:${options.audience}`);
+          }
+
           if (options.replySettings && options.replySettings !== 'everyone') {
             const ok = await this.applyReplySettings(options.replySettings);
             if (ok) optionsApplied.push(`replySettings:${options.replySettings}`);
@@ -766,6 +805,34 @@ export class TwitterDriver {
   }
 
   // ─── Compose Option Handlers ──────────────────────────────
+
+  /**
+   * Set audience: post to a specific Community instead of Everyone.
+   * Clicks the "Choose audience" button → selects matching community from dropdown.
+   */
+  private async applyAudience(communityName: string): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Setting audience to: ${communityName}`);
+      const clicked = await this.clickFirst(SELECTORS.COMPOSE_AUDIENCE);
+      if (!clicked.ok) { console.log('[Twitter] Audience button not found'); return false; }
+      await this.wait(800);
+
+      const escaped = communityName.replace(/'/g, "\\'");
+      const result = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]');
+          for (var i = 0; i < items.length; i++) {
+            var t = (items[i].innerText || '').trim();
+            if (t.indexOf('${escaped}') !== -1) { items[i].click(); return 'clicked:' + t.substring(0, 60); }
+          }
+          return 'not_found';
+        })()
+      `);
+      console.log(`[Twitter] Audience result: ${result}`);
+      await this.wait(500);
+      return result ? result.includes('clicked') : false;
+    } catch (e) { console.log(`[Twitter] Audience error: ${e}`); return false; }
+  }
 
   /**
    * Set who can reply: following, verified, or mentioned.
@@ -1254,6 +1321,177 @@ export class TwitterDriver {
       await this.wait(1500);
     }
     return false;
+  }
+
+  // ─── Tweet Search ──────────────────────────────────────────
+
+  /**
+   * Search X for tweets matching a keyword/query.
+   * Navigates to x.com/search, extracts tweet data from results.
+   */
+  async searchTweets(query: string, options?: { tab?: 'top' | 'latest' | 'people' | 'media'; maxResults?: number; scrolls?: number }): Promise<{ tweets: SearchResult[]; query: string }> {
+    const tab = options?.tab || 'top';
+    const maxResults = options?.maxResults || 10;
+    const scrolls = options?.scrolls || 3;
+
+    const encoded = encodeURIComponent(query);
+    const tabParam = tab === 'top' ? '' : `&f=${tab === 'latest' ? 'live' : tab}`;
+    const url = `https://x.com/search?q=${encoded}${tabParam}&src=typed_query`;
+
+    console.log(`[Twitter] Searching: "${query}" (tab: ${tab})`);
+    const navOk = await this.navigate(url);
+    if (!navOk) return { tweets: [], query };
+
+    // Wait for tweets to load
+    const tweetSel = await this.waitForAny(SELECTORS.TWEET, 10000);
+    if (!tweetSel) {
+      console.log('[Twitter] No tweets found in search results');
+      return { tweets: [], query };
+    }
+    await this.wait(1500);
+
+    // Scroll to load more results
+    for (let s = 0; s < scrolls; s++) {
+      await this.executeJS(`window.scrollBy(0, window.innerHeight)`);
+      await this.wait(1200);
+    }
+
+    // Extract tweet data (no regex — avoids executeJS escaping issues)
+    const EXTRACT_JS = this.buildTweetExtractJS(maxResults);
+
+    const resultJson = await this.executeJS(EXTRACT_JS);
+    let tweets: SearchResult[] = [];
+    try {
+      tweets = JSON.parse(resultJson || '[]');
+    } catch { tweets = []; }
+
+    console.log(`[Twitter] Found ${tweets.length} tweets for "${query}"`);
+    return { tweets, query };
+  }
+
+  // ─── Tweet Detail Extraction ──────────────────────────────
+
+  /**
+   * Navigate to a specific tweet URL and extract full details.
+   */
+  async getTweetDetail(tweetUrl: string): Promise<TweetDetail | null> {
+    console.log(`[Twitter] Extracting detail: ${tweetUrl}`);
+    const navOk = await this.navigate(tweetUrl);
+    if (!navOk) return null;
+
+    const tweetSel = await this.waitForAny(SELECTORS.TWEET, 10000);
+    if (!tweetSel) { console.log('[Twitter] Tweet not found'); return null; }
+    await this.wait(1500);
+
+    const DETAIL_JS = this.buildTweetDetailJS();
+
+    const detailJson = await this.executeJS(DETAIL_JS);
+    try {
+      const detail = JSON.parse(detailJson);
+      if (!detail) return null;
+      console.log(`[Twitter] Detail: ${detail.handle} - "${detail.text?.substring(0, 60)}..." (${detail.likes} likes)`);
+      return detail;
+    } catch { return null; }
+  }
+
+  // ─── Reply to Tweet ──────────────────────────────────────
+
+  /**
+   * Navigate to a tweet and post a reply.
+   * Uses the existing postComment flow after navigating to the tweet.
+   */
+  async replyToTweet(tweetUrl: string, text: string): Promise<PostResult> {
+    console.log(`[Twitter] Replying to: ${tweetUrl}`);
+    const navOk = await this.navigateToPost(tweetUrl);
+    if (!navOk) return { success: false, error: 'Failed to navigate to tweet' };
+    await this.wait(3000);
+    return this.postComment(text);
+  }
+
+  // ─── Get User Timeline ────────────────────────────────────
+
+  /**
+   * Get tweets from a user's profile timeline.
+   */
+  async getUserTimeline(handle: string, maxResults = 10): Promise<{ tweets: SearchResult[]; handle: string }> {
+    const cleanHandle = handle.replace('@', '');
+    console.log(`[Twitter] Getting timeline for @${cleanHandle}`);
+
+    const navOk = await this.navigate(`https://x.com/${cleanHandle}`);
+    if (!navOk) return { tweets: [], handle: cleanHandle };
+
+    const tweetSel = await this.waitForAny(SELECTORS.TWEET, 10000);
+    if (!tweetSel) return { tweets: [], handle: cleanHandle };
+    await this.wait(2000);
+
+    // Scroll to load more
+    for (let s = 0; s < 2; s++) {
+      await this.executeJS(`window.scrollBy(0, window.innerHeight)`);
+      await this.wait(1200);
+    }
+
+    const EXTRACT_JS = this.buildTweetExtractJS(maxResults);
+
+    const resultJson = await this.executeJS(EXTRACT_JS);
+    let tweets: SearchResult[] = [];
+    try { tweets = JSON.parse(resultJson || '[]'); } catch {}
+
+    console.log(`[Twitter] Found ${tweets.length} tweets from @${cleanHandle}`);
+    return { tweets, handle: cleanHandle };
+  }
+
+  // ─── Get Home Timeline ────────────────────────────────────
+
+  /**
+   * Get tweets from the home "For You" or "Following" feed.
+   */
+  async getHomeFeed(tab: 'foryou' | 'following' = 'foryou', maxResults = 10): Promise<{ tweets: SearchResult[] }> {
+    console.log(`[Twitter] Getting home feed (${tab})`);
+
+    const navOk = await this.navigate('https://x.com/home');
+    if (!navOk) return { tweets: [] };
+
+    await this.wait(3000);
+
+    // Switch tab if needed
+    if (tab === 'following') {
+      await this.executeJS(`
+        (function() {
+          var tabs = document.querySelectorAll('[role="tab"], [role="presentation"] a');
+          for (var i = 0; i < tabs.length; i++) {
+            var t = (tabs[i].innerText || '').trim().toLowerCase();
+            if (t === 'following') { tabs[i].click(); return 'switched'; }
+          }
+          return 'no_tab';
+        })()
+      `);
+      await this.wait(2000);
+    }
+
+    // Scroll to load
+    for (let s = 0; s < 2; s++) {
+      await this.executeJS(`window.scrollBy(0, window.innerHeight)`);
+      await this.wait(1200);
+    }
+
+    const EXTRACT_JS = this.buildTweetExtractJS(maxResults);
+
+    const resultJson = await this.executeJS(EXTRACT_JS);
+    let tweets: SearchResult[] = [];
+    try { tweets = JSON.parse(resultJson || '[]'); } catch {}
+
+    console.log(`[Twitter] Found ${tweets.length} tweets in home feed`);
+    return { tweets };
+  }
+
+  // ─── Shared JS Builders (no regex, safe for executeJS escaping) ────
+
+  private buildTweetExtractJS(maxResults: number): string {
+    return '(function(){var tweets=[];var articles=document.querySelectorAll("article[data-testid=tweet]");for(var i=0;i<Math.min(articles.length,' + maxResults + ');i++){var a=articles[i];try{var author="";var handle="";var nameLink=a.querySelector("a[role=link] span");if(nameLink)author=(nameLink.innerText||"").trim();var spans=a.querySelectorAll("span");for(var si=0;si<spans.length;si++){var st=(spans[si].innerText||"").trim();if(st.charAt(0)==="@"&&st.length>2){handle=st;break;}}if(!handle){var hlinks=a.querySelectorAll("a[href]");for(var li=0;li<hlinks.length;li++){var hr=hlinks[li].getAttribute("href")||"";if(hr.charAt(0)==="/"&&hr.indexOf("/",1)===-1&&hr.length>1){handle="@"+hr.substring(1);break;}}}var textEl=a.querySelector("[data-testid=tweetText]");var text=textEl?(textEl.innerText||"").trim():"";var timeEl=a.querySelector("time");var timestamp=timeEl?timeEl.getAttribute("datetime")||"":"";var tweetUrl="";var aLinks=a.querySelectorAll("a[href]");for(var ai=0;ai<aLinks.length;ai++){var ah=aLinks[ai].getAttribute("href")||"";if(ah.indexOf("/status/")!==-1){tweetUrl="https://x.com"+ah;break;}}var likes=0,retweets=0,replies=0,bookmarks=0,views=0;var allLabels=a.querySelectorAll("[aria-label]");for(var m=0;m<allLabels.length;m++){var lbl=(allLabels[m].getAttribute("aria-label")||"").toLowerCase();var parts=lbl.split(" ");var n=parseInt(parts[0].replace(",",""));if(isNaN(n))n=0;if(lbl.indexOf("repl")!==-1)replies=n;else if(lbl.indexOf("repost")!==-1)retweets=n;else if(lbl.indexOf("like")!==-1)likes=n;else if(lbl.indexOf("bookmark")!==-1)bookmarks=n;else if(lbl.indexOf("view")!==-1)views=n;}var hasMedia=!!a.querySelector("[data-testid=tweetPhoto],[data-testid=videoPlayer]");var isVerified=!!a.querySelector("[data-testid=icon-verified]");tweets.push(JSON.stringify({tweetUrl:tweetUrl,author:author,handle:handle,text:text.substring(0,500),likes:likes,retweets:retweets,replies:replies,bookmarks:bookmarks,views:views,timestamp:timestamp,hasMedia:hasMedia,isVerified:isVerified}));}catch(e){}}return"["+tweets.join(",")+"]";})()'
+  }
+
+  private buildTweetDetailJS(): string {
+    return '(function(){var a=document.querySelector("article[data-testid=tweet]");if(!a)return"null";var author="";var handle="";var nameLink=a.querySelector("a[role=link] span");if(nameLink)author=(nameLink.innerText||"").trim();var spans=a.querySelectorAll("span");for(var si=0;si<spans.length;si++){var st=(spans[si].innerText||"").trim();if(st.charAt(0)==="@"&&st.length>2){handle=st;break;}}if(!handle){var hlinks=a.querySelectorAll("a[href]");for(var li=0;li<hlinks.length;li++){var hr=hlinks[li].getAttribute("href")||"";if(hr.charAt(0)==="/"&&hr.indexOf("/",1)===-1&&hr.length>1){handle="@"+hr.substring(1);break;}}}var textEl=a.querySelector("[data-testid=tweetText]");var text=textEl?(textEl.innerText||"").trim():"";var timeEl=a.querySelector("time");var timestamp=timeEl?timeEl.getAttribute("datetime")||"": "";var likes=0,retweets=0,replies=0,bookmarks=0,views=0;var allLabels=a.querySelectorAll("[aria-label]");for(var m=0;m<allLabels.length;m++){var lbl=(allLabels[m].getAttribute("aria-label")||"").toLowerCase();var parts=lbl.split(" ");var n=parseInt(parts[0].replace(",",""));if(isNaN(n))n=0;if(lbl.indexOf("repl")!==-1)replies=n;else if(lbl.indexOf("repost")!==-1)retweets=n;else if(lbl.indexOf("like")!==-1)likes=n;else if(lbl.indexOf("bookmark")!==-1)bookmarks=n;else if(lbl.indexOf("view")!==-1)views=n;}var hasMedia=!!a.querySelector("[data-testid=tweetPhoto],[data-testid=videoPlayer]");var isVerified=!!a.querySelector("[data-testid=icon-verified]");var replyingTo="";var replyEl=a.querySelector("[data-testid=socialContext]");if(replyEl){var rt=(replyEl.innerText||"").trim();if(rt.indexOf("Replying to")!==-1)replyingTo=rt.replace("Replying to","").trim();}var quotedTweet=null;var qBlock=a.querySelector("[data-testid=quoteTweet]");if(qBlock){var qAuth=qBlock.querySelector("span")?(qBlock.querySelector("span").innerText||"").trim():"";var qText=qBlock.querySelector("[data-testid=tweetText]")?(qBlock.querySelector("[data-testid=tweetText]").innerText||"").trim():"";if(qAuth||qText)quotedTweet={author:qAuth,text:qText.substring(0,300)};}return JSON.stringify({url:window.location.href,author:author,handle:handle,text:text,likes:likes,retweets:retweets,replies:replies,bookmarks:bookmarks,views:views,timestamp:timestamp,hasMedia:hasMedia,isVerified:isVerified,quotedTweet:quotedTweet,replyingTo:replyingTo});})()'
   }
 
   checkRateLimit(): { allowed: boolean; reason?: string } {
