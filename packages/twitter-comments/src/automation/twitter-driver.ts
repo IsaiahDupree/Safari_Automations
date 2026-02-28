@@ -47,6 +47,15 @@ export const SELECTORS = {
     '[data-testid="AppTabBar_Profile_Link"]',
     '[aria-label="Profile"]',
   ],
+  COMPOSE_INPUT: [
+    '[data-testid="tweetTextarea_0"]',
+    'div[role="textbox"][contenteditable="true"]',
+    '[data-testid="tweetTextarea_0RichTextInputContainer"] [contenteditable]',
+  ],
+  COMPOSE_SUBMIT: [
+    '[data-testid="tweetButton"]',
+    '[data-testid="tweetButtonInline"]',
+  ],
 };
 
 export interface TwitterConfig {
@@ -533,6 +542,244 @@ export class TwitterDriver {
       durationMs: Date.now() - startTime,
       screenshotPath: screenshotPath || undefined,
     };
+  }
+
+  /**
+   * Compose and post a new tweet.
+   *
+   * Flow:
+   *   1. Navigate to https://x.com/compose/post (dedicated compose page)
+   *   2. Wait for compose input to render
+   *   3. Type text via 3-strategy chain
+   *   4. Click Post button
+   *   5. Verify tweet posted (redirects to timeline or tweet URL)
+   */
+  async composeTweet(text: string): Promise<PostResult> {
+    const startTime = Date.now();
+    let attempts = 0;
+    let lastError = '';
+    let strategy = '';
+
+    for (let attempt = 0; attempt < this.config.maxRetries; attempt++) {
+      attempts++;
+      try {
+        // ── Pre-checks ──
+        const rateCheck = this.checkRateLimit();
+        if (!rateCheck.allowed) return { success: false, error: rateCheck.reason };
+
+        const platformError = await this.detectErrors();
+        if (platformError) {
+          lastError = platformError;
+          console.log(`[Twitter] Platform error detected: ${platformError}`);
+          await this.wait(2000);
+          continue;
+        }
+
+        // ── Step 1: Navigate to compose page ──
+        console.log(`[Twitter] Compose Step 1: Navigating to compose page (attempt ${attempt + 1})`);
+        const navOk = await this.navigate('https://x.com/compose/post');
+        if (!navOk) {
+          lastError = 'Failed to navigate to compose page';
+          continue;
+        }
+
+        // ── Step 2: Wait for compose input ──
+        console.log('[Twitter] Compose Step 2: Waiting for compose input');
+        const inputSel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 10000);
+        if (!inputSel) {
+          lastError = 'Compose input never appeared';
+          continue;
+        }
+        console.log(`[Twitter] Compose Step 2: Input ready (${inputSel})`);
+        await this.wait(500);
+
+        // ── Step 3: Type tweet (3-strategy chain) ──
+        console.log('[Twitter] Compose Step 3: Typing tweet');
+        const typeResult = await this.typeCompose(text);
+        strategy = typeResult.strategy;
+        if (!typeResult.ok) {
+          lastError = `All typing strategies failed (last: ${typeResult.strategy})`;
+          await this.executeJS(`
+            (function() {
+              var el = document.querySelector('[data-testid="tweetTextarea_0"]');
+              if (el) { el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); }
+            })()
+          `);
+          continue;
+        }
+        console.log(`[Twitter] Compose Step 3: Typed via ${strategy}`);
+
+        // ── Step 4: Submit tweet ──
+        console.log('[Twitter] Compose Step 4: Submitting');
+        const submit = await this.submitCompose();
+        if (!submit.ok) {
+          lastError = `Submit failed: ${submit.error}`;
+          continue;
+        }
+        console.log(`[Twitter] Compose Step 4: Submitted via ${submit.value}`);
+
+        // ── Step 5: Verify tweet posted ──
+        console.log('[Twitter] Compose Step 5: Verifying tweet posted');
+        await this.wait(3000);
+        const verified = await this.verifyTweetPosted(text);
+        console.log(`[Twitter] Compose Step 5: Verified = ${verified}`);
+
+        this.commentLog.push({ timestamp: new Date() });
+
+        return {
+          success: true,
+          commentId: `tweet_${Date.now()}`,
+          verified,
+          strategy,
+          attempts,
+          durationMs: Date.now() - startTime,
+        };
+
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        console.log(`[Twitter] Compose attempt ${attempt + 1} threw: ${lastError}`);
+        if (attempt < this.config.maxRetries - 1) await this.wait(2000 * (attempt + 1));
+      }
+    }
+
+    const screenshotPath = await this.captureScreenshot('compose-failure');
+    return {
+      success: false,
+      error: lastError,
+      strategy,
+      attempts,
+      durationMs: Date.now() - startTime,
+      screenshotPath: screenshotPath || undefined,
+    };
+  }
+
+  // ─── Compose-specific typing (uses COMPOSE selectors) ─────
+
+  private async typeCompose(text: string): Promise<{ ok: boolean; strategy: string }> {
+    const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+
+    // Strategy 1: execCommand (best for React/Draft.js)
+    const execResult = await this.executeJS(`
+      (function() {
+        var sels = [${SELECTORS.COMPOSE_INPUT.map(s => `'${s}'`).join(',')}];
+        for (var i = 0; i < sels.length; i++) {
+          var el = document.querySelector(sels[i]);
+          if (el) {
+            el.focus();
+            var ok = document.execCommand('insertText', false, '${escaped}');
+            return ok ? 'execCommand' : 'execCommand_failed';
+          }
+        }
+        return 'no_input';
+      })()
+    `);
+
+    if (execResult === 'execCommand') {
+      await this.wait(500);
+      if (await this.verifyComposeReady()) return { ok: true, strategy: 'execCommand' };
+    }
+
+    // Strategy 2: OS-level keystrokes
+    try {
+      const sel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 3000);
+      if (sel) {
+        await this.executeJS(`document.querySelector('${sel}').focus()`);
+        await this.wait(200);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(200);
+        const esc = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await execAsync(
+          `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${esc}"'`,
+          { timeout: 15000 }
+        );
+        await this.wait(500);
+        if (await this.verifyComposeReady()) return { ok: true, strategy: 'keystrokes' };
+      }
+    } catch {}
+
+    // Strategy 3: Clipboard paste
+    try {
+      const sel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 3000);
+      if (sel) {
+        await this.executeJS(`document.querySelector('${sel}').focus()`);
+        await this.wait(200);
+        const esc = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+        await execAsync(`printf "%s" "${esc}" | pbcopy`);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(200);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+        await this.wait(500);
+        if (await this.verifyComposeReady()) return { ok: true, strategy: 'clipboard' };
+      }
+    } catch {}
+
+    return { ok: false, strategy: 'none' };
+  }
+
+  private async verifyComposeReady(): Promise<boolean> {
+    for (let i = 0; i < 6; i++) {
+      const check = await this.executeJS(`
+        (function() {
+          var sels = [${SELECTORS.COMPOSE_SUBMIT.map(s => `'${s}'`).join(',')}];
+          for (var j = 0; j < sels.length; j++) {
+            var btn = document.querySelector(sels[j]);
+            if (btn && !btn.disabled) return 'ready';
+          }
+          return 'not_ready';
+        })()
+      `);
+      if (check === 'ready') return true;
+      await this.wait(400);
+    }
+    return false;
+  }
+
+  private async submitCompose(): Promise<StepResult> {
+    for (let i = 0; i < 5; i++) {
+      const result = await this.executeJS(`
+        (function() {
+          var sels = [${SELECTORS.COMPOSE_SUBMIT.map(s => `'${s}'`).join(',')}];
+          for (var j = 0; j < sels.length; j++) {
+            var btn = document.querySelector(sels[j]);
+            if (btn && !btn.disabled) { btn.click(); return JSON.stringify({ok:true, value:sels[j]}); }
+          }
+          return JSON.stringify({ok:false, error:'no_enabled_post_button'});
+        })()
+      `);
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed.ok) return parsed;
+      } catch {}
+      await this.wait(800);
+    }
+    return { ok: false, error: 'post_button_never_enabled' };
+  }
+
+  private async verifyTweetPosted(text: string, timeoutMs = 12000): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      // After posting, X either redirects to timeline or shows a toast
+      const result = await this.executeJS(`
+        (function() {
+          // Check 1: compose dialog/page is gone (successful post dismisses it)
+          var composeInput = document.querySelector('[data-testid="tweetTextarea_0"]');
+          var isOnCompose = window.location.href.includes('/compose/');
+          if (!composeInput && !isOnCompose) return 'posted_compose_gone';
+          // Check 2: success toast
+          var toasts = document.querySelectorAll('[data-testid="toast"], [role="alert"]');
+          for (var i = 0; i < toasts.length; i++) {
+            var t = (toasts[i].innerText || '').toLowerCase();
+            if (t.includes('sent') || t.includes('posted') || t.includes('your post')) return 'posted_toast';
+          }
+          // Check 3: redirected to home timeline
+          if (window.location.href.includes('/home') && !composeInput) return 'posted_redirected';
+          return 'not_yet';
+        })()
+      `);
+      if (result && result.startsWith('posted')) return true;
+      await this.wait(1500);
+    }
+    return false;
   }
 
   checkRateLimit(): { allowed: boolean; reason?: string } {

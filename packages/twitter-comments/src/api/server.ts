@@ -103,6 +103,17 @@ app.post('/api/twitter/comments/generate', async (req: Request, res: Response) =
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ─── Compose Tweet ──────────────────────────────────────────
+app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
+  try {
+    const { text } = req.body;
+    if (!text) { res.status(400).json({ error: 'text required' }); return; }
+    if (text.length > 280) { res.status(400).json({ error: `Tweet too long: ${text.length}/280 chars` }); return; }
+    const result = await getDriver().composeTweet(text);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 app.get('/api/twitter/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/twitter/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
 
