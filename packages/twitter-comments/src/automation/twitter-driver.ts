@@ -56,6 +56,37 @@ export const SELECTORS = {
     '[data-testid="tweetButton"]',
     '[data-testid="tweetButtonInline"]',
   ],
+  // Compose toolbar
+  COMPOSE_MEDIA: [
+    '[data-testid="fileInput"]',
+    'input[data-testid="fileInput"]',
+  ],
+  COMPOSE_GIF: [
+    '[data-testid="gifSearchButton"]',
+    '[aria-label="Add a GIF"]',
+  ],
+  COMPOSE_POLL: [
+    '[data-testid="createPollButton"]',
+    '[aria-label="Add poll"]',
+  ],
+  COMPOSE_SCHEDULE: [
+    '[data-testid="scheduleOption"]',
+    '[aria-label="Schedule post"]',
+  ],
+  COMPOSE_LOCATION: [
+    '[data-testid="geoButton"]',
+    '[aria-label="Tag location"]',
+  ],
+  COMPOSE_EMOJI: [
+    '[aria-label="Add emoji"]',
+  ],
+  COMPOSE_AUDIENCE: [
+    '[aria-label="Choose audience"]',
+  ],
+  COMPOSE_REPLY_SETTINGS: [
+    '[aria-label="Everyone can reply"]',
+    '[aria-label*="can reply"]',
+  ],
 };
 
 export interface TwitterConfig {
@@ -89,6 +120,25 @@ export interface PostResult {
   attempts?: number;
   durationMs?: number;
   screenshotPath?: string;
+  optionsApplied?: string[];
+}
+
+export interface ComposeOptions {
+  /** Who can reply: everyone | following | verified | mentioned */
+  replySettings?: 'everyone' | 'following' | 'verified' | 'mentioned';
+  /** Create a poll with 2-4 options */
+  poll?: {
+    options: string[];
+    duration?: { days?: number; hours?: number; minutes?: number };
+  };
+  /** Schedule tweet: ISO date string e.g. "2026-03-01T14:00:00" */
+  schedule?: string;
+  /** Tag a location by name */
+  location?: string;
+  /** Attach media files (absolute paths on disk) */
+  media?: string[];
+  /** Post as a thread: array of additional tweet texts */
+  thread?: string[];
 }
 
 interface StepResult {
@@ -545,20 +595,23 @@ export class TwitterDriver {
   }
 
   /**
-   * Compose and post a new tweet.
+   * Compose and post a new tweet with full compose options.
    *
    * Flow:
    *   1. Navigate to https://x.com/compose/post (dedicated compose page)
    *   2. Wait for compose input to render
    *   3. Type text via 3-strategy chain
-   *   4. Click Post button
-   *   5. Verify tweet posted (redirects to timeline or tweet URL)
+   *   4. Apply compose options (reply settings, poll, schedule, location, media)
+   *   5. Click Post button (or Schedule if scheduled)
+   *   6. Verify tweet posted
+   *   7. If thread: compose additional tweets
    */
-  async composeTweet(text: string): Promise<PostResult> {
+  async composeTweet(text: string, options?: ComposeOptions): Promise<PostResult> {
     const startTime = Date.now();
     let attempts = 0;
     let lastError = '';
     let strategy = '';
+    const optionsApplied: string[] = [];
 
     for (let attempt = 0; attempt < this.config.maxRetries; attempt++) {
       attempts++;
@@ -609,22 +662,79 @@ export class TwitterDriver {
         }
         console.log(`[Twitter] Compose Step 3: Typed via ${strategy}`);
 
-        // ── Step 4: Submit tweet ──
-        console.log('[Twitter] Compose Step 4: Submitting');
-        const submit = await this.submitCompose();
-        if (!submit.ok) {
-          lastError = `Submit failed: ${submit.error}`;
-          continue;
-        }
-        console.log(`[Twitter] Compose Step 4: Submitted via ${submit.value}`);
+        // ── Step 4: Apply compose options ──
+        if (options) {
+          console.log('[Twitter] Compose Step 4: Applying options');
 
-        // ── Step 5: Verify tweet posted ──
-        console.log('[Twitter] Compose Step 5: Verifying tweet posted');
+          if (options.replySettings && options.replySettings !== 'everyone') {
+            const ok = await this.applyReplySettings(options.replySettings);
+            if (ok) optionsApplied.push(`replySettings:${options.replySettings}`);
+          }
+
+          if (options.poll && options.poll.options.length >= 2) {
+            const ok = await this.applyPoll(options.poll);
+            if (ok) optionsApplied.push(`poll:${options.poll.options.length}options`);
+          }
+
+          if (options.location) {
+            const ok = await this.applyLocation(options.location);
+            if (ok) optionsApplied.push(`location:${options.location}`);
+          }
+
+          if (options.media && options.media.length > 0) {
+            const ok = await this.applyMedia(options.media);
+            if (ok) optionsApplied.push(`media:${options.media.length}files`);
+          }
+
+          if (options.schedule) {
+            const ok = await this.applySchedule(options.schedule);
+            if (ok) optionsApplied.push(`schedule:${options.schedule}`);
+          }
+
+          console.log(`[Twitter] Compose Step 4: Options applied: [${optionsApplied.join(', ')}]`);
+        }
+
+        // ── Step 5: Submit tweet ──
+        const isScheduled = options?.schedule && optionsApplied.some(o => o.startsWith('schedule'));
+        console.log(`[Twitter] Compose Step 5: ${isScheduled ? 'Confirming schedule' : 'Submitting'}`);
+
+        if (isScheduled) {
+          // Schedule flow: click the "Schedule" confirm button in the schedule dialog
+          const schedSubmit = await this.submitSchedule();
+          if (!schedSubmit.ok) {
+            lastError = `Schedule submit failed: ${schedSubmit.error}`;
+            continue;
+          }
+          console.log(`[Twitter] Compose Step 5: Scheduled via ${schedSubmit.value}`);
+        } else {
+          const submit = await this.submitCompose();
+          if (!submit.ok) {
+            lastError = `Submit failed: ${submit.error}`;
+            continue;
+          }
+          console.log(`[Twitter] Compose Step 5: Submitted via ${submit.value}`);
+        }
+
+        // ── Step 6: Verify tweet posted ──
+        console.log('[Twitter] Compose Step 6: Verifying');
         await this.wait(3000);
-        const verified = await this.verifyTweetPosted(text);
-        console.log(`[Twitter] Compose Step 5: Verified = ${verified}`);
+        const verified = isScheduled ? true : await this.verifyTweetPosted(text);
+        console.log(`[Twitter] Compose Step 6: Verified = ${verified}`);
 
         this.commentLog.push({ timestamp: new Date() });
+
+        // ── Step 7: Thread (additional tweets) ──
+        if (options?.thread && options.thread.length > 0 && !isScheduled) {
+          console.log(`[Twitter] Compose Step 7: Posting thread (${options.thread.length} more tweets)`);
+          for (let t = 0; t < options.thread.length; t++) {
+            await this.wait(2000);
+            const threadResult = await this.postThreadReply(options.thread[t]);
+            if (threadResult) {
+              optionsApplied.push(`thread:tweet${t + 2}`);
+              this.commentLog.push({ timestamp: new Date() });
+            }
+          }
+        }
 
         return {
           success: true,
@@ -633,6 +743,7 @@ export class TwitterDriver {
           strategy,
           attempts,
           durationMs: Date.now() - startTime,
+          optionsApplied: optionsApplied.length > 0 ? optionsApplied : undefined,
         };
 
       } catch (error) {
@@ -650,7 +761,370 @@ export class TwitterDriver {
       attempts,
       durationMs: Date.now() - startTime,
       screenshotPath: screenshotPath || undefined,
+      optionsApplied: optionsApplied.length > 0 ? optionsApplied : undefined,
     };
+  }
+
+  // ─── Compose Option Handlers ──────────────────────────────
+
+  /**
+   * Set who can reply: following, verified, or mentioned.
+   * Clicks the "Everyone can reply" button → selects from dropdown menu.
+   */
+  private async applyReplySettings(setting: 'following' | 'verified' | 'mentioned'): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Setting reply to: ${setting}`);
+      const clicked = await this.clickFirst(SELECTORS.COMPOSE_REPLY_SETTINGS);
+      if (!clicked.ok) { console.log('[Twitter] Reply settings button not found'); return false; }
+      await this.wait(800);
+
+      // Map setting to the menu item text
+      const textMap: Record<string, string> = {
+        following: 'Accounts you follow',
+        verified: 'Verified accounts',
+        mentioned: 'Only people you mention',
+      };
+      const targetText = textMap[setting];
+
+      const result = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]');
+          for (var i = 0; i < items.length; i++) {
+            var t = (items[i].innerText || '').trim();
+            if (t.indexOf('${targetText}') !== -1) { items[i].click(); return 'clicked:' + t; }
+          }
+          // Fallback: search all clickable spans
+          var spans = document.querySelectorAll('span');
+          for (var j = 0; j < spans.length; j++) {
+            var st = (spans[j].innerText || '').trim();
+            if (st === '${targetText}') { spans[j].click(); return 'span_clicked:' + st; }
+          }
+          return 'not_found';
+        })()
+      `);
+      console.log(`[Twitter] Reply settings result: ${result}`);
+      await this.wait(500);
+      return result ? result.includes('clicked') : false;
+    } catch (e) { console.log(`[Twitter] Reply settings error: ${e}`); return false; }
+  }
+
+  /**
+   * Create a poll with 2-4 options and optional duration.
+   * Clicks the poll button → fills in option inputs → sets duration.
+   */
+  private async applyPoll(poll: { options: string[]; duration?: { days?: number; hours?: number; minutes?: number } }): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Adding poll with ${poll.options.length} options`);
+      const clicked = await this.clickFirst(SELECTORS.COMPOSE_POLL);
+      if (!clicked.ok) { console.log('[Twitter] Poll button not found'); return false; }
+      await this.wait(1000);
+
+      // Fill in poll options — they use name="Choice1", "Choice2", etc.
+      for (let i = 0; i < Math.min(poll.options.length, 4); i++) {
+        const optText = poll.options[i].replace(/'/g, "\\'").replace(/\\/g, '\\\\');
+        // For options 3 and 4, we need to click "Add" first
+        if (i >= 2) {
+          await this.executeJS(`
+            (function() {
+              var addBtns = document.querySelectorAll('[aria-label="Add a poll option"], button');
+              for (var k = 0; k < addBtns.length; k++) {
+                var t = (addBtns[k].innerText || '').trim();
+                if (t === '+' || t === 'Add') { addBtns[k].click(); return 'added'; }
+              }
+              return 'no_add';
+            })()
+          `);
+          await this.wait(500);
+        }
+
+        const choiceNum = i + 1;
+        await this.executeJS(`
+          (function() {
+            var input = document.querySelector('input[name="Choice${choiceNum}"], [placeholder*="Choice ${choiceNum}"], [aria-label*="Choice ${choiceNum}"]');
+            if (!input) {
+              // Fallback: find by index
+              var inputs = document.querySelectorAll('input[name^="Choice"]');
+              input = inputs[${i}];
+            }
+            if (input) {
+              input.focus();
+              input.value = '';
+              document.execCommand('selectAll');
+              document.execCommand('insertText', false, '${optText}');
+              input.dispatchEvent(new Event('input', {bubbles:true}));
+              return 'filled';
+            }
+            return 'no_input';
+          })()
+        `);
+        await this.wait(300);
+      }
+
+      // Set poll duration if provided
+      if (poll.duration) {
+        const { days = 1, hours = 0, minutes = 0 } = poll.duration;
+        await this.executeJS(`
+          (function() {
+            // Duration selectors: Days, Hours, Minutes dropdowns
+            var selects = document.querySelectorAll('select');
+            for (var s = 0; s < selects.length; s++) {
+              var label = (selects[s].getAttribute('aria-label') || selects[s].name || '').toLowerCase();
+              if (label.includes('day')) { selects[s].value = '${days}'; selects[s].dispatchEvent(new Event('change', {bubbles:true})); }
+              else if (label.includes('hour')) { selects[s].value = '${hours}'; selects[s].dispatchEvent(new Event('change', {bubbles:true})); }
+              else if (label.includes('minute')) { selects[s].value = '${minutes}'; selects[s].dispatchEvent(new Event('change', {bubbles:true})); }
+            }
+            return 'duration_set';
+          })()
+        `);
+      }
+
+      console.log(`[Twitter] Poll added with ${poll.options.length} options`);
+      return true;
+    } catch (e) { console.log(`[Twitter] Poll error: ${e}`); return false; }
+  }
+
+  /**
+   * Schedule a tweet for a future date/time.
+   * Clicks the schedule button → sets date and time in the picker.
+   */
+  private async applySchedule(dateStr: string): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Scheduling for: ${dateStr}`);
+      const clicked = await this.clickFirst(SELECTORS.COMPOSE_SCHEDULE);
+      if (!clicked.ok) { console.log('[Twitter] Schedule button not found'); return false; }
+      await this.wait(1000);
+
+      // Parse the date string
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) { console.log('[Twitter] Invalid schedule date'); return false; }
+
+      const month = date.toLocaleString('en-US', { month: 'long' });
+      const day = date.getDate();
+      const year = date.getFullYear();
+      const hour = date.getHours();
+      const minute = date.getMinutes();
+      const ampm = hour >= 12 ? 'PM' : 'AM';
+      const hour12 = hour % 12 || 12;
+
+      // Fill in the schedule picker — X uses select dropdowns and date input
+      await this.executeJS(`
+        (function() {
+          var selects = document.querySelectorAll('select');
+          for (var i = 0; i < selects.length; i++) {
+            var name = (selects[i].getAttribute('name') || selects[i].getAttribute('aria-label') || '').toLowerCase();
+            var opts = selects[i].querySelectorAll('option');
+            if (name.includes('month') || name.includes('date')) {
+              // Try to set month
+              for (var j = 0; j < opts.length; j++) {
+                if (opts[j].text === '${month}') { selects[i].value = opts[j].value; selects[i].dispatchEvent(new Event('change', {bubbles:true})); break; }
+              }
+            }
+          }
+          // Set day
+          var dayInput = document.querySelector('input[name*="day"], input[placeholder*="Day"], select[name*="day"]');
+          if (dayInput) {
+            if (dayInput.tagName === 'SELECT') {
+              dayInput.value = '${day}';
+            } else {
+              dayInput.value = '${day}';
+              dayInput.dispatchEvent(new Event('input', {bubbles:true}));
+            }
+            dayInput.dispatchEvent(new Event('change', {bubbles:true}));
+          }
+          // Set year
+          var yearInput = document.querySelector('select[name*="year"]');
+          if (yearInput) {
+            yearInput.value = '${year}';
+            yearInput.dispatchEvent(new Event('change', {bubbles:true}));
+          }
+          // Set time
+          var hourInput = document.querySelector('select[name*="hour"]');
+          if (hourInput) {
+            hourInput.value = '${hour12}';
+            hourInput.dispatchEvent(new Event('change', {bubbles:true}));
+          }
+          var minInput = document.querySelector('select[name*="minute"]');
+          if (minInput) {
+            minInput.value = '${minute.toString().padStart(2, '0')}';
+            minInput.dispatchEvent(new Event('change', {bubbles:true}));
+          }
+          var ampmInput = document.querySelector('select[name*="amPm"], select[name*="meridiem"]');
+          if (ampmInput) {
+            ampmInput.value = '${ampm}';
+            ampmInput.dispatchEvent(new Event('change', {bubbles:true}));
+          }
+          return 'schedule_set';
+        })()
+      `);
+      await this.wait(500);
+      console.log(`[Twitter] Schedule set for: ${month} ${day}, ${year} ${hour12}:${minute.toString().padStart(2, '0')} ${ampm}`);
+      return true;
+    } catch (e) { console.log(`[Twitter] Schedule error: ${e}`); return false; }
+  }
+
+  /**
+   * Submit the scheduled tweet (clicks the Confirm/Schedule button in the schedule dialog).
+   */
+  private async submitSchedule(): Promise<StepResult> {
+    for (let i = 0; i < 5; i++) {
+      const result = await this.executeJS(`
+        (function() {
+          // Look for schedule confirm button
+          var btns = document.querySelectorAll('button[data-testid="scheduledConfirmationPrimaryAction"], button');
+          for (var j = 0; j < btns.length; j++) {
+            var t = (btns[j].innerText || '').trim().toLowerCase();
+            if ((t === 'schedule' || t === 'confirm') && !btns[j].disabled) {
+              btns[j].click();
+              return JSON.stringify({ok:true, value:'schedule_confirmed'});
+            }
+          }
+          return JSON.stringify({ok:false, error:'no_schedule_confirm_button'});
+        })()
+      `);
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed.ok) return parsed;
+      } catch {}
+      await this.wait(800);
+    }
+    return { ok: false, error: 'schedule_confirm_never_found' };
+  }
+
+  /**
+   * Tag a location on the tweet.
+   * Clicks the location button → types location → selects first result.
+   */
+  private async applyLocation(location: string): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Adding location: ${location}`);
+      const clicked = await this.clickFirst(SELECTORS.COMPOSE_LOCATION);
+      if (!clicked.ok) { console.log('[Twitter] Location button not found'); return false; }
+      await this.wait(1000);
+
+      // Type location in search
+      const escaped = location.replace(/'/g, "\\'").replace(/\\/g, '\\\\');
+      await this.executeJS(`
+        (function() {
+          var input = document.querySelector('input[type="text"], input[placeholder*="Search"], input[aria-label*="Search"], input[aria-label*="location"]');
+          if (input) {
+            input.focus();
+            input.value = '';
+            document.execCommand('insertText', false, '${escaped}');
+            input.dispatchEvent(new Event('input', {bubbles:true}));
+            return 'typed';
+          }
+          return 'no_input';
+        })()
+      `);
+      await this.wait(2000); // Wait for search results
+
+      // Click first location result
+      const selected = await this.executeJS(`
+        (function() {
+          var results = document.querySelectorAll('[role="option"], [role="listbox"] li, [data-testid="typeaheadResult"]');
+          if (results.length > 0) { results[0].click(); return 'selected:' + (results[0].innerText || '').substring(0, 50); }
+          // Fallback: click any list item in location picker
+          var items = document.querySelectorAll('[role="dialog"] li, [role="dialog"] [role="option"]');
+          if (items.length > 0) { items[0].click(); return 'fallback:' + (items[0].innerText || '').substring(0, 50); }
+          return 'no_results';
+        })()
+      `);
+      console.log(`[Twitter] Location result: ${selected}`);
+      await this.wait(500);
+      return selected ? selected.includes('selected') || selected.includes('fallback') : false;
+    } catch (e) { console.log(`[Twitter] Location error: ${e}`); return false; }
+  }
+
+  /**
+   * Attach media files (images/videos) to the tweet.
+   * Uses the hidden file input to inject files via AppleScript file dialog.
+   */
+  private async applyMedia(filePaths: string[]): Promise<boolean> {
+    try {
+      console.log(`[Twitter] Attaching ${filePaths.length} media files`);
+
+      for (const filePath of filePaths) {
+        // Click the media button to trigger file input
+        await this.executeJS(`
+          (function() {
+            var input = document.querySelector('[data-testid="fileInput"]');
+            if (input) { input.click(); return 'clicked'; }
+            return 'no_input';
+          })()
+        `);
+        await this.wait(1500);
+
+        // Use System Events to interact with the file dialog
+        // Type the file path via Go To Folder (Cmd+Shift+G) then select
+        const safeFilePath = filePath.replace(/"/g, '\\"');
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(500);
+        // Open Go To Folder dialog
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "g" using {command down, shift down}'`);
+        await this.wait(1000);
+        // Type the file path
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "${safeFilePath}"'`);
+        await this.wait(500);
+        // Press Enter to go to folder, then Enter to select file
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke return'`);
+        await this.wait(1000);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke return'`);
+        await this.wait(2000);
+
+        console.log(`[Twitter] Attached: ${filePath}`);
+      }
+
+      // Verify media was attached
+      const hasMedia = await this.executeJS(`
+        (function() {
+          var media = document.querySelectorAll('[data-testid="attachments"] img, [data-testid="attachments"] video, [aria-label="Uploaded media"] img');
+          return media.length > 0 ? 'has_media:' + media.length : 'no_media';
+        })()
+      `);
+      console.log(`[Twitter] Media verification: ${hasMedia}`);
+      return hasMedia ? hasMedia.includes('has_media') : false;
+    } catch (e) { console.log(`[Twitter] Media error: ${e}`); return false; }
+  }
+
+  /**
+   * Post a thread reply after the first tweet is posted.
+   * Navigates to the posted tweet and posts a reply.
+   */
+  private async postThreadReply(text: string): Promise<boolean> {
+    try {
+      // After posting, the page should show the tweet or redirect to profile
+      // Click reply on the most recent tweet
+      await this.wait(1000);
+
+      // Navigate to own profile to find the latest tweet
+      const navOk = await this.navigate('https://x.com/IsaiahDupree7');
+      if (!navOk) return false;
+      await this.wait(3000);
+
+      // Find and click on the latest tweet (first article)
+      const tweetSel = await this.waitForAny(SELECTORS.TWEET, 8000);
+      if (!tweetSel) return false;
+
+      // Click reply on it
+      const click = await this.clickFirst(SELECTORS.REPLY_ICON, tweetSel);
+      if (!click.ok) return false;
+      await this.wait(1000);
+
+      // Wait for reply input
+      const inputSel = await this.waitForAny(SELECTORS.REPLY_INPUT, 8000);
+      if (!inputSel) return false;
+
+      // Type the thread reply
+      const typeResult = await this.typeText(text);
+      if (!typeResult.ok) return false;
+
+      // Submit
+      const submit = await this.submitReply();
+      if (!submit.ok) return false;
+
+      console.log(`[Twitter] Thread reply posted: "${text.substring(0, 40)}..."`);
+      return true;
+    } catch (e) { console.log(`[Twitter] Thread reply error: ${e}`); return false; }
   }
 
   // ─── Compose-specific typing (uses COMPOSE selectors) ─────

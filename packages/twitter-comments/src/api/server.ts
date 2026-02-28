@@ -5,7 +5,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { TwitterDriver, type TwitterConfig } from '../automation/twitter-driver.js';
+import { TwitterDriver, type TwitterConfig, type ComposeOptions } from '../automation/twitter-driver.js';
 
 const app = express();
 app.use(cors());
@@ -165,7 +165,7 @@ Rules:
 // ─── Compose Tweet ──────────────────────────────────────────
 app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
   try {
-    const { text, useAI, topic, style, context } = req.body;
+    const { text, useAI, topic, style, context, replySettings, poll, schedule, location, media, thread } = req.body;
 
     let tweetText = text;
     if (useAI || (!text && topic)) {
@@ -180,7 +180,17 @@ app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
       console.log(`[AI Tweet] Trimmed to 280 chars`);
     }
 
-    const result = await getDriver().composeTweet(tweetText);
+    // Build compose options from request body
+    const options: ComposeOptions = {};
+    if (replySettings) options.replySettings = replySettings;
+    if (poll) options.poll = poll;
+    if (schedule) options.schedule = schedule;
+    if (location) options.location = location;
+    if (media) options.media = media;
+    if (thread) options.thread = thread;
+    const hasOptions = Object.keys(options).length > 0;
+
+    const result = await getDriver().composeTweet(tweetText, hasOptions ? options : undefined);
     res.json({ ...result, tweetText, charCount: tweetText.length, usedAI: !!(useAI || (!text && topic)) });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
