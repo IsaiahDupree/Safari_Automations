@@ -264,10 +264,15 @@ Used by `GET /api/linkedin/profile/extract-current`.
 ### `searchPeople(config)`
 ```
 Build URL: linkedin.com/search/results/people/?keywords=...&titleFreeText=...&company=...
+  → connectionDegree filter: &network=["F"] (1st), ["S"] (2nd), ["O"] (3rd+)
+  → pagination: &page=N (default: page 1)
+  → origin override: &origin=FACETED_SEARCH (auto-set with degree filter)
 navigateTo(url)
 wait 5s
-poll: main querySelectorAll("a[href*='/in/']").length > 0 → ready (up to 15s)
-executeJS(SEARCH_EXTRACTION_JS) → up to 20 results
+waitForCondition: main a[href*="/in/"] count > 0 (up to 15s)
+wait 1s
+scroll-to-load: 8 incremental scrolls (600px each, 300ms apart), wait 3s
+executeJS(SEARCH_EXTRACTION_JS) → up to 20 results per page
 ```
 
 ### Search Config
@@ -277,26 +282,35 @@ interface PeopleSearchConfig {
   title?: string;          // → titleFreeText param
   company?: string;
   location?: string;       // not yet applied to URL (manual filter)
-  connectionDegree?: '1st' | '2nd' | '3rd+';
+  connectionDegree?: '1st' | '2nd' | '3rd+' | ('1st' | '2nd' | '3rd+')[];
   industry?: string;
+  page?: number;           // pagination (default: 1)
+  origin?: string;         // URL origin param override
 }
 ```
 
+> **Connection degree URL mapping:** `1st` → `F`, `2nd` → `S`, `3rd+` → `O`
+> Multiple degrees supported: `connectionDegree: ['1st', '2nd']` → `network=["F","S"]`
+
 ### Extraction Strategy (`SEARCH_EXTRACTION_JS`)
 ```
-mainEl = document.querySelector('main')
-allLis = mainEl.querySelectorAll('li')
+mainEl = document.querySelector('main, [role="main"]')
+cards = mainEl.querySelectorAll('[data-view-name="people-search-result"]')
+  → fallback: mainEl.querySelectorAll('li')
 
-For each li:
+For each card:
 1. Find a[href*="/in/"] — skip if none
 2. Dedup: pick non-ACoAA href as canonical
-3. Name: first span[aria-hidden="true"] that isn't visually-hidden, 
-         doesn't start with •, no "degree" text
-4. Degree: scan spans for "1st"/"2nd"/"3rd"
+3. Name: innerText up to bullet (•) char, then split on newline
+         → fallback: span[aria-hidden="true"] that isn't visually-hidden
+4. Degree: scan card.innerText for "1st"/"2nd"/"3rd"
 5. Headline / Location: leaf div nodes (no children), len 5–200
 6. Mutual connections: allText.match(/(\d+)\s*mutual/i)
 Returns up to 20 results
 ```
+
+> **Note:** Extraction JS must be single-line format. Multi-line template literals
+> return `undefined` when executed via osascript temp file in certain Safari versions.
 
 ### `SearchResult` Fields
 ```typescript
@@ -560,17 +574,33 @@ Return: { success, verified, verifiedRecipient }
 ```
 
 ### `sendMessageToProfile(profileUrl, text)` — new conversation from profile
+
+> **Feb 2026 fix:** LinkedIn's Message anchor opens `/messaging/compose/` as an overlay
+> via JS `.click()`, but the overlay often fails to render in Safari automation.
+> Solution: Extract the compose URL from the anchor `href`, strip `interop=msgOverlay`,
+> and navigate directly to the full-page compose view.
+
 ```
 navigateTo(profileUrl)
-humanDelay(2–4s)
-JS: click Message button or <a href="/messaging/compose/..."> anchor
-wait 2s
-JS: focus .msg-form__contenteditable
+wait 3s
+waitForCondition: Message anchor or button appears (10s)
+JS: extract compose URL from <a href="/messaging/compose/?profileUrn=...">
+  → strip interop=msgOverlay and screenContext params
+  → if anchor found: navigate directly to compose URL (full page)
+  → if button found (legacy): click button as fallback
+wait 3s
+waitForCondition: .msg-form__contenteditable appears (10s)
+JS: focus input
 typeViaClipboard(text)
-JS: click .msg-form__send-button
+wait 1s
+waitForCondition: Send button enabled (5s)
+JS: click Send button (text match)
+  → fallback: .msg-form__send-button class
   → fallback: pressEnter()
 wait 2s
-Return: { success: true, verified: true }
+JS: verify last message contains first 30 chars of text
+JS: get recipient from .msg-thread__link-to-profile or .msg-entity-lockup__entity-title
+Return: { success, verified, verifiedRecipient }
 ```
 
 ### `getUnreadCount()`

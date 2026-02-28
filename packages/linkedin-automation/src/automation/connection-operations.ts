@@ -561,80 +561,8 @@ export async function acceptRequest(profileUrl: string, driver?: SafariDriver): 
 
 // ─── Search Extraction JS ────────────────────────────────────
 
-const SEARCH_EXTRACTION_JS = `
-(function() {
-  var results = [];
-  var mainEl = document.querySelector('main, [role="main"]');
-  if (!mainEl) return '[]';
-
-  var cards = mainEl.querySelectorAll('[data-view-name="people-search-result"]');
-  if (cards.length === 0) cards = mainEl.querySelectorAll('li');
-
-  for (var i = 0; i < cards.length; i++) {
-    var card = cards[i];
-    var links = card.querySelectorAll('a[href*="/in/"]');
-    if (links.length === 0) continue;
-    var href = '';
-    for (var x = 0; x < links.length; x++) {
-      var h = links[x].href.split('?')[0];
-      if (h.indexOf('ACoAA') === -1 && h.indexOf('/in/') !== -1) { href = h; break; }
-    }
-    if (!href) href = links[0].href.split('?')[0];
-
-    var rawLink = (links[0].innerText || links[0].textContent || '').trim();
-    var bulletIdx = rawLink.indexOf('\u2022');
-    var name = bulletIdx > 0 ? rawLink.substring(0, bulletIdx).trim() : rawLink.split('\n')[0].trim();
-    name = name.replace(/\s*(1st|2nd|3rd)\s*$/, '').trim();
-
-    if (!name || name.length < 2) {
-      var spans = card.querySelectorAll('span[aria-hidden="true"]');
-      for (var j = 0; j < spans.length; j++) {
-        var st = (spans[j].innerText || '').trim();
-        if (st.length > 2 && st.length < 100 && st.charAt(0) !== '\u2022') { name = st; break; }
-      }
-    }
-
-    var degree = '';
-    var allText = card.innerText || '';
-    if (allText.indexOf('1st') !== -1) degree = '1st';
-    else if (allText.indexOf('2nd') !== -1) degree = '2nd';
-    else if (allText.indexOf('3rd') !== -1) degree = '3rd';
-
-    var headline = '';
-    var linkLines = rawLink.split('\\n');
-    if (linkLines.length > 1) headline = linkLines[1].trim().substring(0, 150);
-
-    var location = '';
-    var divs = card.querySelectorAll('div');
-    for (var di = 0; di < divs.length; di++) {
-      var div = divs[di];
-      if (div.children.length > 0) continue;
-      var dt = (div.innerText || '').trim();
-      if (dt.length < 5 || dt.length > 200) continue;
-      if (dt === name || dt === headline || dt.indexOf('degree') !== -1 || dt === 'Connect' || dt === 'Message' || dt === 'Follow') continue;
-      if (!headline) { headline = dt.substring(0, 150); }
-      else if (!location && dt.length < 80) { location = dt; break; }
-    }
-
-    var mutual = 0;
-    var mutMatch = allText.match(/(\\d+)\\s*mutual/i);
-    if (mutMatch) mutual = parseInt(mutMatch[1]);
-
-    if (name && href) {
-      results.push(JSON.stringify({
-        name: name,
-        profileUrl: href,
-        headline: headline.substring(0, 150),
-        location: location,
-        connectionDegree: degree,
-        mutualConnections: mutual,
-      }));
-    }
-  }
-
-  return '[' + results.slice(0, 20).join(',') + ']';
-})()
-`;
+// Single-line extraction JS — multi-line template literals return undefined via osascript temp file
+const SEARCH_EXTRACTION_JS = '(function(){var results=[];var mainEl=document.querySelector("main,[role=main]");if(!mainEl)return"[]";var cards=mainEl.querySelectorAll("[data-view-name=people-search-result]");if(cards.length===0)cards=mainEl.querySelectorAll("li");for(var i=0;i<cards.length;i++){var card=cards[i];var links=card.querySelectorAll("a[href*=\'/in/\']");if(links.length===0)continue;var href="";for(var x=0;x<links.length;x++){var h=links[x].href.split("?")[0];if(h.indexOf("ACoAA")===-1&&h.indexOf("/in/")!==-1){href=h;break;}}if(!href)href=links[0].href.split("?")[0];var rawLink=(links[0].innerText||links[0].textContent||"").trim();var bulletIdx=rawLink.indexOf("\\u2022");var name=bulletIdx>0?rawLink.substring(0,bulletIdx).trim():rawLink.split("\\n")[0].trim();name=name.replace(/\\s*(1st|2nd|3rd)\\s*$/,"").trim();if(!name||name.length<2){var spans=card.querySelectorAll("span[aria-hidden=true]");for(var j=0;j<spans.length;j++){var st=(spans[j].innerText||"").trim();if(st.length>2&&st.length<100&&st.charAt(0)!=="\\u2022"){name=st;break;}}}var degree="";var allText=card.innerText||"";if(allText.indexOf("1st")!==-1)degree="1st";else if(allText.indexOf("2nd")!==-1)degree="2nd";else if(allText.indexOf("3rd")!==-1)degree="3rd";var headline="";var linkLines=rawLink.split("\\n");if(linkLines.length>1)headline=linkLines[1].trim().substring(0,150);var location="";var divs=card.querySelectorAll("div");for(var di=0;di<divs.length;di++){var div=divs[di];if(div.children.length>0)continue;var dt=(div.innerText||"").trim();if(dt.length<5||dt.length>200)continue;if(dt===name||dt===headline||dt.indexOf("degree")!==-1||dt==="Connect"||dt==="Message"||dt==="Follow")continue;if(!headline){headline=dt.substring(0,150);}else if(!location&&dt.length<80){location=dt;break;}}var mutual=0;var mutMatch=allText.match(/(\\d+)\\s*mutual/i);if(mutMatch)mutual=parseInt(mutMatch[1]);if(name&&href){results.push(JSON.stringify({name:name,profileUrl:href,headline:headline.substring(0,150),location:location,connectionDegree:degree,mutualConnections:mutual}));}}return"["+results.slice(0,20).join(",")+"]";})()';
 
 // ─── People Search ───────────────────────────────────────────
 

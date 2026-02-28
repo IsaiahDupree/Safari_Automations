@@ -308,6 +308,10 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 }
 
 // ─── Send Message to Profile (New Conversation) ─────────────
+//
+// LinkedIn Feb 2026: The Message button is an <a> linking to /messaging/compose/.
+// JS .click() on this anchor tries to open an overlay that often fails to render.
+// Fix: Extract the compose URL from the anchor href and navigate directly to it.
 
 export async function sendMessageToProfile(
   profileUrl: string,
@@ -315,90 +319,145 @@ export async function sendMessageToProfile(
   driver?: SafariDriver
 ): Promise<SendMessageResult> {
   const d = driver || getDefaultDriver();
+  const log = (msg: string) => console.log(`[DM] ${msg}`);
 
-  // Navigate to profile
+  // ── Step 1: Navigate to profile and extract compose URL ──
   const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
   await d.navigateTo(url);
-  await d.humanDelay(2000, 4000);
+  await d.wait(3000);
 
-  // Click Message button or anchor on profile (LinkedIn Feb 2026 uses <a> for Message)
-  const msgClicked = await d.executeJS(`
+  // Wait for profile action buttons to render
+  const pageReady = await d.waitForCondition(
+    `(function(){var m=document.querySelector('main');if(!m)return '';var s=m.querySelector('section');if(!s)return '';var has=s.querySelector('a[href*="/messaging/compose"],button[aria-label*="Message" i]');return has?'ready':'';})()`,
+    10000
+  );
+
+  if (!pageReady) {
+    log('Profile buttons did not load — checking if we can message');
+  }
+
+  // Extract compose URL from Message anchor
+  const composeInfo = await d.executeJS(`
     (function() {
-      var main = document.querySelector('main');
-      if (!main) return 'no_main';
-      var section = main.querySelector('section');
-      var scope = section || main;
-      // Try button first
+      var m = document.querySelector('main');
+      if (!m) return JSON.stringify({error: 'no_main'});
+      var s = m.querySelector('section');
+      var scope = s || m;
+      // Try anchor first (LinkedIn Feb 2026)
+      var anchors = scope.querySelectorAll('a');
+      for (var j = 0; j < anchors.length; j++) {
+        var href = (anchors[j].href || '');
+        if (href.includes('/messaging/compose')) {
+          // Strip interop=msgOverlay to get full-page compose
+          var cleanUrl = href.replace(/&interop=[^&]*/g, '').replace(/&screenContext=[^&]*/g, '');
+          return JSON.stringify({composeUrl: cleanUrl, method: 'anchor'});
+        }
+      }
+      // Try button
       var btns = scope.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {
         var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        if (a.includes('message')) { btns[i].click(); return 'clicked_btn'; }
-      }
-      // Try anchor (LinkedIn Feb 2026)
-      var anchors = scope.querySelectorAll('a');
-      for (var j = 0; j < anchors.length; j++) {
-        var aa = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
-        var at = anchors[j].innerText.trim().toLowerCase();
-        var ah = (anchors[j].href || '').toLowerCase();
-        if (aa.includes('message') || at === 'message' || ah.includes('/messaging/compose')) {
-          anchors[j].click();
-          return 'clicked_anchor';
+        if (a.includes('message')) {
+          return JSON.stringify({composeUrl: '', method: 'button', label: a});
         }
       }
-      return 'not_found';
+      return JSON.stringify({error: 'not_found'});
     })()
   `);
 
-  console.log('[DM] Message button click result:', msgClicked);
-  if (msgClicked === 'not_found' || msgClicked === 'no_main') {
+  let compose: any;
+  try { compose = JSON.parse(composeInfo); } catch {
+    return { success: false, error: 'Failed to parse compose info' };
+  }
+
+  if (compose.error) {
+    log(`Message button not found: ${compose.error}`);
     return { success: false, error: 'Message button not found — may not be connected' };
   }
 
-  await d.wait(2000);
-
-  // Type in message overlay
-  const focused = await d.executeJS(`
-    (function() {
-      var selectors = [
-        '.msg-form__contenteditable',
-        '[role="textbox"][contenteditable="true"]',
-      ];
-      for (var sel of selectors) {
-        var el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) {
-          el.focus();
-          el.click();
-          return 'focused';
-        }
-      }
-      return 'not_found';
-    })()
-  `);
-
-  if (focused !== 'focused') {
-    return { success: false, error: 'Could not find message input in overlay' };
+  // ── Step 2: Navigate to compose page (or click button) ──
+  if (compose.composeUrl) {
+    log(`Navigating to compose: ${compose.composeUrl.substring(0, 80)}`);
+    await d.navigateTo(compose.composeUrl);
+    await d.wait(3000);
+  } else if (compose.method === 'button') {
+    // Legacy button fallback — click and hope overlay opens
+    log('Using legacy button click for message');
+    await d.executeJS(`
+      (function(){var m=document.querySelector('main');var s=m.querySelector('section');var scope=s||m;var btns=scope.querySelectorAll('button');for(var i=0;i<btns.length;i++){var a=(btns[i].getAttribute('aria-label')||'').toLowerCase();if(a.includes('message')){btns[i].click();return;}}})()
+    `);
+    await d.wait(3000);
   }
 
+  // ── Step 3: Wait for message input ──
+  const inputReady = await d.waitForCondition(
+    `(function(){var el=document.querySelector('.msg-form__contenteditable,[role="textbox"][contenteditable="true"]');return(el&&el.offsetParent!==null)?'ready':'';})()`,
+    10000
+  );
+
+  if (!inputReady) {
+    return { success: false, error: 'Message input did not appear on compose page' };
+  }
+
+  // Focus the input
+  await d.executeJS(`
+    (function(){var el=document.querySelector('.msg-form__contenteditable');if(!el)el=document.querySelector('[role="textbox"][contenteditable="true"]');if(el){el.focus();el.click();}})()
+  `);
   await d.wait(300);
-  await d.typeViaClipboard(text);
-  await d.wait(500);
 
-  // Send
-  const sent = await d.executeJS(`
-    (function() {
-      var btn = document.querySelector('.msg-form__send-button');
-      if (btn && !btn.disabled) { btn.click(); return 'sent'; }
-      return 'not_found';
-    })()
-  `);
+  // ── Step 4: Type message via clipboard ──
+  const typed = await d.typeViaClipboard(text);
+  if (!typed) return { success: false, error: 'Failed to type message' };
+  await d.wait(1000);
 
-  if (sent !== 'sent') {
-    await d.pressEnter();
+  // ── Step 5: Wait for Send to enable and click ──
+  const sendReady = await d.waitForCondition(
+    `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled)return 'ready';}return '';})()`,
+    5000
+  );
+
+  if (!sendReady) {
+    // Fallback: try the class-based selector
+    const fallbackSent = await d.executeJS(`
+      (function(){var btn=document.querySelector('.msg-form__send-button');if(btn&&!btn.disabled){btn.click();return 'sent';}return 'not_found';})()
+    `);
+    if (fallbackSent !== 'sent') {
+      await d.pressEnter();
+      log('Send button not found — pressed Enter as fallback');
+    }
+  } else {
+    await d.executeJS(`
+      (function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled){btns[i].click();return 'sent';}}return 'miss';})()
+    `);
+    log('Clicked Send');
   }
 
   await d.wait(2000);
 
-  return { success: true, verified: true };
+  // ── Step 6: Verify message appeared ──
+  const checkText = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const verification = await d.executeJS(`
+    (function() {
+      var msgs = document.querySelectorAll('.msg-s-event-listitem__body, .msg-s-message-group__text');
+      var last = msgs.length > 0 ? msgs[msgs.length - 1].innerText.trim() : '';
+      var verified = last.includes('${checkText}');
+      var recipient = '';
+      var nameEl = document.querySelector('.msg-thread__link-to-profile, .msg-entity-lockup__entity-title, h2.msg-overlay-bubble-header__title');
+      if (nameEl) recipient = nameEl.innerText.trim();
+      return JSON.stringify({verified: verified, recipient: recipient, lastMsg: last.substring(0, 60)});
+    })()
+  `);
+
+  let result: any = {};
+  try { result = JSON.parse(verification); } catch {}
+
+  log(`Verified: ${result.verified}, Recipient: ${result.recipient || 'unknown'}, Last: ${result.lastMsg || ''}`);
+
+  return {
+    success: true,
+    verified: result.verified === true,
+    verifiedRecipient: result.recipient || undefined,
+  };
 }
 
 // ─── Get Unread Count ────────────────────────────────────────
