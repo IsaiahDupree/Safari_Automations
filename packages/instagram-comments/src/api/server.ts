@@ -98,7 +98,7 @@ interface RateLimitBucket {
 
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-const RATE_LIMIT_MAX = 60; // 60 requests per minute
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '200'); // 200 requests per minute (configurable)
 
 function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
   const key = req.ip || 'default';

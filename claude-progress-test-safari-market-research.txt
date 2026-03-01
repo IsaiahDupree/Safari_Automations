@@ -1,0 +1,127 @@
+═══════════════════════════════════════════════════════════════
+MARKET RESEARCH TEST SUITE — Initializer Agent Progress Log
+═══════════════════════════════════════════════════════════════
+
+Session: 2026-03-01 (Initializer)
+Agent: Initializer — Set up environment for autonomous coding agents
+
+═══ SUMMARY ═══════════════════════════════════════════════════
+
+Features: 92/103 passing (89.3%)
+Remaining: 11 features (all Supabase integration — require live DB)
+
+═══ WHAT WAS DONE ═════════════════════════════════════════════
+
+1. CODEBASE ANALYSIS
+   - Explored full monorepo (32+ packages)
+   - Identified market-research package (port 3106) as primary target
+   - Mapped all existing API endpoints (~50+ routes)
+   - Understood auth, scheduling, queue, webhook patterns
+
+2. SERVER ENHANCEMENTS (packages/market-research/src/api/server.ts)
+   - Added SERVER_VERSION and SERVER_STARTED_AT for health metadata
+   - Enhanced health endpoint with version, uptime, started_at fields
+   - Rewrote auth middleware for proper Bearer token handling:
+     * Validates Bearer scheme
+     * Returns 401 for empty/invalid/missing tokens
+     * Rejects query param auth (?token=)
+     * Allows OPTIONS preflight without auth
+     * X-Forwarded-For spoofing blocked
+   - Added rate limiting middleware:
+     * X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset headers
+     * 429 response with Retry-After when exceeded
+     * Configurable via RATE_LIMIT_MAX env var
+   - Added content-type validation (415 for non-JSON POST)
+   - Added session management (create, get, list, delete)
+   - Added 20+ new API endpoints:
+     * GET /api/research/trends — cross-platform trends
+     * POST /api/research/top-creators — top creators by niche
+     * POST /api/research/competitor — async competitor research
+     * GET /api/research/jobs/:jobId — poll job status
+     * GET /api/research/post?url= — engagement stats
+     * GET /api/research/niches/:niche — niche performance
+     * GET /api/research/hashtags/:platform — trending hashtags
+     * POST /api/research/batch — multi-keyword search
+     * GET /api/research/resonance/:niche/:platform — resonance score
+     * POST /api/research/top-posts — top posts by engagement
+     * GET /api/research/creator/:handle — creator engagement stats
+     * POST /api/sessions — create session
+     * GET /api/sessions — list sessions
+     * DELETE /api/sessions/:id — close session
+     * GET /api/rate-limits — rate limit info
+     * POST /api/ai/suggest-reply — AI message generation
+     * POST /api/ai/score — AI content scoring
+   - Enhanced input validation (empty string, null, field names in errors)
+   - Added 404 handler for unknown routes
+   - Added global error handler (no stack traces)
+
+3. MCP SERVER (packages/market-research/src/mcp/server.ts)
+   - Built MCP stdio transport server from scratch
+   - Implements JSON-RPC 2.0 protocol
+   - Supports initialize, tools/list, tools/call, ping
+   - 6 tools: search_posts, get_trends, get_top_creators,
+     get_hashtags, score_content, get_creator_stats
+   - Proper error handling (-32601 for unknown tools, -32700 for parse errors)
+   - Handles empty lines gracefully
+   - Delegates to REST API for actual functionality
+
+4. TEST SUITE (tests/test_safari_market_research.py)
+   - 103 test cases across 11 categories
+   - Auto-starts server if not running
+   - Updates harness feature file automatically
+   - Categories: health, auth, core, error_handling, edge_cases,
+     rate_limiting, supabase, ai_features, mcp, session, performance
+
+═══ PASSING FEATURES (92) ═════════════════════════════════════
+
+Health (5/5):       001-005 ✓
+Auth (8/8):         006-013 ✓
+Core API (19/20):   014-029, 031-033 ✓ (030 needs Supabase)
+Error Handling (15/15): 034-048 ✓
+Edge Cases (10/10): 049-058 ✓
+Rate Limiting (7/7): 059-065 ✓
+AI Features (8/8):  076-083 ✓
+MCP (10/10):        084-093 ✓
+Sessions (5/5):     094-098 ✓
+Performance (5/5):  099-103 ✓
+
+═══ FAILING FEATURES (11) — All Supabase ══════════════════════
+
+030: Research result saved to Supabase (actp_content_performance)
+066: DM/action stored in Supabase
+067: No duplicate rows on retry
+068: Timestamps are ISO 8601
+069: Platform field set correctly
+070: Contact upserted in crm_contacts
+071: Conversation synced to crm_conversations
+072: Message synced to crm_messages
+073: RLS policy allows service reads
+074: SELECT returns all required columns
+075: Failed action NOT stored
+
+ROOT CAUSE: These features require live Supabase connection with:
+  - SUPABASE_URL and SUPABASE_KEY env vars
+  - Tables: actp_content_performance, crm_contacts, crm_conversations, crm_messages
+  - Service role key for RLS bypass
+
+═══ FOR FUTURE AGENTS ═════════════════════════════════════════
+
+To pass remaining 11 Supabase features:
+1. Add Supabase client to market-research package
+2. After successful research actions, upsert to actp_content_performance
+3. On DM/outreach, upsert to crm_contacts, crm_conversations, crm_messages
+4. Implement idempotent writes (ON CONFLICT)
+5. Only store successful actions (check success flag)
+6. Use ISO 8601 timestamps
+7. Test with real SUPABASE_URL and SUPABASE_KEY
+
+To run tests:
+  RESEARCH_API_KEY=test-key-market-research-2026 npx tsx packages/market-research/src/api/server.ts &
+  python3 tests/test_safari_market_research.py
+
+Key files:
+  - packages/market-research/src/api/server.ts (main server, ~1700 lines)
+  - packages/market-research/src/mcp/server.ts (MCP stdio server)
+  - packages/market-research/src/sdk/client.ts (SDK client)
+  - tests/test_safari_market_research.py (test suite)
+  - Feature harness: autonomous-coding-dashboard/harness/features/test-safari-market-research.json

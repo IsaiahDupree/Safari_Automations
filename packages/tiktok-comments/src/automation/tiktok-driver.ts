@@ -575,4 +575,418 @@ export class TikTokDriver {
 
   setConfig(updates: Partial<TikTokConfig>): void { this.config = { ...this.config, ...updates }; }
   getConfig(): TikTokConfig { return { ...this.config }; }
+
+  // ─── DM Operations ──────────────────────────────────────────
+
+  async sendDM(username: string, message: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[TikTok] Sending DM to @${username}: "${message.substring(0, 50)}..."`);
+
+      // Navigate to messages page
+      await this.navigate('https://www.tiktok.com/messages');
+      await this.wait(3000);
+
+      // Click new message button
+      const clickedNew = await this.executeJS(`
+        (function() {
+          var btns = document.querySelectorAll('button, div[role="button"]');
+          for (var i = 0; i < btns.length; i++) {
+            var text = (btns[i].textContent || '').trim();
+            if (text.includes('New message') || text.includes('New chat') || text.includes('Send message')) {
+              btns[i].click();
+              return 'clicked';
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (clickedNew !== 'clicked') {
+        return { success: false, error: 'Could not find new message button' };
+      }
+
+      await this.wait(2000);
+
+      // Type username in search
+      const searchInput = await this.executeJS(`
+        (function() {
+          var inputs = document.querySelectorAll('input[type="text"], input[placeholder*="search"], input[placeholder*="name"]');
+          for (var i = 0; i < inputs.length; i++) {
+            if (inputs[i].offsetParent !== null) {
+              inputs[i].focus();
+              inputs[i].value = '${username.replace(/'/g, "\\'")}';
+              inputs[i].dispatchEvent(new Event('input', {bubbles: true}));
+              return 'typed';
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (searchInput !== 'typed') {
+        return { success: false, error: 'Could not find search input' };
+      }
+
+      await this.wait(2000);
+
+      // Click on the user
+      const clickedUser = await this.executeJS(`
+        (function() {
+          var users = document.querySelectorAll('[role="option"], div[class*="user"], div[class*="User"]');
+          for (var i = 0; i < users.length; i++) {
+            if ((users[i].textContent || '').includes('${username.replace(/'/g, "\\'")}')) {
+              users[i].click();
+              return 'clicked';
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (clickedUser !== 'clicked') {
+        return { success: false, error: 'Could not find user in search results' };
+      }
+
+      await this.wait(1500);
+
+      // Type message
+      const escaped = message.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+      const typedMessage = await this.executeJS(`
+        (function() {
+          var inputs = document.querySelectorAll('div[contenteditable="true"], textarea, input[type="text"]');
+          for (var i = 0; i < inputs.length; i++) {
+            if (inputs[i].offsetParent !== null) {
+              inputs[i].focus();
+              inputs[i].innerText = '${escaped}';
+              inputs[i].dispatchEvent(new InputEvent('input', {bubbles: true}));
+              return 'typed';
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (typedMessage !== 'typed') {
+        return { success: false, error: 'Could not find message input' };
+      }
+
+      await this.wait(1000);
+
+      // Click send button
+      const sent = await this.executeJS(`
+        (function() {
+          var btns = document.querySelectorAll('button, div[role="button"]');
+          for (var i = 0; i < btns.length; i++) {
+            var text = (btns[i].textContent || '').trim().toLowerCase();
+            if (text === 'send' && !btns[i].disabled) {
+              btns[i].click();
+              return 'sent';
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (sent !== 'sent') {
+        return { success: false, error: 'Could not find send button' };
+      }
+
+      console.log(`[TikTok] ✅ DM sent to @${username}`);
+      return { success: true };
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[TikTok] DM send error:`, errorMsg);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async getDMConversations(): Promise<Array<{ username: string; lastMessage: string; timestamp: string; unread: boolean }>> {
+    try {
+      await this.navigate('https://www.tiktok.com/messages');
+      await this.wait(3000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          var convos = [];
+          var items = document.querySelectorAll('[data-e2e="chat-item"], div[class*="ChatItem"], div[class*="conversation"], li[role="button"]');
+          for (var i = 0; i < Math.min(items.length, 50); i++) {
+            var item = items[i];
+            var userEl = item.querySelector('[data-e2e="chat-username"], a[href*="/@"], span[class*="username"], span[class*="Username"]');
+            var username = userEl ? (userEl.textContent || '').trim() : '';
+            var msgEl = item.querySelector('[data-e2e="chat-message"], div[class*="message"], span[class*="message"]');
+            var lastMsg = msgEl ? (msgEl.textContent || '').trim().substring(0, 100) : '';
+            var timeEl = item.querySelector('time, span[class*="time"], span[class*="Time"]');
+            var timestamp = timeEl ? (timeEl.textContent || '').trim() : '';
+            var unread = !!item.querySelector('[class*="unread"], [class*="Unread"], [data-e2e="unread"]');
+            if (username) {
+              convos.push({ username: username, lastMessage: lastMsg, timestamp: timestamp, unread: unread });
+            }
+          }
+          return JSON.stringify(convos);
+        })()
+      `);
+
+      return JSON.parse(raw || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  async getDMMessages(conversationId: string): Promise<Array<{ from: string; text: string; timestamp: string; isOwn: boolean }>> {
+    try {
+      // Navigate to conversation
+      await this.navigate(`https://www.tiktok.com/messages?conversation=${conversationId}`);
+      await this.wait(3000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          var messages = [];
+          var items = document.querySelectorAll('[data-e2e="message-item"], div[class*="Message"], div[class*="message"]');
+          for (var i = 0; i < Math.min(items.length, 100); i++) {
+            var item = items[i];
+            var textEl = item.querySelector('[data-e2e="message-text"], span[class*="text"], p');
+            var text = textEl ? (textEl.textContent || '').trim() : '';
+            var isOwn = !!item.closest('[class*="own"], [class*="Own"], [data-e2e="own-message"]');
+            var timeEl = item.querySelector('time, span[class*="time"]');
+            var timestamp = timeEl ? (timeEl.getAttribute('datetime') || timeEl.textContent || '').trim() : '';
+            var from = isOwn ? 'me' : 'them';
+            if (text) {
+              messages.push({ from: from, text: text.substring(0, 500), timestamp: timestamp, isOwn: isOwn });
+            }
+          }
+          return JSON.stringify(messages);
+        })()
+      `);
+
+      return JSON.parse(raw || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  async searchDMConversation(username: string): Promise<{ found: boolean; conversationId?: string }> {
+    try {
+      await this.navigate('https://www.tiktok.com/messages');
+      await this.wait(3000);
+
+      const result = await this.executeJS(`
+        (function() {
+          var searchQuery = '${username.replace(/'/g, "\\'")}';
+          var items = document.querySelectorAll('[data-e2e="chat-item"], div[class*="ChatItem"]');
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if ((item.textContent || '').toLowerCase().includes(searchQuery.toLowerCase())) {
+              var link = item.querySelector('a[href]');
+              if (link) {
+                var href = link.getAttribute('href') || '';
+                var match = href.match(/conversation=([^&]+)/);
+                return JSON.stringify({ found: true, conversationId: match ? match[1] : '' });
+              }
+              return JSON.stringify({ found: true, conversationId: '' });
+            }
+          }
+          return JSON.stringify({ found: false });
+        })()
+      `);
+
+      return JSON.parse(result || '{"found":false}');
+    } catch {
+      return { found: false };
+    }
+  }
+
+  // ─── Profile Operations ─────────────────────────────────────
+
+  async getOwnProfile(): Promise<{ username: string; followerCount: number; followingCount: number; videoCount: number; likesCount: number; bio: string }> {
+    try {
+      // Navigate to profile page
+      await this.navigate('https://www.tiktok.com/@me');
+      await this.wait(3000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          function parseNum(el) {
+            if (!el) return 0;
+            var t = (el.textContent || '').trim().replace(/,/g, '');
+            var n = parseFloat(t);
+            if (isNaN(n)) return 0;
+            if (t.match(/[Kk]$/)) return Math.round(n * 1000);
+            if (t.match(/[Mm]$/)) return Math.round(n * 1000000);
+            return Math.round(n);
+          }
+          var username = '';
+          var userEl = document.querySelector('[data-e2e="user-title"], h1, h2');
+          if (userEl) username = (userEl.textContent || '').trim();
+          var followers = parseNum(document.querySelector('[data-e2e="followers-count"]'));
+          var following = parseNum(document.querySelector('[data-e2e="following-count"]'));
+          var likes = parseNum(document.querySelector('[data-e2e="likes-count"]'));
+          var bioEl = document.querySelector('[data-e2e="user-bio"]');
+          var bio = bioEl ? (bioEl.textContent || '').trim() : '';
+          var videoEls = document.querySelectorAll('[data-e2e="user-post-item"], div[class*="DivItemContainer"]');
+          var videoCount = videoEls.length;
+          return JSON.stringify({ username, followerCount: followers, followingCount: following, videoCount, likesCount: likes, bio });
+        })()
+      `);
+
+      return JSON.parse(raw || '{"username":"","followerCount":0,"followingCount":0,"videoCount":0,"likesCount":0,"bio":""}');
+    } catch {
+      return { username: '', followerCount: 0, followingCount: 0, videoCount: 0, likesCount: 0, bio: '' };
+    }
+  }
+
+  // ─── Search Operations ──────────────────────────────────────
+
+  async searchVideos(query: string, limit = 20): Promise<Array<{ id: string; url: string; author: string; description: string; views: number }>> {
+    try {
+      const searchUrl = `https://www.tiktok.com/search/video?q=${encodeURIComponent(query)}`;
+      await this.navigate(searchUrl);
+      await this.wait(4000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          function parseNum(t) {
+            if (!t) return 0;
+            t = t.replace(/,/g, '').trim();
+            var n = parseFloat(t);
+            if (isNaN(n)) return 0;
+            if (t.match(/[Kk]$/)) return Math.round(n * 1000);
+            if (t.match(/[Mm]$/)) return Math.round(n * 1000000);
+            return Math.round(n);
+          }
+          var results = [];
+          var cards = document.querySelectorAll('[data-e2e="search_video-item"]');
+          for (var i = 0; i < Math.min(cards.length, ${limit}); i++) {
+            var card = cards[i];
+            var link = card.querySelector('a[href*="/video/"]');
+            if (!link) continue;
+            var href = link.getAttribute('href') || '';
+            var idMatch = href.match(/\\/video\\/(\\d+)/);
+            var id = idMatch ? idMatch[1] : '';
+            var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href;
+            var userMatch = href.match(/@([^\\/]+)\\/video/);
+            var author = userMatch ? userMatch[1] : '';
+            var descEl = card.querySelector('[data-e2e="search-card-video-caption"]');
+            var desc = descEl ? descEl.textContent.trim().substring(0, 200) : '';
+            var viewsEl = card.querySelector('[data-e2e="video-views"]');
+            var views = viewsEl ? parseNum(viewsEl.textContent) : 0;
+            if (id) results.push({ id, url, author, description: desc, views });
+          }
+          return JSON.stringify(results);
+        })()
+      `);
+
+      return JSON.parse(raw || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  // ─── Trending Operations ────────────────────────────────────
+
+  async getTrendingSounds(): Promise<Array<{ title: string; author: string; useCount: number }>> {
+    try {
+      await this.navigate('https://www.tiktok.com/music');
+      await this.wait(4000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          function parseNum(t) {
+            if (!t) return 0;
+            t = t.replace(/,/g, '').trim();
+            var n = parseFloat(t);
+            if (isNaN(n)) return 0;
+            if (t.match(/[Kk]$/)) return Math.round(n * 1000);
+            if (t.match(/[Mm]$/)) return Math.round(n * 1000000);
+            return Math.round(n);
+          }
+          var sounds = [];
+          var items = document.querySelectorAll('[class*="MusicItem"], [class*="SoundItem"], div[class*="music"]');
+          for (var i = 0; i < Math.min(items.length, 30); i++) {
+            var item = items[i];
+            var titleEl = item.querySelector('[class*="title"], [class*="Title"], h3, h4');
+            var title = titleEl ? titleEl.textContent.trim() : '';
+            var authorEl = item.querySelector('[class*="author"], [class*="Author"]');
+            var author = authorEl ? authorEl.textContent.trim() : '';
+            var useEl = item.querySelector('[class*="use"], [class*="Use"], [class*="count"]');
+            var useCount = useEl ? parseNum(useEl.textContent) : 0;
+            if (title) sounds.push({ title, author, useCount });
+          }
+          return JSON.stringify(sounds);
+        })()
+      `);
+
+      return JSON.parse(raw || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  // ─── Comment Operations ─────────────────────────────────────
+
+  async replyToComment(commentId: string, text: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Click reply button
+      const clickedReply = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[data-e2e="comment-item"]');
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (item.getAttribute('data-comment-id') === '${commentId}' || item.innerText.includes('${commentId}')) {
+              var replyBtn = item.querySelector('[data-e2e="comment-reply"], button[class*="reply"], button');
+              if (replyBtn && replyBtn.textContent.toLowerCase().includes('reply')) {
+                replyBtn.click();
+                return 'clicked';
+              }
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (clickedReply !== 'clicked') {
+        return { success: false, error: 'Could not find reply button' };
+      }
+
+      await this.wait(1000);
+
+      // Type reply
+      const result = await this.postComment(text);
+      return result;
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
+
+  async likeComment(commentId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const clicked = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[data-e2e="comment-item"]');
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (item.getAttribute('data-comment-id') === '${commentId}' || item.innerText.includes('${commentId}')) {
+              var likeBtn = item.querySelector('[data-e2e="comment-like"], button[class*="like"], svg[class*="heart"]');
+              if (likeBtn) {
+                var btn = likeBtn.closest('button');
+                if (btn) {
+                  btn.click();
+                  return 'clicked';
+                }
+              }
+            }
+          }
+          return 'not_found';
+        })()
+      `);
+
+      if (clicked === 'clicked') {
+        return { success: true };
+      } else {
+        return { success: false, error: 'Could not find like button' };
+      }
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
 }

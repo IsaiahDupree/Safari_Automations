@@ -12,6 +12,39 @@ app.use(cors());
 app.use(express.json());
 const PORT = parseInt(process.env.TIKTOK_COMMENTS_PORT || '3006');
 
+// ═══ Authentication Middleware ═══
+const AUTH_TOKEN = process.env.TIKTOK_AUTH_TOKEN || '';
+const AUTH_ENABLED = AUTH_TOKEN.length > 0;
+
+function authMiddleware(req: Request, res: Response, next: any) {
+  // Skip auth for health endpoint and OPTIONS requests
+  if (req.path === '/health' || req.method === 'OPTIONS') {
+    return next();
+  }
+
+  if (!AUTH_ENABLED) {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Authorization header required', message: 'Missing authentication token' });
+  }
+
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+  if (!token || token.trim().length === 0) {
+    return res.status(400).json({ error: 'Invalid authorization format', message: 'Bearer token must not be empty' });
+  }
+
+  if (token !== AUTH_TOKEN) {
+    return res.status(401).json({ error: 'Invalid token', message: 'Authentication failed' });
+  }
+
+  next();
+}
+
+app.use(authMiddleware);
+
 // AI Client for comment generation
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (OPENAI_API_KEY) {
@@ -260,6 +293,112 @@ app.get('/api/tiktok/activity/followers', async (req: Request, res: Response) =>
 
 app.get('/api/tiktok/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/tiktok/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
+
+// ═══ DM Operations ═══
+app.post('/api/tiktok/dm/send', async (req: Request, res: Response) => {
+  try {
+    const { username, message } = req.body;
+    if (!username || !message) {
+      res.status(400).json({ error: 'username and message required' });
+      return;
+    }
+    const result = await getDriver().sendDM(username, message);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/tiktok/dm/conversations', async (req: Request, res: Response) => {
+  try {
+    const conversations = await getDriver().getDMConversations();
+    res.json(conversations);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/tiktok/dm/messages/:id', async (req: Request, res: Response) => {
+  try {
+    const messages = await getDriver().getDMMessages(req.params.id);
+    res.json(messages);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post('/api/tiktok/dm/search', async (req: Request, res: Response) => {
+  try {
+    const { username } = req.body;
+    if (!username) {
+      res.status(400).json({ error: 'username required' });
+      return;
+    }
+    const result = await getDriver().searchDMConversation(username);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ═══ Profile Operations ═══
+app.get('/api/tiktok/profile', async (req: Request, res: Response) => {
+  try {
+    const profile = await getDriver().getOwnProfile();
+    res.json(profile);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ═══ Search Operations ═══
+app.post('/api/tiktok/search', async (req: Request, res: Response) => {
+  try {
+    const { query, limit = 20 } = req.body;
+    if (!query) {
+      res.status(400).json({ error: 'query required' });
+      return;
+    }
+    const videos = await getDriver().searchVideos(query, limit);
+    res.json({ success: true, query, videos, count: videos.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ═══ Trending Operations ═══
+app.get('/api/tiktok/trending/sounds', async (req: Request, res: Response) => {
+  try {
+    const sounds = await getDriver().getTrendingSounds();
+    res.json(sounds);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ═══ Comment Operations ═══
+app.post('/api/tiktok/comments/reply', async (req: Request, res: Response) => {
+  try {
+    const { commentId, text } = req.body;
+    if (!commentId || !text) {
+      res.status(400).json({ error: 'commentId and text required' });
+      return;
+    }
+    const result = await getDriver().replyToComment(commentId, text);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post('/api/tiktok/comments/:id/like', async (req: Request, res: Response) => {
+  try {
+    const result = await getDriver().likeComment(req.params.id);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
 
 export function startServer(port = PORT) { app.listen(port, () => console.log(`🎵 TikTok Comments API running on http://localhost:${port}`)); }
 if (process.argv[1]?.includes('server')) startServer();

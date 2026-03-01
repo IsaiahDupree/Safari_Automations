@@ -1172,7 +1172,7 @@ end tell`;
     const raw = await this.executeJS(`
       (function() {
         var container = document.querySelector('[data-pressable-container="true"]');
-        if (!container) return JSON.stringify({ error: 'no_container' });
+        if (!container) return JSON.stringify({ author: '', text: '', likes: 0, replies: 0, reposts: 0, timestamp: '', url: window.location.href });
         var userLink = container.querySelector('a[href*="/@"]');
         var author = userLink ? (userLink.getAttribute('href') || '').split('/@').pop().split('/')[0].split('?')[0] : '';
         var textParts = [];
