@@ -99,15 +99,19 @@ function printHeader(): void {
 
 async function printPlatforms(): Promise<void> {
   const platforms = [
-    { name: 'Main API', port: 3000 },
-    { name: 'Instagram DM', port: 3001 },
-    { name: 'TikTok DM', port: 3002 },
+    { name: 'Safari Gateway', port: 3000 },
+    { name: 'Instagram DM', port: 3100 },
+    { name: 'TikTok DM', port: 3102 },
     { name: 'Twitter DM', port: 3003 },
     { name: 'Threads Comments', port: 3004 },
     { name: 'Instagram Comments', port: 3005 },
     { name: 'TikTok Comments', port: 3006 },
     { name: 'Twitter Comments', port: 3007 },
     { name: 'Scheduler', port: 3010 },
+    { name: 'Upwork', port: 3104 },
+    { name: 'LinkedIn', port: 3105 },
+    { name: 'Market Research', port: 3106 },
+    { name: 'Cloud Sync', port: 3200 },
   ];
   
   const results = await Promise.all(
@@ -137,6 +141,40 @@ async function printResources(): Promise<void> {
   console.log(`│  🎬 Sora Credits: ${String(sora.credits).padEnd(5)} (refreshes in ${sora.refreshIn.padEnd(10)})           │`);
   console.log(`│  📋 Queue: ${String(queue.pending).padEnd(3)} pending, ${String(queue.running).padEnd(3)} running, ${String(queue.completed).padEnd(3)} completed      │`);
   console.log('└─────────────────────────────────────────────────────────────────────┘');
+}
+
+async function printCloudSync(): Promise<void> {
+  try {
+    const response = await fetch('http://localhost:3200/api/status', {
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await response.json() as {
+      engine: { running: boolean; lastResults: any[] };
+      dashboard: { notifications: number; dms: number; posts: number; pendingActions: number; activeLearnings: number };
+    };
+
+    console.log('┌─────────────────────────────────────────────────────────────────────┐');
+    console.log('│  ☁️  CLOUD SYNC                                                      │');
+    console.log('├─────────────────────────────────────────────────────────────────────┤');
+    const eng = data.engine.running ? '🟢 Running' : '🔴 Stopped';
+    console.log(`│  Engine: ${eng.padEnd(58)}│`);
+    console.log(`│  Notifications: ${String(data.dashboard.notifications).padEnd(6)} DMs: ${String(data.dashboard.dms).padEnd(6)} Posts: ${String(data.dashboard.posts).padEnd(15)}│`);
+    console.log(`│  Pending Actions: ${String(data.dashboard.pendingActions).padEnd(5)} Active Learnings: ${String(data.dashboard.activeLearnings).padEnd(19)}│`);
+
+    const synced = data.engine.lastResults?.filter((r: any) => r.itemsSynced > 0) || [];
+    const errors = data.engine.lastResults?.filter((r: any) => r.error) || [];
+    if (synced.length > 0) {
+      console.log(`│  Last sync: ${synced.map((r: any) => `${r.platform}/${r.dataType}:${r.itemsSynced}`).join(', ').slice(0, 55).padEnd(55)}│`);
+    }
+    if (errors.length > 0) {
+      console.log(`│  ⚠️  ${errors.length} platform(s) offline                                           │`);
+    }
+    console.log('└─────────────────────────────────────────────────────────────────────┘');
+  } catch {
+    console.log('┌─────────────────────────────────────────────────────────────────────┐');
+    console.log('│  ☁️  CLOUD SYNC — ❌ Offline                                         │');
+    console.log('└─────────────────────────────────────────────────────────────────────┘');
+  }
 }
 
 async function printTrilogies(): Promise<void> {
@@ -185,6 +223,8 @@ async function main(): Promise<void> {
       printHeader();
       await printPlatforms();
       console.log('');
+      await printCloudSync();
+      console.log('');
       await printResources();
       console.log('');
       await printTrilogies();
@@ -196,6 +236,8 @@ async function main(): Promise<void> {
   } else {
     printHeader();
     await printPlatforms();
+    console.log('');
+    await printCloudSync();
     console.log('');
     await printResources();
     console.log('');

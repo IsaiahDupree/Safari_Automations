@@ -352,7 +352,7 @@ export class TikTokResearcher {
 
     await this.wait(2000);
 
-    const raw = await this.executeJS(`(function() {
+    const raw = await this._driver.executeJS(`(function() {
       function parseCount(s) {
         if (!s) return 0;
         s = s.trim().replace(/,/g, '');
@@ -402,6 +402,9 @@ export class TikTokResearcher {
           displayName: video.authorDisplayName,
           url: video.authorUrl,
           isVerified: video.isVerified,
+          followers: 0,
+          following: 0,
+          bio: '',
           videoCount: 1,
           totalViews: video.views,
           totalLikes: video.likes,
@@ -411,6 +414,7 @@ export class TikTokResearcher {
           avgEngagement: video.engagementScore,
           topVideoUrl: video.url,
           topVideoEngagement: video.engagementScore,
+          topVideos: [],
           niche,
         });
       }

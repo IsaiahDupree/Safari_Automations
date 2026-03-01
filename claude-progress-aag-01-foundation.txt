@@ -1,0 +1,109 @@
+===========================================
+AAG-01 FOUNDATION — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — Foundation Layer
+Agent: aag-01-foundation
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization + Full Build
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ACTIONS COMPLETED
+
+1. Created acquisition module directory structure:
+   scripts/acquisition/
+   ├── __init__.py
+   ├── config.py
+   ├── requirements.txt
+   ├── README.md
+   ├── db/
+   │   ├── __init__.py
+   │   ├── queries.py
+   │   └── migrations/
+   │       ├── 001_acquisition_tables.sql
+   │       └── 002_crm_contacts_columns.sql
+   ├── clients/
+   ├── email/
+   ├── entity/
+   ├── reporting/
+   ├── api/routes/
+   └── tests/
+
+2. Built 001_acquisition_tables.sql — 15 tables:
+   - acq_niche_configs (PRD-022)
+   - acq_discovery_runs (PRD-022)
+   - acq_warmup_configs (PRD-023)
+   - acq_warmup_schedules (PRD-023)
+   - acq_outreach_sequences (PRD-024)
+   - acq_human_notifications (PRD-024)
+   - acq_daily_caps (PRD-025)
+   - acq_funnel_events (PRD-025)
+   - acq_weekly_reports (PRD-026)
+   - acq_message_variants (PRD-026)
+   - acq_email_sequences (PRD-027)
+   - acq_email_discoveries (PRD-027)
+   - acq_email_unsubscribes (PRD-027)
+   - acq_entity_associations (PRD-028)
+   - acq_resolution_runs (PRD-028)
+   - acq_resolution_queue (PRD-028)
+   - acq_api_usage (PRD-028)
+
+3. Built 002_crm_contacts_columns.sql — ALTER TABLE with all required columns
+
+4. Built queries.py — 40+ typed functions covering all tables:
+   - NicheConfig CRUD
+   - Contact queries (by stage, unscored, qualified, warming, ready_for_dm, unresolved)
+   - Pipeline stage transitions with funnel event recording
+   - Discovery run logging
+   - Warmup schedule management
+   - Outreach sequence management
+   - Email sequence management
+   - Entity resolution (associations, queue, runs)
+   - Daily caps (get, increment, reset, seed)
+   - Funnel events
+   - Weekly reports
+   - Message variants (A/B tracking)
+   - API usage tracking
+   - Human notifications
+   - Seed data (3 niche configs + daily caps)
+
+5. Built config.py — centralized config with:
+   - All env vars (Supabase, Anthropic, Perplexity, Resend, IMAP)
+   - DM_SERVICE_PORTS and COMMENT_SERVICE_PORTS
+   - DEFAULT_DAILY_CAPS
+   - PIPELINE_STAGES and VALID_TRANSITIONS
+   - Timing constants
+   - Claude model selection
+
+6. Built __init__.py, requirements.txt, README.md
+
+## FEATURES COMPLETED
+
+- AAG-001: ✅ Database migration — all acquisition tables
+- AAG-002: ✅ Database query layer — queries.py
+- AAG-003: ✅ NicheConfig data model + CRUD
+- AAG-004: ✅ Seed default niche configs (in queries.py seed_all())
+- AAG-111: ✅ acquisition/config.py — centralized config
+- AAG-114: ✅ acquisition/__init__.py — package exports
+- AAG-116: ✅ requirements.txt for acquisition module
+- AAG-120: ✅ README.md for acquisition module
+- AAG-121: ✅ acq_email_sequences table migration (in 001)
+- AAG-122: ✅ crm_contacts email columns migration (in 002)
+- AAG-151: ✅ acq_entity_associations + acq_resolution_runs migration (in 001)
+- AAG-152: ✅ crm_contacts cross-platform columns migration (in 002)
+- AAG-179: ✅ acq_api_usage table (in 001)
+
+## NEXT AGENT SHOULD DO
+
+All 13 foundation features are COMPLETE. The next coding session should:
+1. Verify by running migrations against Supabase
+2. Test queries.py functions against live DB
+3. Move on to downstream agents (Discovery, Scoring, etc.)
+
+===========================================
+END SESSION #1
+===========================================

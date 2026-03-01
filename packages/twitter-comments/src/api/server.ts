@@ -304,6 +304,48 @@ app.post('/api/twitter/search-and-reply', async (req: Request, res: Response) =>
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// === NOTIFICATIONS SCRAPING ===
+app.get('/api/twitter/notifications', async (req: Request, res: Response) => {
+  try {
+    const d = getDriver();
+    await (d as any).navigate('https://x.com/notifications');
+    await new Promise(r => setTimeout(r, 4000));
+
+    const raw = await (d as any).executeJS(`
+      (function() {
+        var items = [];
+        var cells = document.querySelectorAll('[data-testid="cellInnerDiv"]');
+        for (var i = 0; i < Math.min(cells.length, 30); i++) {
+          var cell = cells[i];
+          var text = (cell.innerText || '').trim();
+          if (!text || text.length < 5) continue;
+          var type = 'other';
+          var actor = '';
+          var lower = text.toLowerCase();
+          if (lower.indexOf('followed you') !== -1) type = 'follow';
+          else if (lower.indexOf('liked your') !== -1) type = 'like';
+          else if (lower.indexOf('retweeted your') !== -1 || lower.indexOf('reposted your') !== -1) type = 'repost';
+          else if (lower.indexOf('replied') !== -1) type = 'reply';
+          else if (lower.indexOf('mentioned you') !== -1) type = 'mention';
+          var links = cell.querySelectorAll('a[href^="/"]');
+          for (var j = 0; j < links.length; j++) {
+            var href = links[j].getAttribute('href') || '';
+            if (href.match(/^\\/[a-zA-Z0-9_]+$/) && href.indexOf('/') === 0 && href.split('/').length === 2) {
+              actor = href.substring(1);
+              break;
+            }
+          }
+          items.push({ type: type, actor: actor, text: text.substring(0, 200) });
+        }
+        return JSON.stringify(items);
+      })()
+    `);
+
+    const notifications = JSON.parse(raw || '[]');
+    res.json({ success: true, notifications, count: notifications.length });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
 app.get('/api/twitter/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/twitter/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
 

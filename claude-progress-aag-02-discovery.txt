@@ -1,0 +1,59 @@
+===========================================
+AAG-02 DISCOVERY — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — Discovery Pipeline
+Agent: aag-02-discovery
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ENVIRONMENT READY
+
+- Foundation tables created by Agent 01
+- Directory structure: scripts/acquisition/
+- Config module: acquisition/config.py
+- Query layer: acquisition/db/queries.py
+- Dependencies: requirements.txt
+
+## FEATURES TO BUILD (17 total)
+
+- AAG-005: MarketResearchClient wrapper (clients/market_research_client.py)
+- AAG-006: DeduplicationEngine
+- AAG-007: ContactSeeder — upsert discovered prospects to crm_contacts
+- AAG-008: DiscoveryAgent.run() — main discovery loop
+- AAG-009: TikTok creator enrichment
+- AAG-010: LinkedIn discovery via li_prospect.py integration
+- AAG-011: Discovery rate limiter
+- AAG-012: Discovery run logging
+- AAG-013: POST /api/acquisition/discovery/run endpoint
+- AAG-014: GET /api/acquisition/discovery/runs endpoint
+- AAG-015: POST/GET /api/acquisition/niches endpoints
+- AAG-016: Discovery CLI
+- AAG-017: Re-entry logic — 180 days for archived
+- AAG-018: Closed-lost re-entry after 90 days
+- AAG-019: Discovery tests
+- AAG-020: Discovery health check endpoint
+
+## NEXT AGENT SHOULD DO
+
+1. Build discovery_agent.py with DiscoveryAgent class
+2. Build clients/market_research_client.py wrapping port 3106
+3. Build DeduplicationEngine with handle normalization
+4. Build ContactSeeder using queries.py upsert_contact
+5. Wire up API endpoints and CLI
+
+## EXISTING CODE TO REFERENCE
+
+- scripts/pipeline_scout.py — existing discovery patterns
+- scripts/li_prospect.py — LinkedIn prospecting
+- scripts/crm_sync.py — CRM sync patterns
+- scripts/pipeline_db.py — Supabase REST patterns
+
+===========================================
+END SESSION #1
+===========================================

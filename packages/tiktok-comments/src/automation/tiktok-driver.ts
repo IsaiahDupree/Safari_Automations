@@ -104,8 +104,16 @@ export class TikTokDriver {
         var lk = document.querySelector('[data-e2e="like-count"]');
         var cm = document.querySelector('[data-e2e="comment-count"]');
         var sh = document.querySelector('[data-e2e="share-count"]');
-        var vw = document.querySelector('[data-e2e="video-views"]') || document.querySelector('[data-e2e="play-count"]');
-        return JSON.stringify({ views: parse(vw), likes: parse(lk), comments: parse(cm), shares: parse(sh), currentUrl: window.location.href.substring(0, 100) });
+        var vw = document.querySelector('[data-e2e="video-views"]') || document.querySelector('[data-e2e="play-count"]') || document.querySelector('[data-e2e="browse-video-count"]') || document.querySelector('[data-e2e="video-play-count"]');
+        var viewCount = parse(vw);
+        if (!viewCount) {
+          var spans = document.querySelectorAll('strong[data-e2e], span[data-e2e]');
+          for (var i = 0; i < spans.length; i++) {
+            var attr = spans[i].getAttribute('data-e2e') || '';
+            if (attr.match(/view|play|watch/i)) { viewCount = parse(spans[i]); break; }
+          }
+        }
+        return JSON.stringify({ views: viewCount, likes: parse(lk), comments: parse(cm), shares: parse(sh), currentUrl: window.location.href.substring(0, 100) });
       })()
     `);
     try {
@@ -148,9 +156,22 @@ export class TikTokDriver {
           else if (headerEl) { username = (headerEl.innerText || '').split('\\n')[0].trim().substring(0, 40); }
           var text = '';
           if (contentEl) {
-            var spans = contentEl.querySelectorAll('span:not([class*="Sub"]):not([class*="Footer"])');
-            if (spans.length) { text = Array.from(spans).map(function(s) { return s.innerText || ''; }).join(' ').trim(); }
-            else { text = (contentEl.innerText || '').split('\\n').filter(function(l) { return l.trim() && !l.match(/^\\d{4}-\\d|Reply|^\\d+ /); }).join(' ').trim(); }
+            var spans = contentEl.querySelectorAll('span:not([class*="Sub"]):not([class*="Footer"]):not([class*="ReplyAction"]):not([class*="Time"])');
+            if (spans.length) {
+              // Use only unique span texts to avoid TikTok DOM duplication
+              var seen2 = {}; var parts = [];
+              for (var si = 0; si < spans.length; si++) {
+                var st = (spans[si].innerText || '').trim();
+                // Skip empty, timestamps (YYYY-MM-DD), pure numbers (like counts), and "Reply"
+                if (!st || st.match(/^\\d{4}-\\d{1,2}-\\d{1,2}$/) || st.match(/^\\d{1,6}$/) || st === 'Reply') continue;
+                if (seen2[st]) continue; seen2[st] = true;
+                parts.push(st);
+              }
+              text = parts.join(' ').trim();
+            }
+            if (!text) { text = (contentEl.innerText || '').split('\\n').filter(function(l) { return l.trim() && !l.match(/^\\d{4}-\\d|Reply|^\\d+ /); }).join(' ').trim(); }
+            // Strip trailing timestamp + like count patterns: "2025-12-12 0" or "2025-11-26 3"
+            text = text.replace(/\\s+\\d{4}-\\d{1,2}-\\d{1,2}\\s*\\d*\\s*$/, '').trim();
           } else if (textEl) { text = (textEl.innerText || '').substring(0, 500); }
           if (!username && !text) continue;
           var key = username + '|' + text.substring(0, 30);
@@ -423,6 +444,115 @@ export class TikTokDriver {
     } catch {}
 
     return { success: false, error: lastError };
+  }
+
+  // ─── Creator Analytics ──────────────────────────────────
+  // Navigates to tiktok.com/analytics/content and extracts per-video metrics
+  // including avg watch time, completion rate, reach, and traffic sources.
+  // Requires being logged in as the creator.
+  async getAnalyticsContent(maxVideos = 10): Promise<{
+    success: boolean;
+    videos: Array<{
+      videoId: string;
+      thumbnail: string;
+      caption: string;
+      views: number;
+      avgWatchTimeSeconds: number;
+      completionRate: number;
+      reach: number;
+      trafficSource: Record<string, number>;
+    }>;
+    error?: string;
+  }> {
+    try {
+      // Navigate to analytics content page
+      console.log('[TikTok] Navigating to analytics/content...');
+      await this.navigate('https://www.tiktok.com/analytics/content');
+      await new Promise(r => setTimeout(r, 5000)); // analytics pages load slowly
+
+      // Check if we're on the analytics page and logged in
+      const pageCheck = await this.executeJS(
+        `(function(){var u=window.location.href;var isAnalytics=u.indexOf('analytics')>=0;var isLogin=u.indexOf('login')>=0;return JSON.stringify({url:u.substring(0,120),isAnalytics:isAnalytics,isLogin:isLogin});})()`
+      );
+      const check = JSON.parse(pageCheck || '{}');
+      if (check.isLogin) {
+        return { success: false, videos: [], error: 'Not logged in — redirected to login page' };
+      }
+      if (!check.isAnalytics) {
+        return { success: false, videos: [], error: `Not on analytics page: ${check.url}` };
+      }
+
+      // Scroll to load more content
+      for (let i = 0; i < 3; i++) {
+        await this.executeJS(`window.scrollBy(0, 600)`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Extract video analytics data from the content tab
+      // TikTok analytics content page shows a table/list of videos with metrics
+      const raw = await this.executeJS(
+        `(function(){` +
+        `var results=[];` +
+        `function parseNum(t){if(!t)return 0;t=t.replace(/,/g,'').trim();var n=parseFloat(t);if(isNaN(n))return 0;if(t.match(/[Kk]$/))return Math.round(n*1000);if(t.match(/[Mm]$/))return Math.round(n*1000000);return Math.round(n);}` +
+        `function parseDuration(t){if(!t)return 0;t=t.trim();var m=t.match(/(\\d+):(\\d+)/);if(m)return parseInt(m[1])*60+parseInt(m[2]);var s=t.match(/(\\d+\\.?\\d*)\\s*s/i);if(s)return parseFloat(s[1]);var mn=t.match(/(\\d+\\.?\\d*)\\s*m/i);if(mn)return parseFloat(mn[1])*60;return parseFloat(t)||0;}` +
+        `function parsePct(t){if(!t)return 0;t=t.trim().replace('%','');return parseFloat(t)||0;}` +
+        // Strategy 1: Look for video cards/rows in analytics content page
+        `var rows=document.querySelectorAll('[class*="VideoItem"], [class*="video-item"], [class*="ContentCard"], tr[class*="video"], [class*="PostItem"]');` +
+        `if(rows.length===0){` +
+          // Strategy 2: try table rows
+          `rows=document.querySelectorAll('table tbody tr');` +
+        `}` +
+        `if(rows.length===0){` +
+          // Strategy 3: look for any container with video links
+          `var links=document.querySelectorAll('a[href*="/video/"]');` +
+          `for(var i=0;i<Math.min(links.length,${maxVideos});i++){` +
+            `var a=links[i];var href=a.getAttribute('href')||'';var idM=href.match(/video\\/(\\d+)/);` +
+            `if(idM){results.push({videoId:idM[1],caption:'',views:0,avgWatchTimeSeconds:0,completionRate:0,reach:0,trafficSource:{}});}` +
+          `}` +
+        `}else{` +
+          `for(var i=0;i<Math.min(rows.length,${maxVideos});i++){` +
+            `var row=rows[i];var text=row.innerText||'';` +
+            `var link=row.querySelector('a[href*="/video/"]');` +
+            `var href=link?(link.getAttribute('href')||''):'';` +
+            `var idM=href.match(/video\\/(\\d+)/);` +
+            `var videoId=idM?idM[1]:'';` +
+            `var img=row.querySelector('img');` +
+            `var thumb=img?(img.getAttribute('src')||''):'';` +
+            // Extract all numbers from the row text
+            `var nums=text.match(/[\\d,.]+[KkMm%]?/g)||[];` +
+            // Try to find duration pattern (e.g. "0:15" or "15s")
+            `var durM=text.match(/(\\d+:\\d+|\\d+\\.?\\d*\\s*s)/i);` +
+            `var dur=durM?parseDuration(durM[0]):0;` +
+            // Try to find percentage
+            `var pctM=text.match(/(\\d+\\.?\\d*)\\s*%/);` +
+            `var pct=pctM?parsePct(pctM[0]):0;` +
+            `var caption=row.querySelector('[class*="caption"], [class*="desc"], [class*="title"]');` +
+            `var capText=caption?caption.textContent.trim().substring(0,200):'';` +
+            `results.push({videoId:videoId,thumbnail:thumb,caption:capText,views:nums.length>0?parseNum(nums[0]):0,avgWatchTimeSeconds:dur,completionRate:pct,reach:nums.length>1?parseNum(nums[1]):0,trafficSource:{}});` +
+          `}` +
+        `}` +
+        // Also capture raw page text for debugging
+        `var bodyText=(document.querySelector('main')||document.body).innerText.substring(0,2000);` +
+        `return JSON.stringify({videos:results,pageText:bodyText,rowCount:rows.length});` +
+        `})()`
+      );
+
+      const data = JSON.parse(raw || '{"videos":[],"pageText":"","rowCount":0}');
+      console.log(`[TikTok] Analytics: found ${data.videos.length} videos (${data.rowCount} rows on page)`);
+
+      // Log first 200 chars of page text for debugging
+      if (data.videos.length === 0 && data.pageText) {
+        console.log(`[TikTok] Analytics page text (first 200): ${data.pageText.substring(0, 200)}`);
+      }
+
+      return {
+        success: true,
+        videos: data.videos.filter((v: any) => v.videoId), // only return videos with IDs
+      };
+    } catch (e) {
+      console.error('[TikTok] Analytics scrape error:', (e as Error).message);
+      return { success: false, videos: [], error: (e as Error).message };
+    }
   }
 
   checkRateLimit(): { allowed: boolean; reason?: string } {

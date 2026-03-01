@@ -63,8 +63,11 @@ export interface ConnectionStatus {
 
 export interface PendingRequest {
   profileUrl: string;
+  username: string;
   name: string;
   headline: string;
+  sentTime: string;
+  note: string;
   mutualConnections: number;
   type: 'sent' | 'received';
 }

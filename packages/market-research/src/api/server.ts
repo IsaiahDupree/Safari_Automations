@@ -49,6 +49,11 @@ import { UniversalTaskQueue } from '../queue/universal-queue.js';
 import type { TaskPriority, TaskStatus } from '../queue/universal-queue.js';
 import { registerBuiltinWorkers } from '../queue/builtin-workers.js';
 
+// ─── Server Metadata ─────────────────────────────────────────────
+
+const SERVER_VERSION = '1.4.0';
+const SERVER_STARTED_AT = new Date().toISOString();
+
 // ─── Auth & Webhooks ─────────────────────────────────────────────
 
 const API_KEY = process.env.RESEARCH_API_KEY || '';

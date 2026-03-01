@@ -493,44 +493,12 @@ export async function listPendingRequests(
     ? 'https://www.linkedin.com/mynetwork/invitation-manager/sent/'
     : 'https://www.linkedin.com/mynetwork/invitation-manager/';
   await d.navigateTo(url);
-  await d.wait(3000);
+  await d.wait(4000);
 
-  const requestsJson = await d.executeJS(`
-    (function() {
-      var requests = [];
-      var cards = document.querySelectorAll('.invitation-card, .mn-invitation-list li, .invitation-card__container');
-
-      cards.forEach(function(card) {
-        try {
-          var nameEl = card.querySelector('.invitation-card__title, a[data-test-id] span, strong');
-          var name = nameEl ? nameEl.innerText.trim() : '';
-
-          var headlineEl = card.querySelector('.invitation-card__subtitle, .invitation-card__occupation');
-          var headline = headlineEl ? headlineEl.innerText.trim() : '';
-
-          var linkEl = card.querySelector('a[href*="/in/"]');
-          var profileUrl = linkEl ? linkEl.href : '';
-
-          var mutualEl = card.querySelector('.member-insights__reason, [class*="mutual"]');
-          var mutualText = mutualEl ? mutualEl.innerText.trim() : '0';
-          var mutualMatch = mutualText.match(/(\\d+)/);
-          var mutual = mutualMatch ? parseInt(mutualMatch[1]) : 0;
-
-          if (name) {
-            requests.push(JSON.stringify({
-              name: name,
-              headline: headline.substring(0, 100),
-              profileUrl: profileUrl,
-              mutualConnections: mutual,
-              type: '${type}',
-            }));
-          }
-        } catch(e) {}
-      });
-
-      return '[' + requests.slice(0, 30).join(',') + ']';
-    })()
-  `);
+  // LinkedIn Feb 2026: all class names are obfuscated. Use text-based extraction:
+  // Find Withdraw/Accept buttons → walk up 3 parent levels to card → parse innerText
+  const markerButton = type === 'sent' ? 'Withdraw' : 'Accept';
+  const requestsJson = await d.executeJS(`(function(){var requests=[];var allBtns=document.querySelectorAll("button");var cards=[];for(var i=0;i<allBtns.length;i++){var txt=(allBtns[i].innerText||"").trim();if(txt==="${markerButton}"){var card=allBtns[i];for(var p=0;p<3;p++){if(card.parentElement)card=card.parentElement;}cards.push(card);}}for(var c=0;c<cards.length;c++){try{var text=cards[c].innerText||"";var lines=text.split("\\n").map(function(l){return l.trim();}).filter(function(l){return l.length>0&&l!=="Withdraw"&&l!=="Accept"&&l!=="Ignore"&&l!=="Message";});var name=lines[0]||"";var linkEls=cards[c].querySelectorAll('a[href*="/in/"]');for(var a=0;a<linkEls.length;a++){var lt=(linkEls[a].innerText||"").trim();if(lt.length>1&&lt.length<60&&lt.indexOf("inviting")===-1&&lt.indexOf("connect")===-1){name=lt;break;}}var headline=lines.length>1?lines[1]:"";if(headline===name&&lines.length>2)headline=lines[2];var sentTime="";for(var t=0;t<lines.length;t++){if(lines[t].indexOf("Sent")===0||lines[t].indexOf("ago")>-1){sentTime=lines[t];break;}}var note="";for(var n=0;n<lines.length;n++){if(lines[n].length>40&&lines[n]!==name&&lines[n]!==headline&&lines[n]!==sentTime){note=lines[n];break;}}var profileUrl=linkEls.length>0?linkEls[0].href.split("?")[0]:"";var username="";if(profileUrl){var parts=profileUrl.split("/in/");if(parts[1])username=parts[1].replace(/\\/$/,"");}var mutMatch=text.match(/(\\d+)\\s*mutual/i);var mutual=mutMatch?parseInt(mutMatch[1]):0;if(name){requests.push(JSON.stringify({name:name,headline:headline.substring(0,150),profileUrl:profileUrl,username:username,sentTime:sentTime,note:note.substring(0,300),mutualConnections:mutual,type:"${type}"}));}}catch(e){}}return"["+requests.slice(0,30).join(",")+"]";})()`);
 
   try {
     return JSON.parse(requestsJson || '[]') as PendingRequest[];
@@ -541,20 +509,10 @@ export async function listPendingRequests(
 
 export async function acceptRequest(profileUrl: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
+  const safePUrl = profileUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '');
 
-  const result = await d.executeJS(`
-    (function() {
-      var cards = document.querySelectorAll('.invitation-card, .mn-invitation-list li');
-      for (var card of cards) {
-        var link = card.querySelector('a[href*="/in/"]');
-        if (link && link.href.includes('${profileUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '')}')) {
-          var btn = card.querySelector('button[aria-label*="Accept"]');
-          if (btn) { btn.click(); return 'accepted'; }
-        }
-      }
-      return 'not_found';
-    })()
-  `);
+  // LinkedIn Feb 2026: find Accept buttons, walk up to card, match profile link
+  const result = await d.executeJS(`(function(){var allBtns=document.querySelectorAll("button");for(var i=0;i<allBtns.length;i++){var txt=(allBtns[i].innerText||"").trim();if(txt==="Accept"){var card=allBtns[i];for(var p=0;p<3;p++){if(card.parentElement)card=card.parentElement;}var links=card.querySelectorAll('a[href*="/in/"]');for(var l=0;l<links.length;l++){if(links[l].href.indexOf('${safePUrl}')!==-1){allBtns[i].click();return"accepted";}}}}return"not_found";})()`);
 
   return result === 'accepted';
 }

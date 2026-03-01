@@ -1,0 +1,19 @@
+{
+  "name": "@safari-automation/cloud-sync",
+  "version": "1.0.0",
+  "description": "Platform pollers + Supabase cloud sync for notifications, DMs, and post stats",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "npx tsx src/api/server.ts",
+    "dev": "npx tsx --watch src/api/server.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "express": "^4.18.2",
+    "openai": "^4.28.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "typescript": "^5.3.3"
+  }
+}

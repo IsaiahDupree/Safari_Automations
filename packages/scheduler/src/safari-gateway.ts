@@ -122,6 +122,13 @@ const SERVICES: ServiceConfig[] = [
     healthPath: '/health',
     capabilities: ['profile', 'connections', 'dm', 'search', 'outreach'],
   },
+  {
+    platform: 'cloud-sync' as any,
+    name: 'Cloud Sync',
+    port: 3200,
+    healthPath: '/health',
+    capabilities: ['polling', 'notifications', 'dms', 'post-stats', 'analytics', 'actions'],
+  },
 ];
 
 // Platform login check configs (URL + selector that indicates logged-in)

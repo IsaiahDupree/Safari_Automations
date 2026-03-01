@@ -96,9 +96,11 @@ app.post('/api/tiktok/search-cards', async (req: Request, res: Response) => {
           var author = userMatch ? userMatch[1] : '';
           var descEl = card.querySelector('[data-e2e=\\'search-card-video-caption\\']') || card.querySelector('[data-e2e=\\'search-card-desc\\']');
           var desc = descEl ? descEl.textContent.trim().substring(0, 200) : '';
-          var vwEl = card.querySelector('[data-e2e=\\'video-views\\']');
-          var viewsRaw = vwEl ? vwEl.textContent.trim() : '0';
-          results.push({ id: id, url: url, author: author, description: desc, viewsRaw: viewsRaw });
+          var vwEl = card.querySelector('[data-e2e=\\'search-card-like-container\\']');
+          var likesRaw = vwEl ? vwEl.textContent.trim() : '0';
+          var viewsEl = card.querySelector('[class*=\\'VideoCount\\']') || card.querySelector('[class*=\\'video-count\\']') || card.querySelector('strong[class*=\\'StrongVideoCount\\']');
+          var viewsRaw = viewsEl ? viewsEl.textContent.trim() : '0';
+          results.push({ id: id, url: url, author: author, description: desc, viewsRaw: viewsRaw, likesRaw: likesRaw });
         }
         return JSON.stringify(results);
       })()
@@ -207,6 +209,52 @@ app.post('/api/tiktok/verify', async (req: Request, res: Response) => {
     const raw = await (d as any).executeJS(js);
     const data = JSON.parse(raw || '{}');
     res.json({ success: true, ...data });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+// Creator analytics — watch time, completion rate, reach per video
+app.get('/api/tiktok/analytics/content', async (req: Request, res: Response) => {
+  try {
+    const maxVideos = parseInt(req.query.max as string) || 10;
+    const data = await getDriver().getAnalyticsContent(maxVideos);
+    res.json(data);
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+// Activity feed — follower events from notifications page
+app.get('/api/tiktok/activity/followers', async (req: Request, res: Response) => {
+  try {
+    const d = getDriver();
+    // Navigate to TikTok notifications page
+    await (d as any).executeJS(`window.location.href='https://www.tiktok.com/notifications'`);
+    await new Promise(r => setTimeout(r, 4000));
+
+    // Extract "followed you" events — strict text matching, no bare "follow"
+    const raw = await (d as any).executeJS(`(function(){` +
+      `var seen={};var events=[];` +
+      `var blocked=['notifications','foryou','following','explore','live','upload','inbox','profile'];` +
+      `var items=document.querySelectorAll('[class*="NotificationItem"],div[data-e2e="notification-item"],div[role="listitem"]');` +
+      `for(var i=0;i<Math.min(items.length,60);i++){` +
+        `var el=items[i];` +
+        `var text=(el.textContent||'').trim();` +
+        `if(text.indexOf('started following')<0&&text.indexOf('followed you')<0)continue;` +
+        `var link=el.querySelector('a[href*="/@"]');` +
+        `var username='';` +
+        `if(link){` +
+          `var href=link.getAttribute('href')||'';` +
+          `var m=href.match(/@([a-zA-Z0-9_.]+)/);` +
+          `if(m&&m[1].length>=2&&m[1].length<=30&&blocked.indexOf(m[1].toLowerCase())<0)username=m[1];` +
+        `}` +
+        `if(username&&!seen[username.toLowerCase()]){` +
+          `seen[username.toLowerCase()]=1;` +
+          `events.push({username:username,text:text.substring(0,120)});` +
+        `}` +
+      `}` +
+      `return JSON.stringify(events);` +
+    `})()`);
+
+    const events = JSON.parse(raw || '[]');
+    res.json({ success: true, events, count: events.length });
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
 

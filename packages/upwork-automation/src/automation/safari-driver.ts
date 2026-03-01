@@ -53,7 +53,7 @@ export class SafariDriver {
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
@@ -63,15 +63,14 @@ export class SafariDriver {
       ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
       : 'front document';
 
-    const script = `
-      set jsCode to read POSIX file "${tempFile}" as «class utf8»
-      tell application "Safari" to do JavaScript jsCode in ${tabSpec}
-    `;
+    // Use two separate -e flags to avoid shell escaping issues with «class utf8»
+    const readCmd = `set jsCode to read POSIX file "${tempFile}" as «class utf8»`;
+    const execCmd = `tell application "Safari" to do JavaScript jsCode in ${tabSpec}`;
 
     try {
       const { stdout } = await execAsync(
-        `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
-        { timeout: this.config.timeout }
+        `osascript -e '${readCmd.replace(/'/g, "'\"'\"'")}' -e '${execCmd.replace(/'/g, "'\"'\"'")}'`,
+        { timeout: this.config.timeout, maxBuffer: 1024 * 1024 }
       );
       await fs.unlink(tempFile).catch(() => {});
 
@@ -194,17 +193,26 @@ export class SafariDriver {
   }
 
   /**
-   * Check if logged in to Instagram.
+   * Check if logged in to Upwork.
+   * Looks for Upwork-specific nav elements that only appear when authenticated.
    */
   async isLoggedIn(): Promise<boolean> {
-    const result = await this.executeJS(`
-      (function() {
-        var notLoggedIn = document.querySelector('input[name="username"]') ||
-                          document.querySelector('button[type="submit"]')?.innerText?.includes('Log in');
-        return notLoggedIn ? 'false' : 'true';
-      })()
-    `);
-    return result === 'true';
+    try {
+      const result = await this.executeJS(`
+        (function() {
+          var findWork = document.querySelector('a[href*="find-work"]');
+          var avatar = document.querySelector('[data-test="avatar"], img.nav-avatar, .nav-d-profile');
+          var myJobs = document.querySelector('a[href*="my-jobs"]');
+          if (findWork || avatar || myJobs) return 'true';
+          var loginBtn = document.querySelector('a[href*="login"], #login_username');
+          if (loginBtn) return 'false';
+          return 'true';
+        })()
+      `);
+      return result === 'true';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -506,6 +514,259 @@ end tell`;
       })()
     `);
     return result === 'focused';
+  }
+
+  /**
+   * Click at a specific viewport position using OS-level click.
+   * Needed for Upwork's masked inputs that ignore JS clicks.
+   * Safari toolbar offset (URL bar + tab bar) is ~92px.
+   */
+  async clickAtViewportPosition(x: number, y: number): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await this.activateSafari();
+      await this.wait(200);
+      // Get Safari window position to convert viewport coords to screen coords
+      const { stdout: posInfo } = await execAsync(
+        `osascript -e 'tell application "Safari" to get bounds of front window'`
+      );
+      const bounds = posInfo.trim().split(',').map((s: string) => parseInt(s.trim()));
+      const winX = bounds[0] || 0;
+      const winY = bounds[1] || 0;
+      const TOOLBAR_OFFSET = 92; // Safari URL bar + tab bar height
+      const screenX = winX + x;
+      const screenY = winY + TOOLBAR_OFFSET + y;
+
+      // Use cliclick for precise OS-level clicking
+      try {
+        await execAsync(`cliclick c:${screenX},${screenY}`);
+      } catch {
+        // Fallback to AppleScript click
+        await execAsync(
+          `osascript -e 'tell application "System Events" to click at {${screenX}, ${screenY}}'`
+        );
+      }
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] clickAtViewportPosition error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Type text via clipboard paste (Cmd+V).
+   * Used for Upwork's masked/formatted inputs that ignore JS value changes.
+   */
+  async typeViaClipboard(text: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      // Set clipboard content
+      await execAsync(`echo -n "${text.replace(/"/g, '\\"')}" | pbcopy`);
+      await this.wait(100);
+      // Cmd+A to select all, then Cmd+V to paste
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`
+      );
+      await this.wait(100);
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "v" using command down'`
+      );
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Press Tab key via AppleScript to move focus between form fields.
+   */
+  async pressTab(): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      await execAsync(
+        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke (ASCII character 9)'`
+      );
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * Upload a file to a file input element by triggering the macOS file dialog
+   * and typing the path via Cmd+Shift+G "Go to folder".
+   * @param selector CSS selector for the file input or its parent area
+   * @param filePath Absolute POSIX path to the file
+   */
+  async uploadFile(selector: string, filePath: string): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    try {
+      // Step 1: Click the file input to open the file dialog
+      await this.executeJS(`
+        (function() {
+          var input = document.querySelector('${selector.replace(/'/g, "\\'")}');
+          if (!input) return 'not_found';
+          input.click();
+          return 'clicked';
+        })()
+      `);
+      await this.wait(2000); // Wait for file dialog to open
+
+      // Step 2: Open "Go to folder" sheet with Cmd+Shift+G
+      await execAsync(
+        `osascript -e 'tell application "System Events" to keystroke "g" using {command down, shift down}'`
+      );
+      await this.wait(1500);
+
+      // Step 3: Clear existing path and type the file path
+      await execAsync(
+        `osascript -e 'tell application "System Events" to keystroke "a" using command down'`
+      );
+      await this.wait(100);
+      await execAsync(
+        `osascript -e 'tell application "System Events" to keystroke "${filePath.replace(/"/g, '\\"')}"'`
+      );
+      await this.wait(500);
+
+      // Step 4: Press Enter to go to the path
+      await execAsync(
+        `osascript -e 'tell application "System Events" to keystroke return'`
+      );
+      await this.wait(1000);
+
+      // Step 5: Press Enter again to select/open the file
+      await execAsync(
+        `osascript -e 'tell application "System Events" to keystroke return'`
+      );
+      await this.wait(2000);
+
+      console.log(`[SafariDriver] File uploaded: ${filePath}`);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] uploadFile error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Detect and attempt to bypass Cloudflare Turnstile CAPTCHA.
+   * Uses Python Quartz CGEvents for human-like mouse movement + OS-level click.
+   * Integrated from scripts/bypass-captcha.ts.
+   * Returns true if page is clear (no CAPTCHA or successfully bypassed).
+   */
+  async handleCaptchaIfPresent(maxRetries: number = 4, maxWaitSec: number = 30): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return true;
+
+    // Check if page is a CAPTCHA challenge
+    const title = await this.executeJS('document.title').catch(() => '');
+    const isCaptcha = title.toLowerCase().includes('just a moment') || title.toLowerCase().includes('attention');
+    if (!isCaptcha) return true;
+
+    console.log('[SafariDriver] 🛡️ Cloudflare CAPTCHA detected, attempting bypass...');
+    await this.activateSafari();
+    await this.wait(500);
+
+    // Get Safari window origin
+    let winX = 0, winY = 0;
+    try {
+      const { stdout } = await execAsync(
+        `osascript -e 'tell application "Safari" to set b to bounds of front window' -e 'return ((item 1 of b) as text) & "," & ((item 2 of b) as text)'`
+      );
+      const parts = stdout.trim().split(',').map((s: string) => parseInt(s.trim()));
+      winX = parts[0] || 0;
+      winY = parts[1] || 0;
+    } catch {}
+
+    const TOOLBAR = 92;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Locate Turnstile widget
+      const widgetJson = await this.executeJS(`
+        (function() {
+          var el = document.querySelector('iframe[src*="turnstile"]') ||
+                   document.querySelector('iframe[src*="challenge"]') ||
+                   document.querySelector('.cf-turnstile iframe') ||
+                   document.querySelector('iframe[title*="challenge"]');
+          if (el) {
+            var r = el.getBoundingClientRect();
+            return JSON.stringify({ x: r.left + 17, y: r.top + r.height/2, w: r.width, h: r.height });
+          }
+          el = document.querySelector('div.main-wrapper');
+          if (el) {
+            var r = el.getBoundingClientRect();
+            if (r.width > 200 && r.width < 400 && r.height > 40) {
+              return JSON.stringify({ x: r.left + 17, y: r.top + r.height/2, w: r.width, h: r.height });
+            }
+          }
+          return 'none';
+        })()
+      `).catch(() => 'none');
+
+      if (!widgetJson || widgetJson === 'none') {
+        console.log(`[SafariDriver]   Attempt ${attempt}: widget not found, waiting...`);
+        await this.wait(2000);
+        continue;
+      }
+
+      let widget: { x: number; y: number; w: number; h: number };
+      try { widget = JSON.parse(widgetJson); } catch { continue; }
+
+      // Jitter per attempt
+      const jX = (attempt - 1) * 3;
+      const jY = (attempt - 1) * 4;
+      const screenX = Math.round(winX + widget.x + jX);
+      const screenY = Math.round(winY + TOOLBAR + widget.y + jY);
+
+      console.log(`[SafariDriver]   Attempt ${attempt}: clicking (${screenX}, ${screenY})`);
+
+      // Human-like mouse movement + click via Python Quartz
+      const pyScript = `
+import Quartz, time
+target = (${screenX}, ${screenY})
+for step in range(8):
+    mx = target[0] - 200 + step * 28
+    my = target[1] - 70 + step * 10
+    ev = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventMouseMoved, (mx, my), Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+    time.sleep(0.04)
+time.sleep(0.15)
+down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, target, Quartz.kCGMouseButtonLeft)
+Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+time.sleep(0.07)
+up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, target, Quartz.kCGMouseButtonLeft)
+Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+`;
+      const tmpFile = `/tmp/captcha_click_${Date.now()}.py`;
+      try {
+        await fs.writeFile(tmpFile, pyScript);
+        await execAsync(`python3 ${tmpFile}`, { timeout: 10000 });
+      } catch {} finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      await this.wait(3000);
+
+      // Check if resolved
+      const newTitle = await this.executeJS('document.title').catch(() => '');
+      if (!newTitle.toLowerCase().includes('just a moment') && !newTitle.toLowerCase().includes('attention')) {
+        console.log(`[SafariDriver] ✅ CAPTCHA bypassed! Page: ${newTitle}`);
+        return true;
+      }
+    }
+
+    // Fall back to waiting for manual resolution
+    console.log(`[SafariDriver] ⏳ Auto-click failed, waiting up to ${maxWaitSec}s for manual resolution...`);
+    const start = Date.now();
+    while (Date.now() - start < maxWaitSec * 1000) {
+      await this.wait(3000);
+      const t = await this.executeJS('document.title').catch(() => '');
+      if (!t.toLowerCase().includes('just a moment') && !t.toLowerCase().includes('attention')) {
+        console.log('[SafariDriver] ✅ CAPTCHA resolved.');
+        return true;
+      }
+    }
+
+    console.log('[SafariDriver] ❌ CAPTCHA not resolved within timeout.');
+    return false;
   }
 
   /**

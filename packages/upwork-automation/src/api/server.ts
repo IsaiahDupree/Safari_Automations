@@ -84,9 +84,27 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/api/upwork/status', async (_req: Request, res: Response) => {
   try {
     const driver = getDefaultDriver();
-    const isOnUpwork = await driver.isOnUpwork();
-    const isLoggedIn = isOnUpwork ? await driver.isLoggedIn() : false;
     const url = await driver.getCurrentUrl();
+    const isOnUpwork = url.includes('upwork.com');
+
+    // Check login by looking for Upwork-specific logged-in indicators
+    let isLoggedIn = false;
+    if (isOnUpwork) {
+      try {
+        const loginCheck = await driver.executeJS(`
+          (function() {
+            // Logged-in Upwork has nav-right with user avatar or "Find Work" link
+            var findWork = document.querySelector('a[href*="find-work"]');
+            var avatar = document.querySelector('[data-test="avatar"], img.nav-avatar, .nav-d-profile');
+            var loginBtn = document.querySelector('a[href*="login"], button[data-test="login"]');
+            if (findWork || avatar) return 'logged_in';
+            if (loginBtn) return 'not_logged_in';
+            return 'unknown';
+          })()
+        `);
+        isLoggedIn = loginCheck === 'logged_in';
+      } catch { isLoggedIn = false; }
+    }
 
     res.json({
       isOnUpwork,
@@ -286,7 +304,11 @@ app.post('/api/upwork/proposals/submit', async (req: Request, res: Response) => 
       coverLetter,
       hourlyRate,
       fixedPrice,
+      milestoneDescription,
+      projectDuration,
+      paymentMode,
       screeningAnswers,
+      attachments,
       boostConnects,
       dryRun = true, // Default to dry run for safety
     } = req.body;
@@ -299,7 +321,11 @@ app.post('/api/upwork/proposals/submit', async (req: Request, res: Response) => 
       coverLetter,
       hourlyRate,
       fixedPrice,
+      milestoneDescription,
+      projectDuration,
+      paymentMode,
       screeningAnswers,
+      attachments,
       boostConnects,
       dryRun,
     });

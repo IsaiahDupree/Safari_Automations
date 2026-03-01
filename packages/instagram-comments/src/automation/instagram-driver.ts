@@ -154,6 +154,91 @@ export class InstagramDriver {
     return this.navigate(postUrl);
   }
 
+  async getPostMetrics(): Promise<{ likes: number; comments: number; views: number; saves: number; caption: string; username: string; url: string }> {
+    const raw = await this.executeJS(`
+      (function() {
+        function parseCount(text) {
+          if (!text) return 0;
+          var t = text.replace(/,/g, '').trim();
+          var m = parseFloat(t);
+          if (isNaN(m)) return 0;
+          if (t.match(/[Kk]$/)) return Math.round(m * 1000);
+          if (t.match(/[Mm]$/)) return Math.round(m * 1000000);
+          return Math.round(m);
+        }
+        var likes = 0; var comments = 0; var views = 0; var caption = ''; var username = '';
+        var allSpans = document.querySelectorAll('span');
+        for (var i = 0; i < allSpans.length; i++) {
+          var txt = (allSpans[i].textContent || '').trim();
+          var lower = txt.toLowerCase();
+          if (!likes && lower.match(/^[\\d,.]+[km]?\\s+likes?$/)) likes = parseCount(txt);
+          if (!comments && lower.match(/^[\\d,.]+[km]?\\s+comments?$/)) comments = parseCount(txt);
+          if (!views && lower.match(/^[\\d,.]+[km]?\\s+(views?|plays?)$/)) views = parseCount(txt);
+          if (!likes && lower === 'others') {
+            var parent = allSpans[i].parentElement;
+            if (parent) {
+              var pt = (parent.textContent || '').trim().toLowerCase();
+              var andMatch = pt.match(/(\\d[\\d,.]*[km]?)\\s+others/);
+              if (andMatch) likes = parseCount(andMatch[1]);
+            }
+          }
+        }
+        var allBtns = document.querySelectorAll('button, a[role="link"], section span');
+        for (var j = 0; j < allBtns.length; j++) {
+          var bt = (allBtns[j].textContent || '').trim();
+          var bl = bt.toLowerCase();
+          if (!likes && bl.match(/^[\\d,.]+[km]?\\s+likes?$/)) likes = parseCount(bt);
+          if (!views && bl.match(/^[\\d,.]+[km]?\\s+(views?|plays?)$/)) views = parseCount(bt);
+          if (!likes && bl.match(/^liked\\s+by.*and\\s+[\\d,.]+[km]?\\s+others$/)) {
+            var om = bl.match(/and\\s+([\\d,.]+[km]?)\\s+others/);
+            if (om) likes = parseCount(om[1]) + 1;
+          }
+        }
+        if (!likes) {
+          var likeSections = document.querySelectorAll('section span, section a span');
+          for (var k = 0; k < likeSections.length; k++) {
+            var lt = (likeSections[k].textContent || '').replace(/,/g, '').trim();
+            if (lt.match(/^\\d+$/) && parseInt(lt) > 0) { likes = parseInt(lt); break; }
+          }
+        }
+        var metaDesc = document.querySelector('meta[name="description"]');
+        if (metaDesc) {
+          var md = metaDesc.getAttribute('content') || '';
+          if (!likes) { var lm = md.match(/(\\d[\\d,.]*[KkMm]?)\\s+likes?/); if (lm) likes = parseCount(lm[1]); }
+          if (!comments) { var cm2 = md.match(/(\\d[\\d,.]*[KkMm]?)\\s+comments?/); if (cm2) comments = parseCount(cm2[1]); }
+          if (!views) { var vm = md.match(/(\\d[\\d,.]*[KkMm]?)\\s+(views?|plays?)/); if (vm) views = parseCount(vm[1]); }
+        }
+        var h1 = document.querySelector('h1');
+        if (h1) caption = h1.textContent.trim().substring(0, 500);
+        if (!caption) {
+          var dirSpans = document.querySelectorAll('span[dir="auto"]');
+          for (var d = 0; d < dirSpans.length; d++) {
+            var ds = (dirSpans[d].textContent || '').trim();
+            if (ds.length > 20) { caption = ds.substring(0, 500); break; }
+          }
+        }
+        var navPaths = ['reels','explore','direct','accounts','stories','about','nametag','directory','legal','privacy','terms','session'];
+        var profileLinks = document.querySelectorAll('a[href^="/"]');
+        for (var p = 0; p < profileLinks.length; p++) {
+          var ph = profileLinks[p].getAttribute('href') || '';
+          if (ph.match(/^\\/[a-z0-9_.]+\\/$/i)) {
+            var seg = ph.split('/').filter(Boolean)[0];
+            if (seg && navPaths.indexOf(seg) === -1 && seg.indexOf('p') !== 0 && seg.length > 1) {
+              username = seg;
+              break;
+            }
+          }
+        }
+        return JSON.stringify({ likes: likes, comments: comments, views: views, saves: 0, caption: caption, username: username, url: window.location.href });
+      })()
+    `);
+    try {
+      return JSON.parse(raw || '{}');
+    } catch {
+      return { likes: 0, comments: 0, views: 0, saves: 0, caption: '', username: '', url: '' };
+    }
+  }
+
   async getPostDetails(): Promise<Record<string, string>> {
     const result = await this.executeJS(`
       (function() {

@@ -1,0 +1,35 @@
+===========================================
+AAG-06 FOLLOW-UP — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — Follow-Up & Reply Detection
+Agent: aag-06-followup
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ENVIRONMENT READY
+
+- Foundation tables: acq_outreach_sequences, acq_human_notifications
+- Query layer: queries.py (update_pipeline_stage, insert_notification)
+- Config: FOLLOWUP_1_DAYS, FOLLOWUP_2_DAYS, ARCHIVE_DAYS
+
+## FEATURES TO BUILD (13 total)
+
+AAG-065 through AAG-075
+
+## NEXT AGENT SHOULD DO
+
+1. Build followup_agent.py with ReplyDetector, FollowUpGenerator
+2. Sync DM inboxes via platform service APIs
+3. Generate follow-up messages at Day 4 and Day 7
+4. Archive non-responders after Day 10
+5. Send human notifications on reply
+
+===========================================
+END SESSION #1
+===========================================

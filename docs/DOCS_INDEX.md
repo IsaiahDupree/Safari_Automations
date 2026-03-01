@@ -167,14 +167,17 @@
 
 | Doc | What it covers |
 |---|---|
-| [UPWORK_LINKEDIN_AUTOMATION](./UPWORK_LINKEDIN_AUTOMATION.md) | **Primary reference.** Full API (port 3104), job search with all filters, job detail extraction, scoring engine (0–100), smart connects recommendation, message flow, AI proposal generation, CAPTCHA handler, all new endpoints |
+| [UPWORK_PROPOSAL_GUIDE](./UPWORK_PROPOSAL_GUIDE.md) | **Proposal submission reference (v2.1.0).** Complete guide: fixed-price + hourly flows, OS-level input methods, file attachments, "Yes I understand" modal handling, expandJobDescription, Set bid button, rate-increase frequency, visible-only error detection, dry-run workflow, troubleshooting (12 scenarios), architecture internals |
+| [UPWORK_LINKEDIN_AUTOMATION](./UPWORK_LINKEDIN_AUTOMATION.md) | Full API (port 3104), job search with all filters, job detail extraction, scoring engine (0–100), smart connects recommendation, message flow, AI proposal generation, CAPTCHA handler, all new endpoints |
 | [PRDs/PRD_UPWORK_AUTOMATION](./PRDs/PRD_UPWORK_AUTOMATION.md) | Full Upwork feature spec: search, apply, message, proposal generation — status per feature, remaining gaps |
 
 **Use this when you want to:**
+- **Submit a proposal** → `UPWORK_PROPOSAL_GUIDE` → "Quick Start" (fixed-price or hourly, with dry-run)
 - Search jobs → `UPWORK_LINKEDIN_AUTOMATION` → "Job Search"
 - Score and prioritize listings → `UPWORK_LINKEDIN_AUTOMATION` → "Scoring Engine"
 - Generate an AI proposal → `UPWORK_LINKEDIN_AUTOMATION` → "AI Proposal Generation"
 - Handle CAPTCHAs → `UPWORK_LINKEDIN_AUTOMATION` → "CAPTCHA Handler"
+- Debug proposal failures → `UPWORK_PROPOSAL_GUIDE` → "Troubleshooting"
 
 ---
 

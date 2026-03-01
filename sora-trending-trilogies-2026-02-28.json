@@ -1,0 +1,216 @@
+{
+  "generatedAt": "2026-02-28T19:25:18.927Z",
+  "character": "@isaiahdupree",
+  "totalTrilogies": 8,
+  "totalVideos": 24,
+  "trilogies": [
+    {
+      "id": 1,
+      "title": "Reality TV Edit",
+      "trend": "Reality TV Edit",
+      "source": "TikTok Feb 2026 Week 2",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Reality TV Creator — The Setup",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree sitting in a modern home office with multiple monitors, dramatic shadows, cinematic camera slowly pushing in on his face as he stares at code on screen. Expression shifts from focused to shocked. Moody lighting, over-the-top dramatic atmosphere like a reality TV confessional. Portrait 9:16, cinematic 4K."
+        },
+        {
+          "part": 2,
+          "title": "Reality TV Creator — The Cliffhanger",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree standing in a sleek kitchen, mid-conversation, suddenly freezes mid-sentence. Camera zooms in dramatically on his face. Freeze frame. Warm tones, reality TV aesthetic, text overlay space at bottom. Cinematic 4K, portrait 9:16."
+        },
+        {
+          "part": 3,
+          "title": "Reality TV Creator — The Confessional",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree sitting in a chair against a plain background, speaking directly to camera with exaggerated serious energy, hands gesturing emphatically. Soft studio lighting, documentary interview style, confessional booth aesthetic. Portrait 9:16, cinematic 4K."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Serialized AI Content",
+      "trend": "Serialized AI Content",
+      "source": "Sprout Social 2026 Trends — Serialized Content + AI Mainstream",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Automation Flex — The Discovery",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree walking through a futuristic corridor filled with floating holographic screens and data visualizations, wearing a hoodie and gold chain. He pauses, touches one of the holograms, and it expands. Cool blue and white lighting, sci-fi tech aesthetic, cinematic camera tracking shot. Confident energy. Portrait 9:16, 4K."
+        },
+        {
+          "part": 2,
+          "title": "Automation Flex — The Build",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree sitting at a sleek glass desk, holographic interfaces floating around him, hands moving through the air manipulating code and schedules. Intense focus, dramatic lighting shifts from cool blue to warm gold. Fast camera movement, montage energy. Futuristic workspace. Portrait 9:16, 4K."
+        },
+        {
+          "part": 3,
+          "title": "Automation Flex — The Payoff",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree leaning back in his chair with a satisfied smile as all the holographic screens around him turn green with checkmarks. He folds his arms and nods. Golden hour lighting floods the room. Camera slowly pulls back to reveal the massive scale of the operation. Triumphant, aspirational mood, cinematic 4K. Portrait 9:16."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Black History Month — Authentic Storytelling",
+      "trend": "Black History Month — Authentic Storytelling",
+      "source": "Cultural moment + Sprout 2026 Trend #6 Authenticity",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Builder's Legacy — The Foundation",
+          "stage": "Setup/Hook",
+          "prompt": "@isaiahdupree standing in front of a wall of vintage photographs and newspaper clippings about Black innovators and inventors. He reaches out and touches one photo. The photo comes to life with golden light emanating from it. Warm tones, reverent and powerful mood, cinematic documentary style. 4K, shallow depth of field. Portrait 9:16."
+        },
+        {
+          "part": 2,
+          "title": "Builder's Legacy — The Parallel",
+          "stage": "Build/Development",
+          "prompt": "@isaiahdupree sitting at a workstation building something, intercut with split-screen showing historical Black inventors and creators working on their inventions. Same energy, different eras. Warm golden lighting, powerful montage, aspirational and emotional. Cinematic 4K. Portrait 9:16."
+        },
+        {
+          "part": 3,
+          "title": "Builder's Legacy — The Future",
+          "stage": "Payoff/Reveal",
+          "prompt": "@isaiahdupree looking directly at camera, a confident knowing smile. Behind him, a timeline of innovation stretches into the future with glowing nodes. He turns and walks toward the future. Dramatic lighting, golden and blue tones, epic and inspiring mood. Camera follows him from behind as he walks forward. Cinematic 4K. Portrait 9:16."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Asking the Universe for a Sign",
+      "trend": "Asking the Universe for a Sign",
+      "source": "AI-generated from MediaPoster trends",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Call to the Universe",
+          "stage": "Setup",
+          "prompt": "Isaiah stands alone on a bustling city rooftop, the golden hour sun casting a warm glow on his face. The camera slowly zooms in as he looks up at the vast sky, his eyes full of hope and curiosity. The city sounds fade into a soft, ambient hum, highlighting the quiet moment of his silent plea to the universe, the vibrant skyline serving as a majestic backdrop. The light catches his gold chain, creating a subtle sparkle against the deepening blue of the sky."
+        },
+        {
+          "part": 2,
+          "title": "The Universe Responds",
+          "stage": "Escalation",
+          "prompt": "As twilight descends, Isaiah is still on the rooftop, now illuminated by a thousand city lights twinkling below. The camera tilts up from the cityscape to the sky, where a shooting star streaks across the heavens. With wide eyes, Isaiah breaks into a broad smile, his face lit by both the star's trail and an inner, renewed determination. The camera captures his reaction in slow motion, conveying the profound impact of this cosmic sign."
+        },
+        {
+          "part": 3,
+          "title": "Building the Dream",
+          "stage": "Climax",
+          "prompt": "In a vibrant co-working space, Isaiah sits at a sleek desk, his laptop open and filled with lines of code. The camera pans around him in a dynamic 360-degree spin, capturing the energetic atmosphere of collaboration and creation. His fingers move confidently over the keyboard, while sunlight streams through large windows, casting dynamic shadows that dance around him. The scene pulses with the beat of an inspiring soundtrack, symbolizing the universe's sign now transformed into tangible action."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Euphoria Glam Transition",
+      "trend": "Euphoria Glam Transition",
+      "source": "AI-generated from MediaPoster trends",
+      "videos": [
+        {
+          "part": 1,
+          "title": "Euphoria Glam Transition",
+          "stage": "Setup",
+          "prompt": "In a dimly lit room awash with neon purple and blue hues, the camera captures Isaiah from a low angle, his face obscured in shadow. As he slowly lifts his head, the lights subtly shift to spotlight his warm smile, his eyes glistening under the dramatic lighting. The ambiance is electric, the background pulsates with an ethereal glow, setting the stage for an unexpected transformation."
+        },
+        {
+          "part": 2,
+          "title": "Euphoria Glam",
+          "stage": "Escalation",
+          "prompt": "The room now transforms into a kaleidoscope of vibrant colors, with the camera swirling around Isaiah as he confidently struts forward. The lighting intensifies, casting shimmering reflections off his gold chain, while the background flickers with bold patterns. His hoodie shifts into a sleek, glam outfit, capturing the essence of euphoria, as he embraces his new, dazzling look."
+        },
+        {
+          "part": 3,
+          "title": "Late Night Glow Up",
+          "stage": "Climax",
+          "prompt": "As the scene transitions to a bustling city rooftop under a star-studded sky, the camera sweeps up to reveal Isaiah standing tall, illuminated by the city's neon flirtations. The dramatic lighting accentuates his glow, his confident aura commanding attention. With a slow, cinematic pan across his profile, his transformation is complete—a magnetic presence that shines bright against the late-night skyline."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Group Consensus",
+      "trend": "Group Consensus",
+      "source": "AI-generated from MediaPoster trends",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Arrival",
+          "stage": "Setup",
+          "prompt": "Isaiah enters the frame in slow motion from the left, bathed in a spotlight that casts dynamic shadows across his face. His casual hoodie and gold chain catch the light as he points directly at the camera, his eyes intense and full of purpose. The background blurs, emphasizing his commanding presence as ambient city sounds hum softly, setting the scene for a decision yet to be made."
+        },
+        {
+          "part": 2,
+          "title": "The Debate",
+          "stage": "Escalation",
+          "prompt": "The camera circles Isaiah in a tight arc, capturing his animated gestures and the determined sparkle in his eyes as he engages an unseen group. The moody lighting shifts to a cooler tone, highlighting the tension and excitement as he weighs the pros and cons of learning to code. His voice resonates with conviction, each word punctuated by the subtle sound of typing keys echoing in the background."
+        },
+        {
+          "part": 3,
+          "title": "The Decision",
+          "stage": "Climax",
+          "prompt": "In a close-up shot, Isaiah stands still, the dramatic lighting creating a halo effect around his head, emphasizing the moment of truth. He smiles warmly, nodding as if reaching a consensus with the viewer, the light now softer and warmer. The camera pulls back to reveal a vibrant cityscape behind him, symbolizing endless possibilities, as upbeat music swells, leaving the audience with a sense of empowerment and clarity."
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Key & Peele Audio Trend",
+      "trend": "Key & Peele Audio Trend",
+      "source": "AI-generated from MediaPoster trends",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Interrupting Mom",
+          "stage": "Setup",
+          "prompt": "In a dimly lit room, Isaiah sits at his cluttered desk, a laptop glowing softly in front of him. The camera starts with a close-up of his expressive face, capturing the moment his eyes roll dramatically. With exaggerated bratty energy, he waves a dismissive hand at the screen, as if shooing away an imaginary mom's voice. The room's ambient lighting casts dynamic shadows, enhancing the comedic tension."
+        },
+        {
+          "part": 2,
+          "title": "Unyielding Persistence",
+          "stage": "Escalation",
+          "prompt": "The camera shifts to a side angle, catching the playful frustration on Isaiah's face as he leans back in his chair, shaking his head with an exasperated sigh. His gold chain catches the light, glinting as he gestures wildly at the screen. The lighting intensifies, creating a dramatic silhouette against the laptop's glow, amplifying the comedic frustration."
+        },
+        {
+          "part": 3,
+          "title": "The Defiant Dismissal",
+          "stage": "Climax",
+          "prompt": "In a tight over-the-shoulder shot, Isaiah delivers a final, exaggerated eye roll, his hand slicing through the air like a conductor ending a symphony. The camera zooms in to catch the determined glint in his eyes as he mouths the words, 'Shut up, Mom!' The lighting converges into a spotlight effect, highlighting his defiant stance against the persistent interruption, capturing the comedic climax with trending TikTok/Reels energy."
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "What Year Were You Born?",
+      "trend": "What Year Were You Born?",
+      "source": "AI-generated from MediaPoster trends",
+      "videos": [
+        {
+          "part": 1,
+          "title": "The Jurassic Awakening",
+          "stage": "Setup",
+          "prompt": "Isaiah emerges from dense foliage, wearing a tattered caveman outfit, his wide eyes reflecting the brilliant green of looming ferns. The camera zooms from a low angle, capturing his confused expression as the sun pierces through the canopy, casting dynamic shadows that dance across his face. A distant dinosaur roar echoes, adding to the comedic tension."
+        },
+        {
+          "part": 2,
+          "title": "Time Traveler's Dilemma",
+          "stage": "Escalation",
+          "prompt": "With a dramatic swoosh of the camera, Isaiah dodges a curious dinosaur, his hoodie flapping wildly against the prehistoric landscape. Mid-action, he pauses, a mix of fear and humor in his eyes, as a pair of small dinos inspect his gold chain, glinting in the dappled sunlight. The lens captures his every exaggerated gesture, blending suspense with comedic timing."
+        },
+        {
+          "part": 3,
+          "title": "Escape to the Present",
+          "stage": "Climax",
+          "prompt": "In a flurry of rapid cuts, Isaiah sprints through the jungle, past towering fronds and startled wildlife, his laughter echoing the absurdity of the situation. The camera follows from his perspective, dizzying and immersive, until he bursts into a clearing, haloed by the cinematic sun. Stopping breathlessly, he gazes at the sky, a victorious smile spreading as he realizes he's made it back to the present, accentuating the humor with a final wink at the camera."
+        }
+      ]
+    }
+  ]
+}

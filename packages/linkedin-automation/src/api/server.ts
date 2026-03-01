@@ -565,6 +565,74 @@ app.post('/api/linkedin/ai/generate-message', async (req: Request, res: Response
   }
 });
 
+// ─── Post Analytics ──────────────────────────────────────────
+
+app.get('/api/linkedin/posts/recent', async (req: Request, res: Response) => {
+  try {
+    const d = getDefaultDriver();
+    const limit = parseInt(req.query.limit as string) || 5;
+
+    // Navigate to own activity feed
+    await d.navigateTo('https://www.linkedin.com/in/me/recent-activity/all/');
+    await new Promise(r => setTimeout(r, 4000));
+
+    // Verify we're on LinkedIn
+    const currentUrl = await d.getCurrentUrl();
+    if (!currentUrl || !currentUrl.includes('linkedin.com')) {
+      return res.json({ success: false, posts: [], error: 'Not on LinkedIn' });
+    }
+
+    // Extract posts with engagement metrics from the activity feed
+    const raw = await d.executeJS(`(function(){` +
+      `var posts=[];` +
+      `var items=document.querySelectorAll('div.feed-shared-update-v2,div[data-urn*="activity"],li.profile-creator-shared-feed-update__container');` +
+      `for(var i=0;i<Math.min(items.length,${limit});i++){` +
+        `var el=items[i];` +
+        `var text=(el.innerText||'').trim();` +
+        `var urn=el.getAttribute('data-urn')||'';` +
+        `var postId=urn.replace(/.*:activity:/,'').replace(/[^0-9]/g,'');` +
+        `if(!postId){var m=text.match(/activity:(\\d+)/);if(m)postId=m[1];}` +
+        `if(!postId||postId.length<5)continue;` +
+        `var reactions=0,comments=0,reposts=0;` +
+        `var socialCounts=el.querySelectorAll('span.social-details-social-counts__reactions-count,button[aria-label*="reaction"],button[aria-label*="comment"],button[aria-label*="repost"]');` +
+        `for(var j=0;j<socialCounts.length;j++){` +
+          `var sc=socialCounts[j].textContent.trim();` +
+          `var num=parseInt(sc.replace(/,/g,''));` +
+          `if(!isNaN(num)&&num>0){` +
+            `var label=(socialCounts[j].getAttribute('aria-label')||'').toLowerCase();` +
+            `if(label.indexOf('reaction')>=0||label.indexOf('like')>=0)reactions=num;` +
+            `else if(label.indexOf('comment')>=0)comments=num;` +
+            `else if(label.indexOf('repost')>=0||label.indexOf('share')>=0)reposts=num;` +
+          `}` +
+        `}` +
+        `if(reactions===0&&comments===0){` +
+          `var nums=text.match(/(\\d+)\\s*(reactions?|likes?|comments?|reposts?)/gi)||[];` +
+          `for(var k=0;k<nums.length;k++){` +
+            `var pm=nums[k].match(/(\\d+)\\s*(\\w+)/);` +
+            `if(pm){` +
+              `var val=parseInt(pm[1]);` +
+              `var typ=pm[2].toLowerCase();` +
+              `if(typ.indexOf('reaction')>=0||typ.indexOf('like')>=0)reactions=val;` +
+              `else if(typ.indexOf('comment')>=0)comments=val;` +
+              `else if(typ.indexOf('repost')>=0)reposts=val;` +
+            `}` +
+          `}` +
+        `}` +
+        `var caption=text.substring(0,200);` +
+        `var link=el.querySelector('a[href*="/feed/update/"]');` +
+        `var url=link?link.href:'';` +
+        `posts.push({postId:postId,url:url,caption:caption,reactions:reactions,comments:comments,reposts:reposts});` +
+      `}` +
+      `return JSON.stringify(posts);` +
+    `})()`);
+
+    const posts = JSON.parse(raw || '[]');
+    res.json({ success: true, posts, count: posts.length });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ─── Rate Limits ─────────────────────────────────────────────
 
 app.get('/api/linkedin/rate-limits', (_req: Request, res: Response) => {

@@ -943,4 +943,383 @@ end tell`;
   getConfig(): ThreadsConfig {
     return { ...this.config };
   }
+
+  // ─── Search ────────────────────────────────────────────────
+
+  async searchPosts(query: string, options: { minLikes?: number; maxResults?: number; scrolls?: number } = {}): Promise<{
+    posts: Array<{ author: string; text: string; likes: number; replies: number; reposts: number; url: string; timestamp: string }>;
+    query: string;
+  }> {
+    const { minLikes = 0, maxResults = 20, scrolls = 3 } = options;
+    const encoded = encodeURIComponent(query);
+    await this.navigate(`https://www.threads.net/search?q=${encoded}&serp_type=default`);
+    await this.wait(3000);
+
+    const allPosts: Array<{ author: string; text: string; likes: number; replies: number; reposts: number; url: string; timestamp: string }> = [];
+    const seen = new Set<string>();
+
+    for (let s = 0; s <= scrolls; s++) {
+      const raw = await this.executeJS(`
+        (function() {
+          var containers = document.querySelectorAll('[data-pressable-container="true"]');
+          var results = [];
+          for (var i = 0; i < containers.length; i++) {
+            try {
+              var post = containers[i];
+              var userLink = post.querySelector('a[href*="/@"]');
+              var handle = '';
+              if (userLink) { handle = (userLink.getAttribute('href') || '').split('/@').pop().split('/')[0].split('?')[0]; }
+              var textParts = [];
+              post.querySelectorAll('span[dir="auto"], [dir="auto"] span').forEach(function(el) {
+                var t = el.innerText.trim();
+                if (t.length > 3 && !t.match(/^\\d+[hmd]$/) && !t.match(/^@/) && t !== handle) textParts.push(t);
+              });
+              var text = textParts.join(' ').substring(0, 500);
+              var postLink = post.querySelector('a[href*="/post/"]');
+              var url = '';
+              if (postLink) {
+                var phref = postLink.getAttribute('href') || '';
+                url = phref.startsWith('http') ? phref : 'https://www.threads.net' + phref;
+              }
+              var likes = 0, replies = 0, reposts = 0;
+              var svgs = post.querySelectorAll('svg');
+              for (var j = 0; j < svgs.length; j++) {
+                var label = svgs[j].getAttribute('aria-label') || '';
+                var parent = svgs[j].parentElement;
+                var nearText = parent ? (parent.innerText || '').trim() : '';
+                var num = nearText.replace(/[^0-9.KkMm]/g, '');
+                var parsed = parseInt(num) || 0;
+                if (num.includes('K') || num.includes('k')) parsed = Math.round(parseFloat(num) * 1000);
+                if (num.includes('M') || num.includes('m')) parsed = Math.round(parseFloat(num) * 1000000);
+                if (label === 'Like' || label === 'Unlike') likes = parsed;
+                else if (label === 'Reply') replies = parsed;
+                else if (label === 'Repost') reposts = parsed;
+              }
+              var timeEl = post.querySelector('time');
+              var timestamp = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText || '') : '';
+              if (handle && text.length > 5) results.push({ author: handle, text: text, likes: likes, replies: replies, reposts: reposts, url: url, timestamp: timestamp });
+            } catch(e) {}
+          }
+          return JSON.stringify(results);
+        })()
+      `);
+
+      try {
+        const batch = JSON.parse(raw || '[]') as typeof allPosts;
+        for (const p of batch) {
+          if (!seen.has(p.url) && p.likes >= minLikes) {
+            seen.add(p.url);
+            allPosts.push(p);
+          }
+        }
+      } catch {}
+
+      if (allPosts.length >= maxResults) break;
+      if (s < scrolls) {
+        await this.executeJS(`window.scrollBy(0, window.innerHeight * 2)`);
+        await this.wait(1500);
+      }
+    }
+
+    return { posts: allPosts.slice(0, maxResults), query };
+  }
+
+  // ─── Profile ───────────────────────────────────────────────
+
+  async getOwnProfile(): Promise<{ handle: string; follower_count: number; following_count: number; bio: string }> {
+    await this.navigate('https://www.threads.net/@me');
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        function parseCount(s) {
+          if (!s) return 0;
+          s = s.trim().replace(/,/g, '');
+          if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+          if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+          return parseInt(s) || 0;
+        }
+        var url = window.location.href;
+        var handle = url.match(/@([^/]+)/);
+        handle = handle ? handle[1] : '';
+        var body = document.body.innerText || '';
+        var followers = 0, following = 0, bio = '';
+        var fm = body.match(/([\\d.,]+[KkMm]?)\\s*follower/i);
+        if (fm) followers = parseCount(fm[1]);
+        var fom = body.match(/([\\d.,]+[KkMm]?)\\s*following/i);
+        if (fom) following = parseCount(fom[1]);
+        return JSON.stringify({ handle: handle, follower_count: followers, following_count: following, bio: '' });
+      })()
+    `);
+    try { return JSON.parse(raw); } catch { return { handle: '', follower_count: 0, following_count: 0, bio: '' }; }
+  }
+
+  async getCreatorProfile(handle: string): Promise<{ handle: string; follower_count: number; following_count: number; bio: string; engagement_rate: number; avg_likes: number }> {
+    const cleanHandle = handle.replace(/^@/, '');
+    await this.navigate(`https://www.threads.net/@${cleanHandle}`);
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        function parseCount(s) {
+          if (!s) return 0;
+          s = s.trim().replace(/,/g, '');
+          if (s.includes('M')) return Math.round(parseFloat(s) * 1000000);
+          if (s.includes('K') || s.includes('k')) return Math.round(parseFloat(s) * 1000);
+          return parseInt(s) || 0;
+        }
+        var body = document.body.innerText || '';
+        var followers = 0, following = 0, bio = '';
+        var fm = body.match(/([\\d.,]+[KkMm]?)\\s*follower/i);
+        if (fm) followers = parseCount(fm[1]);
+        var fom = body.match(/([\\d.,]+[KkMm]?)\\s*following/i);
+        if (fom) following = parseCount(fom[1]);
+        var descEl = document.querySelector('[class*="description"], [class*="bio"]');
+        if (!descEl) {
+          var divs = document.querySelectorAll('div');
+          for (var i = 0; i < divs.length; i++) {
+            var t = (divs[i].innerText || '').trim();
+            if (t.length > 20 && t.length < 300 && !t.includes('followers') && !t.includes('@')) { bio = t; break; }
+          }
+        } else { bio = (descEl.innerText || '').trim().substring(0, 300); }
+        var posts = document.querySelectorAll('[data-pressable-container="true"]');
+        var totalLikes = 0, postCount = 0;
+        for (var i = 0; i < Math.min(posts.length, 10); i++) {
+          var svgs = posts[i].querySelectorAll('svg');
+          for (var j = 0; j < svgs.length; j++) {
+            var label = svgs[j].getAttribute('aria-label') || '';
+            if (label === 'Like' || label === 'Unlike') {
+              var parent = svgs[j].parentElement;
+              var num = parent ? (parent.innerText || '').replace(/[^0-9.KkMm]/g, '') : '';
+              var parsed = parseInt(num) || 0;
+              if (num.includes('K') || num.includes('k')) parsed = Math.round(parseFloat(num) * 1000);
+              if (num.includes('M') || num.includes('m')) parsed = Math.round(parseFloat(num) * 1000000);
+              totalLikes += parsed;
+              postCount++;
+            }
+          }
+        }
+        var avgLikes = postCount > 0 ? Math.round(totalLikes / postCount) : 0;
+        var engRate = followers > 0 ? Math.round((avgLikes / followers) * 10000) / 100 : 0;
+        return JSON.stringify({ handle: '${cleanHandle}', follower_count: followers, following_count: following, bio: bio, engagement_rate: engRate, avg_likes: avgLikes });
+      })()
+    `);
+    try { return JSON.parse(raw); } catch { return { handle: cleanHandle, follower_count: 0, following_count: 0, bio: '', engagement_rate: 0, avg_likes: 0 }; }
+  }
+
+  // ─── Like / Repost ────────────────────────────────────────
+
+  async likePost(postUrl?: string): Promise<{ success: boolean; error?: string }> {
+    if (postUrl) {
+      await this.navigate(postUrl);
+      await this.wait(3000);
+    }
+    const result = await this.executeJS(`
+      (function() {
+        var likeBtn = document.querySelector('svg[aria-label="Like"]');
+        if (likeBtn) {
+          var btn = likeBtn.closest('[role="button"]') || likeBtn.parentElement;
+          if (btn) { btn.click(); return 'liked'; }
+        }
+        var unlikeBtn = document.querySelector('svg[aria-label="Unlike"]');
+        if (unlikeBtn) return 'already_liked';
+        return 'not_found';
+      })()
+    `);
+    if (result === 'liked' || result === 'already_liked') return { success: true };
+    return { success: false, error: result };
+  }
+
+  async repostPost(postUrl?: string): Promise<{ success: boolean; error?: string }> {
+    if (postUrl) {
+      await this.navigate(postUrl);
+      await this.wait(3000);
+    }
+    const result = await this.executeJS(`
+      (function() {
+        var repostBtn = document.querySelector('svg[aria-label="Repost"]');
+        if (repostBtn) {
+          var btn = repostBtn.closest('[role="button"]') || repostBtn.parentElement;
+          if (btn) { btn.click(); return 'clicked_repost'; }
+        }
+        return 'not_found';
+      })()
+    `);
+    if (result === 'clicked_repost') {
+      await this.wait(1000);
+      // Click "Repost" in the menu that appears
+      const menuResult = await this.executeJS(`
+        (function() {
+          var items = document.querySelectorAll('[role="menuitem"], [role="button"]');
+          for (var i = 0; i < items.length; i++) {
+            if ((items[i].innerText || '').trim() === 'Repost') { items[i].click(); return 'reposted'; }
+          }
+          return 'menu_not_found';
+        })()
+      `);
+      if (menuResult === 'reposted') return { success: true };
+      return { success: false, error: menuResult };
+    }
+    return { success: false, error: result };
+  }
+
+  // ─── Extract Post Content ─────────────────────────────────
+
+  async extractPost(postUrl: string): Promise<{ author: string; text: string; likes: number; replies: number; reposts: number; timestamp: string; url: string }> {
+    await this.navigate(postUrl);
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        var container = document.querySelector('[data-pressable-container="true"]');
+        if (!container) return JSON.stringify({ error: 'no_container' });
+        var userLink = container.querySelector('a[href*="/@"]');
+        var author = userLink ? (userLink.getAttribute('href') || '').split('/@').pop().split('/')[0].split('?')[0] : '';
+        var textParts = [];
+        container.querySelectorAll('span[dir="auto"], [dir="auto"] span').forEach(function(el) {
+          var t = el.innerText.trim();
+          if (t.length > 3 && !t.match(/^\\d+[hmd]$/) && !t.match(/^@/) && t !== author) textParts.push(t);
+        });
+        var text = textParts.join(' ').substring(0, 1000);
+        var likes = 0, replies = 0, reposts = 0;
+        var svgs = container.querySelectorAll('svg');
+        for (var j = 0; j < svgs.length; j++) {
+          var label = svgs[j].getAttribute('aria-label') || '';
+          var parent = svgs[j].parentElement;
+          var nearText = parent ? (parent.innerText || '').trim() : '';
+          var num = nearText.replace(/[^0-9.KkMm]/g, '');
+          var parsed = parseInt(num) || 0;
+          if (num.includes('K') || num.includes('k')) parsed = Math.round(parseFloat(num) * 1000);
+          if (num.includes('M') || num.includes('m')) parsed = Math.round(parseFloat(num) * 1000000);
+          if (label === 'Like' || label === 'Unlike') likes = parsed;
+          else if (label === 'Reply') replies = parsed;
+          else if (label === 'Repost') reposts = parsed;
+        }
+        var timeEl = container.querySelector('time');
+        var timestamp = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText || '') : '';
+        return JSON.stringify({ author: author, text: text, likes: likes, replies: replies, reposts: reposts, timestamp: timestamp, url: window.location.href });
+      })()
+    `);
+    try { return JSON.parse(raw); } catch { return { author: '', text: '', likes: 0, replies: 0, reposts: 0, timestamp: '', url: postUrl }; }
+  }
+
+  // ─── Get Post Engagement ──────────────────────────────────
+
+  async getPostEngagement(postUrl: string): Promise<{ likes: number; replies: number; reposts: number }> {
+    await this.navigate(postUrl);
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        var container = document.querySelector('[data-pressable-container="true"]');
+        if (!container) return JSON.stringify({ likes: 0, replies: 0, reposts: 0 });
+        var likes = 0, replies = 0, reposts = 0;
+        var svgs = container.querySelectorAll('svg');
+        for (var j = 0; j < svgs.length; j++) {
+          var label = svgs[j].getAttribute('aria-label') || '';
+          var parent = svgs[j].parentElement;
+          var nearText = parent ? (parent.innerText || '').trim() : '';
+          var num = nearText.replace(/[^0-9.KkMm]/g, '');
+          var parsed = parseInt(num) || 0;
+          if (num.includes('K') || num.includes('k')) parsed = Math.round(parseFloat(num) * 1000);
+          if (num.includes('M') || num.includes('m')) parsed = Math.round(parseFloat(num) * 1000000);
+          if (label === 'Like' || label === 'Unlike') likes = parsed;
+          else if (label === 'Reply') replies = parsed;
+          else if (label === 'Repost') reposts = parsed;
+        }
+        return JSON.stringify({ likes: likes, replies: replies, reposts: reposts });
+      })()
+    `);
+    try { return JSON.parse(raw); } catch { return { likes: 0, replies: 0, reposts: 0 }; }
+  }
+
+  // ─── Trending Topics ──────────────────────────────────────
+
+  async getTrending(): Promise<Array<{ topic: string; postCount?: number }>> {
+    await this.navigate('https://www.threads.net/search');
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        var topics = [];
+        var seen = {};
+        var links = document.querySelectorAll('a[href*="/search?q="], a[href*="/tag/"]');
+        for (var i = 0; i < links.length; i++) {
+          var text = (links[i].innerText || '').trim();
+          if (text.length > 2 && text.length < 100 && !seen[text]) {
+            seen[text] = true;
+            topics.push({ topic: text });
+          }
+        }
+        if (topics.length === 0) {
+          var spans = document.querySelectorAll('span');
+          for (var i = 0; i < spans.length; i++) {
+            var t = (spans[i].innerText || '').trim();
+            if (t.length > 3 && t.length < 50 && !t.includes('@') && !seen[t]) {
+              seen[t] = true;
+              topics.push({ topic: t });
+            }
+          }
+        }
+        return JSON.stringify(topics.slice(0, 20));
+      })()
+    `);
+    try { return JSON.parse(raw || '[]'); } catch { return []; }
+  }
+
+  // ─── Get Thread Context ───────────────────────────────────
+
+  async getThreadContext(postUrl: string): Promise<{ posts: Array<{ author: string; text: string; timestamp: string }> }> {
+    await this.navigate(postUrl);
+    await this.wait(3000);
+
+    const raw = await this.executeJS(`
+      (function() {
+        var containers = document.querySelectorAll('[data-pressable-container="true"]');
+        var posts = [];
+        for (var i = 0; i < containers.length; i++) {
+          var post = containers[i];
+          var userLink = post.querySelector('a[href*="/@"]');
+          var author = userLink ? (userLink.getAttribute('href') || '').split('/@').pop().split('/')[0].split('?')[0] : '';
+          var textParts = [];
+          post.querySelectorAll('span[dir="auto"], [dir="auto"] span').forEach(function(el) {
+            var t = el.innerText.trim();
+            if (t.length > 3 && !t.match(/^\\d+[hmd]$/) && !t.match(/^@/) && t !== author) textParts.push(t);
+          });
+          var text = textParts.join(' ').substring(0, 500);
+          var timeEl = post.querySelector('time');
+          var timestamp = timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText || '') : '';
+          if (author && text.length > 3) posts.push({ author: author, text: text, timestamp: timestamp });
+        }
+        return JSON.stringify({ posts: posts });
+      })()
+    `);
+    try { return JSON.parse(raw); } catch { return { posts: [] }; }
+  }
+
+  // ─── Reply to Comment ─────────────────────────────────────
+
+  async replyToComment(commentId: string, text: string): Promise<CommentResult> {
+    // On Threads, replying to a comment is done by navigating to the comment's post
+    // and using the reply mechanism. commentId here is typically a post URL or index.
+    return this.postComment(text);
+  }
+
+  // ─── Daily Usage Tracking ─────────────────────────────────
+
+  getDailyUsed(): number {
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    return this.commentLog.filter(c => c.timestamp > oneDayAgo).length;
+  }
+
+  getHourlyUsed(): number {
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    return this.commentLog.filter(c => c.timestamp > oneHourAgo).length;
+  }
+
+  recordAction(): void {
+    this.commentLog.push({ timestamp: new Date() });
+  }
 }

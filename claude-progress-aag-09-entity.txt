@@ -1,0 +1,36 @@
+===========================================
+AAG-09 ENTITY RESOLUTION — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — Cross-Platform Entity Resolution
+Agent: aag-09-entity
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ENVIRONMENT READY
+
+- Foundation tables: acq_entity_associations, acq_resolution_runs, acq_resolution_queue
+- Query layer: queries.py (upsert_entity_association, get_resolution_queue, enqueue_resolution)
+- Config: PERPLEXITY_API_KEY, CLAUDE_MODEL_ENTITY
+
+## FEATURES TO BUILD (27 total)
+
+AAG-153 through AAG-180
+
+## NEXT AGENT SHOULD DO
+
+1. Build entity/perplexity_client.py wrapping Perplexity API
+2. Build entity/username_matcher.py for fuzzy handle similarity
+3. Build entity/bio_link_extractor.py for scraping bio URLs
+4. Build entity/linktree_parser.py for linktree/beacons
+5. Build entity/disambiguator.py using Claude for confirmation
+6. Build entity_resolution_agent.py orchestrating the full pipeline
+
+===========================================
+END SESSION #1
+===========================================

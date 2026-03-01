@@ -212,7 +212,7 @@ export class TwitterDriver {
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`, { timeout: 30000 });
       return true;
     } catch { return false; }
   }

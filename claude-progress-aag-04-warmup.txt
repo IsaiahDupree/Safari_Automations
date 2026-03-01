@@ -1,0 +1,34 @@
+===========================================
+AAG-04 WARMUP — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — Warmup System
+Agent: aag-04-warmup
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ENVIRONMENT READY
+
+- Foundation tables: acq_warmup_configs, acq_warmup_schedules
+- Query layer: queries.py (insert_warmup_schedule, get_pending_warmup, update_warmup_status)
+- Config: COMMENT_SERVICE_PORTS, WARMUP_* constants
+
+## FEATURES TO BUILD (22 total)
+
+AAG-031 through AAG-050
+
+## NEXT AGENT SHOULD DO
+
+1. Build warmup_agent.py with PostFetcher, CommentGenerator, WarmupScheduler
+2. Use COMMENT_SERVICE_PORTS to route comments per platform
+3. Integrate Claude for AI-generated comments
+4. Track completion and advance to ready_for_dm
+
+===========================================
+END SESSION #1
+===========================================

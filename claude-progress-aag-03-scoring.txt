@@ -1,0 +1,48 @@
+===========================================
+AAG-03 SCORING — PROGRESS LOG
+===========================================
+
+Project: Autonomous Acquisition Agent — ICP Scoring
+Agent: aag-03-scoring
+Initialized: 2026-02-28
+
+===========================================
+SESSION #1: Initialization
+Date: 2026-02-28
+Agent: Initializer
+===========================================
+
+## ENVIRONMENT READY
+
+- Foundation tables created by Agent 01
+- Query layer: acquisition/db/queries.py (get_unscored_contacts, update_pipeline_stage)
+- Config: acquisition/config.py (CLAUDE_MODEL_SCORING, ANTHROPIC_API_KEY)
+
+## FEATURES TO BUILD (11 total)
+
+- AAG-021: ICPScoringAgent — Claude batch scoring
+- AAG-022: ICP scoring prompt — configurable per niche
+- AAG-023: Score routing — auto-advance to 'qualified'
+- AAG-024: Configurable ICP min_score per niche
+- AAG-025: Batch scoring with Claude Haiku for cost efficiency
+- AAG-026: Score history tracking in crm_score_history
+- AAG-027: Re-scoring on new post data
+- AAG-028: POST /api/acquisition/score endpoint
+- AAG-029: Scoring CLI
+- AAG-030: Scoring tests
+
+## NEXT AGENT SHOULD DO
+
+1. Build scoring_agent.py with ICPScoringAgent
+2. Use Claude Haiku for batch scoring (anthropic SDK)
+3. Track scores in crm_score_history
+4. Auto-advance contacts with score >= icp_min_score to 'qualified'
+
+## EXISTING CODE TO REFERENCE
+
+- scripts/pipeline_scorer.py — existing scoring patterns
+- scripts/crm_brain.py — Claude API integration patterns
+
+===========================================
+END SESSION #1
+===========================================
