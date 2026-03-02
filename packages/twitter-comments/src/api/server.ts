@@ -173,6 +173,16 @@ app.post('/api/twitter/comments/post', async (req: Request, res: Response) => {
     if (!useAI && !validateRequired(res, [{ name: 'text', value: text }])) return;
     if (!postUrl && !validateRequired(res, [{ name: 'postUrl', value: postUrl }])) return;
 
+    // Validate URL format
+    if (postUrl) {
+      try {
+        new URL(postUrl);
+      } catch {
+        res.status(400).json({ success: false, error: 'Invalid URL format for postUrl' });
+        return;
+      }
+    }
+
     const d = getDriver();
     if (postUrl) { await d.navigateToPost(postUrl); await new Promise(r => setTimeout(r, 3000)); }
 

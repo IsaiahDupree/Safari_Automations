@@ -85,6 +85,9 @@ let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 // Safari driver instance
 let driver: SafariDriver | null = null;
 
+// URL pattern that identifies the Twitter Safari session
+const SESSION_URL_PATTERN = 'twitter.com';
+
 function getDriver(): SafariDriver {
   if (!driver) {
     driver = new SafariDriver({
@@ -92,6 +95,15 @@ function getDriver(): SafariDriver {
     });
   }
   return driver;
+}
+
+/**
+ * Ensure the Twitter Safari tab is the active/front tab before any operation.
+ * Scans all Safari windows, finds the twitter.com tab, and activates it.
+ */
+async function ensureTwitterSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
+  const info = await getDriver().ensureActiveSession(SESSION_URL_PATTERN);
+  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
 }
 
 // Rate limit check middleware
@@ -141,11 +153,47 @@ function recordMessageSent(): void {
 // === HEALTH ===
 
 app.get('/health', (req: Request, res: Response) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     service: 'twitter-dm',
-    timestamp: new Date().toISOString() 
+    timestamp: new Date().toISOString()
   });
+});
+
+// === SESSION MANAGEMENT ===
+
+app.get('/api/session/status', (req: Request, res: Response) => {
+  const info = getDriver().getSessionInfo();
+  res.json({
+    tracked: !!info.windowIndex,
+    windowIndex: info.windowIndex,
+    tabIndex: info.tabIndex,
+    urlPattern: info.urlPattern,
+    lastVerifiedMs: info.lastVerified ? Date.now() - info.lastVerified : null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.post('/api/session/ensure', async (req: Request, res: Response) => {
+  try {
+    const info = await ensureTwitterSession();
+    res.json({
+      ok: info.ok,
+      windowIndex: info.windowIndex,
+      tabIndex: info.tabIndex,
+      url: info.url,
+      message: info.ok
+        ? `Twitter session active at window ${info.windowIndex}, tab ${info.tabIndex}`
+        : 'Twitter tab not found — open Safari and navigate to twitter.com',
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (req: Request, res: Response) => {
+  getDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
 });
 
 // === STATUS ===
@@ -153,10 +201,10 @@ app.get('/health', (req: Request, res: Response) => {
 app.get('/api/twitter/status', async (req: Request, res: Response) => {
   try {
     const d = getDriver();
-    const isOnTwitter = await d.isOnTwitter();
-    const isLoggedIn = isOnTwitter ? await d.isLoggedIn() : false;
     const currentUrl = await d.getCurrentUrl();
-    
+    const isOnTwitter = currentUrl.includes('twitter.com') || currentUrl.includes('x.com');
+    const isLoggedIn = isOnTwitter ? await d.isLoggedIn() : false;
+
     res.json({
       isOnTwitter,
       isLoggedIn,
@@ -305,13 +353,19 @@ app.post('/api/twitter/messages/send', checkRateLimit, async (req: Request, res:
 app.post('/api/twitter/messages/send-to', checkRateLimit, async (req: Request, res: Response) => {
   try {
     const { username, text } = req.body as { username: string; text: string };
+
+    if (!username || !text) {
+      res.status(400).json({ success: false, error: 'username and text required' });
+      return;
+    }
+
     const result = await sendDMByUsername(username, text, getDriver());
-    
+
     if (result.success) {
       recordMessageSent();
       logDM({ platform: 'twitter', username, messageText: text, isOutbound: true });
     }
-    
+
     res.json({
       ...result,
       rateLimits: { messagesSentToday, messagesSentThisHour },

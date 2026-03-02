@@ -686,11 +686,23 @@ def run_all_tests() -> Dict[str, Any]:
     results.append({"id": "T-SAFARI-E2E-089", "name": "Error: invalid platform", "passed": not passed, "error": None})
     print(f"  {'✅' if not passed else '❌'} Invalid platform returns error")
 
-    # Feature 90-92: Other error tests
-    results.append({"id": "T-SAFARI-E2E-090", "name": "Error: empty username", "passed": False, "error": "Not tested"})
-    results.append({"id": "T-SAFARI-E2E-091", "name": "Error: invalid postUrl", "passed": False, "error": "Not tested"})
-    results.append({"id": "T-SAFARI-E2E-092", "name": "Error: TikTok short-link URL", "passed": False, "error": "Not tested"})
-    print(f"  ⏭️  Other error tests (skipped)")
+    # Feature 90: Empty username
+    passed, error, _ = test_send_dm("instagram", "", "test message")
+    has_error_field = error is not None and ("username" in error.lower() or "empty" in error.lower() or "required" in error.lower())
+    results.append({"id": "T-SAFARI-E2E-090", "name": "Error: empty username", "passed": has_error_field, "error": None if has_error_field else "No error returned for empty username"})
+    print(f"  {'✅' if has_error_field else '❌'} Empty username returns error")
+
+    # Feature 91: Invalid postUrl
+    passed, error = test_post_comment("twitter", "notaurl", "test")
+    has_error = not passed and error is not None
+    results.append({"id": "T-SAFARI-E2E-091", "name": "Error: invalid postUrl", "passed": has_error, "error": None if has_error else "No error for invalid URL"})
+    print(f"  {'✅' if has_error else '❌'} Invalid postUrl returns error")
+
+    # Feature 92: TikTok short-link URL
+    passed, error = test_post_comment("tiktok", "https://vt.tiktok.com/short123", "test")
+    rejects_short_link = not passed and error is not None and ("video" in error.lower() or "short" in error.lower() or "format" in error.lower())
+    results.append({"id": "T-SAFARI-E2E-092", "name": "Error: TikTok short-link URL", "passed": rejects_short_link, "error": None if rejects_short_link else "Short link not rejected"})
+    print(f"  {'✅' if rejects_short_link else '❌'} TikTok short-link rejected")
 
     print()
 

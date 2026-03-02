@@ -155,9 +155,57 @@ app.use(rateLimitMiddleware);
 // Create Safari driver
 const driver = new SafariDriver({ verbose: VERBOSE });
 
+// URL pattern that identifies the TikTok Safari session
+const SESSION_URL_PATTERN = 'tiktok.com';
+
+/**
+ * Ensure the TikTok Safari tab is the active/front tab before any operation.
+ * Scans all Safari windows, finds the tiktok.com tab, and activates it.
+ */
+async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
+  const info = await driver.ensureActiveSession(SESSION_URL_PATTERN);
+  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+}
+
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', platform: 'tiktok', port: PORT });
+});
+
+// === SESSION MANAGEMENT ===
+
+app.get('/api/session/status', (_req: Request, res: Response) => {
+  const info = driver.getSessionInfo();
+  res.json({
+    tracked: !!info.windowIndex,
+    windowIndex: info.windowIndex,
+    tabIndex: info.tabIndex,
+    urlPattern: info.urlPattern,
+    lastVerifiedMs: info.lastVerified ? Date.now() - info.lastVerified : null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.post('/api/session/ensure', async (_req: Request, res: Response) => {
+  try {
+    const info = await ensureTikTokSession();
+    res.json({
+      ok: info.ok,
+      windowIndex: info.windowIndex,
+      tabIndex: info.tabIndex,
+      url: info.url,
+      message: info.ok
+        ? `TikTok session active at window ${info.windowIndex}, tab ${info.tabIndex}`
+        : 'TikTok tab not found — open Safari and navigate to tiktok.com',
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (_req: Request, res: Response) => {
+  driver.clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
 });
 
 // Get TikTok status

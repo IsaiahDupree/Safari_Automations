@@ -1,10 +1,10 @@
 {
-  "runAt": "2026-03-02T04:58:45.925550Z",
+  "runAt": "2026-03-02T05:14:59.739068Z",
   "summary": {
     "total": 103,
-    "passed": 27,
-    "failed": 76,
-    "passRate": "26%"
+    "passed": 33,
+    "failed": 70,
+    "passRate": "32%"
   },
   "results": [
     {
@@ -70,68 +70,68 @@
     {
       "id": "T-SAFARI-E2E-011",
       "name": "Session ensure: Instagram",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-012",
       "name": "Session status: Instagram",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-013",
       "name": "Session clear: Instagram",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-014",
       "name": "Session ensure: Twitter",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/ensure</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-015",
       "name": "Session status: Twitter",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-016",
       "name": "Session clear: Twitter",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/clear</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-017",
       "name": "Session ensure: TikTok",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/ensure</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-018",
       "name": "Session status: TikTok",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-019",
       "name": "Session re-lock after clear",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-020",
       "name": "Navigate Instagram DM inbox",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-021",
       "name": "Get Instagram conversations",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-022",
@@ -166,8 +166,8 @@
     {
       "id": "T-SAFARI-E2E-027",
       "name": "Instagram session persists",
-      "passed": false,
-      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-028",
@@ -214,8 +214,8 @@
     {
       "id": "T-SAFARI-E2E-035",
       "name": "Twitter session persists",
-      "passed": false,
-      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-036",
@@ -316,32 +316,32 @@
     {
       "id": "T-SAFARI-E2E-052",
       "name": "Market Research: Instagram search",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Error: Remote end closed connection without response"
     },
     {
       "id": "T-SAFARI-E2E-053",
       "name": "Instagram post has required fields",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Missing required fields"
     },
     {
       "id": "T-SAFARI-E2E-054",
       "name": "Market Research: Twitter search",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Connection error: [Errno 61] Connection refused"
     },
     {
       "id": "T-SAFARI-E2E-055",
       "name": "Twitter post has required fields",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Missing required fields"
     },
     {
       "id": "T-SAFARI-E2E-056",
       "name": "Market Research: TikTok search",
       "passed": false,
-      "error": "Error: timed out"
+      "error": "Connection error: [Errno 61] Connection refused"
     },
     {
       "id": "T-SAFARI-E2E-057",
@@ -352,20 +352,20 @@
     {
       "id": "T-SAFARI-E2E-058",
       "name": "Market Research: Threads search",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Connection error: [Errno 61] Connection refused"
     },
     {
       "id": "T-SAFARI-E2E-059",
       "name": "Threads post has required fields",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Missing required fields"
     },
     {
       "id": "T-SAFARI-E2E-060",
       "name": "Competitor research: Instagram",
-      "passed": true,
-      "error": null
+      "passed": false,
+      "error": "Connection error: [Errno 61] Connection refused"
     },
     {
       "id": "T-SAFARI-E2E-061",

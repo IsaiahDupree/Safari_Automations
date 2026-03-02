@@ -195,6 +195,15 @@ app.post('/api/tiktok/comments/post', async (req: Request, res: Response) => {
 
     // Validate URL is a TikTok video URL
     if (targetUrl) {
+      // Reject short-link URLs (vt.tiktok.com, vm.tiktok.com) - require direct /video/ format
+      if (targetUrl.includes('vt.tiktok.com') || targetUrl.includes('vm.tiktok.com')) {
+        res.status(400).json({
+          success: false,
+          error: 'Short-link URLs not supported. Please use the direct /video/ URL format (e.g., https://www.tiktok.com/@user/video/1234567890)'
+        });
+        return;
+      }
+
       const isTikTokVideo = targetUrl.includes('tiktok.com') && (targetUrl.includes('/video/') || targetUrl.includes('/@'));
       if (!isTikTokVideo) {
         res.status(400).json({ error: 'Invalid URL: must be a TikTok video URL' });
