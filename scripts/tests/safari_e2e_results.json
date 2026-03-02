@@ -1,10 +1,10 @@
 {
-  "runAt": "2026-03-02T05:14:59.739068Z",
+  "runAt": "2026-03-02T05:23:44.597811Z",
   "summary": {
     "total": 103,
-    "passed": 33,
-    "failed": 70,
-    "passRate": "32%"
+    "passed": 41,
+    "failed": 62,
+    "passRate": "39%"
   },
   "results": [
     {
@@ -316,8 +316,8 @@
     {
       "id": "T-SAFARI-E2E-052",
       "name": "Market Research: Instagram search",
-      "passed": false,
-      "error": "Error: Remote end closed connection without response"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-053",
@@ -328,20 +328,20 @@
     {
       "id": "T-SAFARI-E2E-054",
       "name": "Market Research: Twitter search",
-      "passed": false,
-      "error": "Connection error: [Errno 61] Connection refused"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-055",
       "name": "Twitter post has required fields",
-      "passed": false,
-      "error": "Missing required fields"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-056",
       "name": "Market Research: TikTok search",
       "passed": false,
-      "error": "Connection error: [Errno 61] Connection refused"
+      "error": "Error: timed out"
     },
     {
       "id": "T-SAFARI-E2E-057",
@@ -352,20 +352,20 @@
     {
       "id": "T-SAFARI-E2E-058",
       "name": "Market Research: Threads search",
-      "passed": false,
-      "error": "Connection error: [Errno 61] Connection refused"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-059",
       "name": "Threads post has required fields",
-      "passed": false,
-      "error": "Missing required fields"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-060",
       "name": "Competitor research: Instagram",
-      "passed": false,
-      "error": "Connection error: [Errno 61] Connection refused"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-061",
@@ -545,19 +545,19 @@
       "id": "T-SAFARI-E2E-090",
       "name": "Error: empty username",
       "passed": false,
-      "error": "Not tested"
+      "error": "No error returned for empty username"
     },
     {
       "id": "T-SAFARI-E2E-091",
       "name": "Error: invalid postUrl",
-      "passed": false,
-      "error": "Not tested"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-092",
       "name": "Error: TikTok short-link URL",
-      "passed": false,
-      "error": "Not tested"
+      "passed": true,
+      "error": null
     },
     {
       "id": "T-SAFARI-E2E-093",

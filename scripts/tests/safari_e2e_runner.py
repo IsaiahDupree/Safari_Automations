@@ -693,13 +693,13 @@ def run_all_tests() -> Dict[str, Any]:
     print(f"  {'✅' if has_error_field else '❌'} Empty username returns error")
 
     # Feature 91: Invalid postUrl
-    passed, error = test_post_comment("twitter", "notaurl", "test")
+    passed, error, _ = test_post_comment("twitter", "notaurl", "test")
     has_error = not passed and error is not None
     results.append({"id": "T-SAFARI-E2E-091", "name": "Error: invalid postUrl", "passed": has_error, "error": None if has_error else "No error for invalid URL"})
     print(f"  {'✅' if has_error else '❌'} Invalid postUrl returns error")
 
     # Feature 92: TikTok short-link URL
-    passed, error = test_post_comment("tiktok", "https://vt.tiktok.com/short123", "test")
+    passed, error, _ = test_post_comment("tiktok", "https://vt.tiktok.com/short123", "test")
     rejects_short_link = not passed and error is not None and ("video" in error.lower() or "short" in error.lower() or "format" in error.lower())
     results.append({"id": "T-SAFARI-E2E-092", "name": "Error: TikTok short-link URL", "passed": rejects_short_link, "error": None if rejects_short_link else "Short link not rejected"})
     print(f"  {'✅' if rejects_short_link else '❌'} TikTok short-link rejected")
