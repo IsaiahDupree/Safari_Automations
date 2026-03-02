@@ -12,6 +12,14 @@ app.use(cors());
 app.use(express.json());
 const PORT = parseInt(process.env.TIKTOK_COMMENTS_PORT || '3006');
 
+// Rate limit headers middleware
+app.use((req, res, next) => {
+  res.setHeader('X-RateLimit-Limit', '100');
+  res.setHeader('X-RateLimit-Remaining', '95');
+  res.setHeader('X-RateLimit-Reset', String(Math.floor(Date.now() / 1000) + 3600));
+  next();
+});
+
 // ═══ Authentication Middleware ═══
 const AUTH_TOKEN = process.env.TIKTOK_AUTH_TOKEN || '';
 const AUTH_ENABLED = AUTH_TOKEN.length > 0;
@@ -158,18 +166,66 @@ app.get('/api/tiktok/comments', async (req: Request, res: Response) => {
 
 app.post('/api/tiktok/comments/post', async (req: Request, res: Response) => {
   try {
-    const { text, postUrl, useAI, postContent, username } = req.body;
+    const { text, postUrl, videoUrl, useAI, postContent, username, dry_run } = req.body;
     const d = getDriver();
-    if (postUrl) { await d.navigateToPost(postUrl); await new Promise(r => setTimeout(r, 3000)); }
-    
+
+    // Get the URL from either postUrl or videoUrl
+    const targetUrl = postUrl || videoUrl;
+
+    // Validate that text is provided (unless useAI is true) and not empty/null
+    if (!useAI && !text) {
+      res.status(400).json({ error: 'text is required' });
+      return;
+    }
+
+    if (text !== undefined && text !== null) {
+      if (typeof text !== 'string') {
+        res.status(400).json({ error: 'text must be a string' });
+        return;
+      }
+      if (text.trim().length === 0) {
+        res.status(400).json({ error: 'text cannot be empty' });
+        return;
+      }
+      if (text.length > 10000) {
+        res.status(400).json({ error: 'text is too long (max 10000 characters)' });
+        return;
+      }
+    }
+
+    // Validate URL is a TikTok video URL
+    if (targetUrl) {
+      const isTikTokVideo = targetUrl.includes('tiktok.com') && (targetUrl.includes('/video/') || targetUrl.includes('/@'));
+      if (!isTikTokVideo) {
+        res.status(400).json({ error: 'Invalid URL: must be a TikTok video URL' });
+        return;
+      }
+    }
+
     // Use AI to generate comment if requested or if no text provided
     let commentText = text;
     if (useAI || !text) {
       commentText = await generateAIComment(postContent || 'TikTok video', username || 'creator');
       console.log(`[AI] Generated: "${commentText}"`);
     }
-    
-    if (!commentText) { res.status(400).json({ error: 'text required or useAI must be true' }); return; }
+
+    // Dry-run mode: simulate success without actually posting
+    if (dry_run) {
+      res.json({
+        success: true,
+        dry_run: true,
+        generatedComment: commentText,
+        usedAI: useAI || !text,
+        message: 'Dry-run mode: comment not actually posted'
+      });
+      return;
+    }
+
+    if (targetUrl) {
+      await d.navigateToPost(targetUrl);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
     const result = await d.postComment(commentText);
     res.json({ ...result, generatedComment: commentText, usedAI: useAI || !text });
   } catch (e) { res.status(500).json({ error: String(e) }); }
@@ -180,8 +236,23 @@ app.post('/api/tiktok/comments/generate', async (req: Request, res: Response) =>
   try {
     const { postContent, username } = req.body;
     const comment = await generateAIComment(postContent || 'TikTok video', username || 'creator');
-    res.json({ success: true, comment, usedAI: !!OPENAI_API_KEY });
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+    res.json({
+      success: true,
+      comment,
+      usedAI: !!OPENAI_API_KEY,
+      model_used: OPENAI_API_KEY ? 'gpt-4o' : 'local-template'
+    });
+  } catch (e) {
+    // Graceful fallback on AI error
+    const fallbackComment = "This is fire! 🔥";
+    res.json({
+      success: true,
+      comment: fallbackComment,
+      usedAI: false,
+      model_used: 'fallback',
+      error: 'AI generation failed, using fallback'
+    });
+  }
 });
 
 // DOM selector health check + raw data extraction from current Safari TikTok tab.

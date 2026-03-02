@@ -554,9 +554,78 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'script is required' });
       return;
     }
-    
+
     const output = await driver.executeJS(script);
     res.json({ output });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === DM API ENDPOINTS (for test compatibility) ===
+
+// Send DM - test-compatible endpoint
+app.post('/api/tiktok/dm/send', async (req: Request, res: Response) => {
+  try {
+    const { username, message } = req.body as { username: string; message: string };
+    if (!username || !message) {
+      res.status(400).json({ error: 'username and message are required' });
+      return;
+    }
+
+    const result = await sendDMByUsername(username, message, driver);
+    if (result.success) {
+      recordMessage();
+      logDM({ platform: 'tiktok', username, messageText: message, isOutbound: true });
+      res.json({
+        success: true,
+        username: result.username,
+        verified: result.verified,
+        rateLimits: {
+          hourly: getMessagesSentThisHour(),
+          daily: getMessagesSentToday(),
+        },
+      });
+    } else {
+      res.status(400).json({ success: false, error: result.error, username: result.username });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// Get DM conversations - test-compatible endpoint
+app.get('/api/tiktok/dm/conversations', async (_req: Request, res: Response) => {
+  try {
+    const conversations = await listConversations(driver);
+    res.json(conversations);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Get DM messages in conversation
+app.get('/api/tiktok/dm/messages/:id', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const messages = await readMessages(driver, limit);
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Search DM conversations
+app.post('/api/tiktok/dm/search', async (req: Request, res: Response) => {
+  try {
+    const { username } = req.body as { username: string };
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+
+    const result = await openConversation(driver, username);
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }

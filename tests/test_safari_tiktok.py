@@ -606,11 +606,26 @@ def test_ai_features(results: TestResults):
     else:
         results.mark_fail('T-SAFARI_TIKTOK-077')
 
-    # Features 078-083: Advanced AI features
-    for feature_id in [
-        'T-SAFARI_TIKTOK-078', 'T-SAFARI_TIKTOK-079', 'T-SAFARI_TIKTOK-080',
-        'T-SAFARI_TIKTOK-081', 'T-SAFARI_TIKTOK-082', 'T-SAFARI_TIKTOK-083'
-    ]:
+    # T-SAFARI_TIKTOK-078: AI model field returned
+    if status == 200 and body and ('model_used' in body or 'model' in body):
+        results.mark_pass('T-SAFARI_TIKTOK-078')
+    else:
+        results.mark_fail('T-SAFARI_TIKTOK-078', f"No model field in response")
+
+    # T-SAFARI_TIKTOK-079: AI error falls back gracefully
+    # Test by calling with invalid data - should still return a comment
+    body2, status2, _ = http_request(
+        f"{TIKTOK_COMMENTS_BASE}/api/tiktok/comments/generate",
+        method="POST",
+        data={"postContent": None, "username": None}
+    )
+    if status2 == 200 and body2 and body2.get('comment'):
+        results.mark_pass('T-SAFARI_TIKTOK-079')
+    else:
+        results.mark_fail('T-SAFARI_TIKTOK-079', f"status={status2}")
+
+    # Features 080-083: Not yet implemented
+    for feature_id in ['T-SAFARI_TIKTOK-080', 'T-SAFARI_TIKTOK-081', 'T-SAFARI_TIKTOK-082', 'T-SAFARI_TIKTOK-083']:
         results.mark_fail(feature_id, "Advanced AI features not implemented")
 
 
