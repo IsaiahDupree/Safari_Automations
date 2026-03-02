@@ -42,10 +42,45 @@ import type { ProspectStage } from '../automation/outreach-engine.js';
 
 const PORT = process.env.LINKEDIN_PORT || 3105;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const AUTH_TOKEN = process.env.LINKEDIN_AUTH_TOKEN || 'test-token-12345';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Authentication middleware
+function requireAuth(req: Request, res: Response, next: any): void {
+  // Skip auth for OPTIONS preflight requests
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    res.status(401).json({ error: 'Missing Authorization header', message: 'Authorization required' });
+    return;
+  }
+
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    res.status(400).json({ error: 'Malformed Authorization header', message: 'Expected format: Bearer <token>' });
+    return;
+  }
+
+  const token = parts[1];
+  if (!token || token.trim() === '') {
+    res.status(400).json({ error: 'Empty token', message: 'Token cannot be empty' });
+    return;
+  }
+
+  if (token !== AUTH_TOKEN) {
+    res.status(401).json({ error: 'Invalid token', message: 'Authentication failed' });
+    return;
+  }
+
+  next();
+}
 
 // Rate limiting state
 let connectionsToday = 0;
@@ -54,6 +89,54 @@ let actionsThisHour = 0;
 let lastHourReset = Date.now();
 let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
+
+// Safari command mutex — prevents concurrent Safari operations from crashing each other
+let safariLocked = false;
+let safariLockedSince = 0;
+const SAFARI_LOCK_TIMEOUT_MS = 120_000; // auto-release stale locks after 2 min
+
+function acquireSafariLock(): boolean {
+  const now = Date.now();
+  // Auto-release stale locks (crashed/hung operations)
+  if (safariLocked && now - safariLockedSince > SAFARI_LOCK_TIMEOUT_MS) {
+    console.warn('[SafariLock] Auto-releasing stale lock (timeout exceeded)');
+    safariLocked = false;
+  }
+  if (safariLocked) return false;
+  safariLocked = true;
+  safariLockedSince = now;
+  return true;
+}
+
+function releaseSafariLock(): void {
+  safariLocked = false;
+  safariLockedSince = 0;
+}
+
+async function withSafariLock<T>(
+  res: Response,
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T | void> {
+  if (!acquireSafariLock()) {
+    const heldForSec = Math.round((Date.now() - safariLockedSince) / 1000);
+    const retryAfter = Math.max(5, Math.ceil((SAFARI_LOCK_TIMEOUT_MS / 1000) - heldForSec));
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({
+      error: 'Safari busy — another operation is in progress',
+      lockedFor: `${heldForSec}s`,
+      retryAfter: `${retryAfter}s`,
+    });
+    return;
+  }
+  console.log(`[SafariLock] Acquired for: ${label}`);
+  try {
+    return await fn();
+  } finally {
+    releaseSafariLock();
+    console.log(`[SafariLock] Released: ${label}`);
+  }
+}
 
 function resetCountersIfNeeded() {
   const now = Date.now();
@@ -90,8 +173,12 @@ app.get('/health', (_req: Request, res: Response) => {
     uptime: process.uptime(),
     withinActiveHours: isWithinActiveHours(),
     counters: { connectionsToday, messagesToday, actionsThisHour },
+    safari: { locked: safariLocked, lockedForMs: safariLocked ? Date.now() - safariLockedSince : 0 },
   });
 });
+
+// Apply authentication to all /api/* routes
+app.use('/api/*', requireAuth);
 
 app.get('/api/linkedin/status', async (_req: Request, res: Response) => {
   try {
@@ -115,46 +202,38 @@ app.get('/api/linkedin/status', async (_req: Request, res: Response) => {
 // ─── Navigation ──────────────────────────────────────────────
 
 app.post('/api/linkedin/navigate/network', async (_req: Request, res: Response) => {
-  try {
+  await withSafariLock(res, 'navigate/network', async () => {
     const result = await navigateToNetwork();
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ success: false, error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/navigate/messaging', async (_req: Request, res: Response) => {
-  try {
+  await withSafariLock(res, 'navigate/messaging', async () => {
     const result = await navigateToMessaging();
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ success: false, error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/navigate/profile', async (req: Request, res: Response) => {
-  try {
-    const { profileUrl } = req.body;
-    if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  const { profileUrl } = req.body;
+  if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  await withSafariLock(res, 'navigate/profile', async () => {
     const result = await navigateToProfile(profileUrl);
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ success: false, error: e.message });
-  }
+  });
 });
 
 // ─── Debug ───────────────────────────────────────────────────
 
 app.post('/api/linkedin/debug/js', async (req: Request, res: Response) => {
-  try {
-    const { js } = req.body;
-    if (!js) return res.status(400).json({ error: 'js required' });
+  const { js } = req.body;
+  if (!js) return res.status(400).json({ error: 'js required' });
+  await withSafariLock(res, 'debug/js', async () => {
     const d = getDefaultDriver();
     const result = await d.executeJS(js);
     res.json({ result });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 // ─── Profile Extraction ──────────────────────────────────────
@@ -241,7 +320,22 @@ app.get('/api/linkedin/profile/extract-current', async (_req: Request, res: Resp
         }
         var isOpenToWork = mainText.indexOf('Open to work') !== -1 || mainText.indexOf('#OpenToWork') !== -1;
         var isHiring = mainText.indexOf('Hiring') !== -1 || mainText.indexOf('#Hiring') !== -1;
-        return JSON.stringify({ name: name, headline: headline, location: location, connectionDegree: connectionDegree, mutualConnections: mutualConnections, currentPosition: currentPosition, skills: skills, canConnect: canConnect, canMessage: canMessage, isOpenToWork: isOpenToWork, isHiring: isHiring, nameIdx: nameIdx, linesCount: lines.length });
+        var connectionCount = 0;
+        var connMatches = mainText.match(/(\\d+[,\\d]*)\\s*connections?/i);
+        if (connMatches) {
+          connectionCount = parseInt(connMatches[1].replace(/,/g, '')) || 0;
+        }
+        var company = currentPosition ? currentPosition.company : '';
+        var role = currentPosition ? currentPosition.title : '';
+        var seniority = '';
+        if (role) {
+          var roleLower = role.toLowerCase();
+          if (roleLower.indexOf('senior') !== -1 || roleLower.indexOf('sr.') !== -1 || roleLower.indexOf('lead') !== -1) seniority = 'senior';
+          else if (roleLower.indexOf('junior') !== -1 || roleLower.indexOf('jr.') !== -1 || roleLower.indexOf('entry') !== -1) seniority = 'junior';
+          else if (roleLower.indexOf('manager') !== -1 || roleLower.indexOf('director') !== -1 || roleLower.indexOf('vp') !== -1 || roleLower.indexOf('chief') !== -1 || roleLower.indexOf('head') !== -1) seniority = 'management';
+          else seniority = 'mid';
+        }
+        return JSON.stringify({ name: name, headline: headline, location: location, connectionDegree: connectionDegree, mutualConnections: mutualConnections, currentPosition: currentPosition, company: company, role: role, seniority: seniority, connectionCount: connectionCount, skills: skills, canConnect: canConnect, canMessage: canMessage, isOpenToWork: isOpenToWork, isHiring: isHiring, nameIdx: nameIdx, linesCount: lines.length });
       })()
     `);
     const parsed = JSON.parse(raw || '{}');
@@ -252,14 +346,12 @@ app.get('/api/linkedin/profile/extract-current', async (_req: Request, res: Resp
 });
 
 app.get('/api/linkedin/profile/:username', async (req: Request, res: Response) => {
-  try {
-    if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  await withSafariLock(res, `profile/${req.params.username}`, async () => {
     const profile = await extractProfile(req.params.username);
     if (!profile) return res.status(404).json({ error: 'Could not extract profile' });
     res.json(profile);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/profile/score', async (req: Request, res: Response) => {
@@ -276,15 +368,13 @@ app.post('/api/linkedin/profile/score', async (req: Request, res: Response) => {
 // ─── Connections ─────────────────────────────────────────────
 
 app.get('/api/linkedin/connections/status', async (req: Request, res: Response) => {
-  try {
-    const profileUrl = req.query.profileUrl as string;
-    if (!profileUrl) return res.status(400).json({ error: 'profileUrl query param required' });
-    if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  const profileUrl = req.query.profileUrl as string;
+  if (!profileUrl) return res.status(400).json({ error: 'profileUrl query param required' });
+  if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  await withSafariLock(res, 'connections/status', async () => {
     const status = await getConnectionStatus(profileUrl);
     res.json(status);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/connections/request', async (req: Request, res: Response) => {
@@ -306,46 +396,83 @@ app.post('/api/linkedin/connections/request', async (req: Request, res: Response
 
     if (!request.profileUrl) return res.status(400).json({ error: 'profileUrl required' });
 
-    const result = await sendConnectionRequest(request);
-    if (result.success && result.status === 'sent') connectionsToday++;
-    res.json(result);
+    await withSafariLock(res, 'connections/request', async () => {
+      const result = await sendConnectionRequest(request);
+      if (result.success && result.status === 'sent') connectionsToday++;
+      res.json(result);
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
 app.get('/api/linkedin/connections/pending', async (req: Request, res: Response) => {
-  try {
-    const type = (req.query.type as 'sent' | 'received') || 'received';
+  const type = (req.query.type as 'sent' | 'received') || 'received';
+  await withSafariLock(res, 'connections/pending', async () => {
     const requests = await listPendingRequests(type);
     res.json({ requests, count: requests.length });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/connections/accept', async (req: Request, res: Response) => {
-  try {
-    const { profileUrl } = req.body;
-    if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  const { profileUrl } = req.body;
+  if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  await withSafariLock(res, 'connections/accept', async () => {
     const accepted = await acceptRequest(profileUrl);
     res.json({ success: accepted });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
+});
+
+app.delete('/api/linkedin/connections/request/:requestId', async (req: Request, res: Response) => {
+  const { requestId } = req.params;
+  if (!requestId) return res.status(400).json({ error: 'requestId required' });
+
+  await withSafariLock(res, 'connections/withdraw', async () => {
+    try {
+      const d = getDefaultDriver();
+
+      // Navigate to sent connection requests page
+      await d.navigateTo('https://www.linkedin.com/mynetwork/invitation-manager/sent/');
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Try to withdraw the request by finding and clicking the "Withdraw" button
+      const withdrawn = await d.executeJS(`
+        (function() {
+          var buttons = document.querySelectorAll('button');
+          for (var i = 0; i < buttons.length; i++) {
+            var btn = buttons[i];
+            var text = (btn.innerText || '').toLowerCase();
+            var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+            if (text.indexOf('withdraw') !== -1 || ariaLabel.indexOf('withdraw') !== -1) {
+              // Check if this button is for the right request (simplified - in production would need better matching)
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        })()
+      `);
+
+      if (withdrawn === 'true' || withdrawn === true) {
+        res.json({ success: true, message: 'Connection request withdrawn' });
+      } else {
+        res.json({ success: false, message: 'Could not find withdraw button' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message, success: false });
+    }
+  });
 });
 
 // ─── Search ──────────────────────────────────────────────────
 
 app.post('/api/linkedin/search/people', async (req: Request, res: Response) => {
-  try {
-    if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  await withSafariLock(res, 'search/people', async () => {
     const config: Partial<PeopleSearchConfig> = req.body;
     const results = await searchPeople(config);
     res.json({ results, count: results.length });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.get('/api/linkedin/search/extract-current', async (_req: Request, res: Response) => {
@@ -426,76 +553,64 @@ app.get('/api/linkedin/search/extract-current', async (_req: Request, res: Respo
 // ─── Messages ────────────────────────────────────────────────
 
 app.get('/api/linkedin/conversations', async (_req: Request, res: Response) => {
-  try {
+  await withSafariLock(res, 'conversations', async () => {
     const nav = await navigateToMessaging();
     if (!nav.success) return res.status(500).json(nav);
     const convos = await listConversations();
     res.json({ conversations: convos, count: convos.length });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.get('/api/linkedin/messages', async (req: Request, res: Response) => {
-  try {
+  await withSafariLock(res, 'messages/list', async () => {
     const limit = parseInt(req.query.limit as string) || 20;
     const msgs = await readMessages(limit);
     res.json({ messages: msgs, count: msgs.length });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.get('/api/linkedin/messages/unread', async (_req: Request, res: Response) => {
-  try {
+  await withSafariLock(res, 'messages/unread', async () => {
     const count = await getUnreadCount();
     res.json({ unreadCount: count });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/messages/open', async (req: Request, res: Response) => {
-  try {
-    const { participantName } = req.body;
-    if (!participantName) return res.status(400).json({ error: 'participantName required' });
+  const { participantName } = req.body;
+  if (!participantName) return res.status(400).json({ error: 'participantName required' });
+  await withSafariLock(res, 'messages/open', async () => {
     const opened = await openConversation(participantName);
     res.json({ success: opened });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/messages/send', async (req: Request, res: Response) => {
-  try {
-    resetCountersIfNeeded();
-    if (messagesToday >= rateLimits.messagesPerDay) {
-      return res.status(429).json({ error: 'Daily message limit reached' });
-    }
-    const { text } = req.body;
-    if (!text) return res.status(400).json({ error: 'text required' });
+  resetCountersIfNeeded();
+  if (messagesToday >= rateLimits.messagesPerDay) {
+    return res.status(429).json({ error: 'Daily message limit reached' });
+  }
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  await withSafariLock(res, 'messages/send', async () => {
     const result = await sendMessage(text);
     if (result.success) messagesToday++;
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/messages/send-to', async (req: Request, res: Response) => {
-  try {
-    resetCountersIfNeeded();
-    if (messagesToday >= rateLimits.messagesPerDay) {
-      return res.status(429).json({ error: 'Daily message limit reached' });
-    }
-    const { profileUrl, text } = req.body;
-    if (!profileUrl || !text) return res.status(400).json({ error: 'profileUrl and text required' });
+  resetCountersIfNeeded();
+  if (messagesToday >= rateLimits.messagesPerDay) {
+    return res.status(429).json({ error: 'Daily message limit reached' });
+  }
+  const { profileUrl, text } = req.body;
+  if (!profileUrl || !text) return res.status(400).json({ error: 'profileUrl and text required' });
+  await withSafariLock(res, 'messages/send-to', async () => {
     const result = await sendMessageToProfile(profileUrl, text);
     if (result.success) messagesToday++;
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 // ─── AI Message Generation ───────────────────────────────────
@@ -633,6 +748,46 @@ app.get('/api/linkedin/posts/recent', async (req: Request, res: Response) => {
   }
 });
 
+// ─── InMail Credits ──────────────────────────────────────────
+
+app.get('/api/linkedin/credits', async (_req: Request, res: Response) => {
+  try {
+    const d = getDefaultDriver();
+    const currentUrl = await d.getCurrentUrl();
+
+    // Try to extract InMail credits from the current page
+    const raw = await d.executeJS(`
+      (function() {
+        var text = document.body.innerText || '';
+        var inmailMatch = text.match(/(\\d+)\\s*InMail.*(?:credit|message)/i);
+        var credits = inmailMatch ? parseInt(inmailMatch[1]) || 0 : 0;
+
+        // Also check for premium messaging credits
+        var premiumMatch = text.match(/(\\d+)\\s*(?:premium|messaging)\\s*credit/i);
+        if (premiumMatch && !inmailMatch) {
+          credits = parseInt(premiumMatch[1]) || 0;
+        }
+
+        return JSON.stringify({
+          inmailCredits: credits,
+          source: currentUrl,
+          found: credits > 0 || inmailMatch !== null || premiumMatch !== null
+        });
+      })()
+    `);
+
+    const parsed = JSON.parse(raw || '{}');
+
+    res.json({
+      inmailCredits: parsed.inmailCredits || 0,
+      found: parsed.found || false,
+      note: parsed.found ? 'Credits found on current page' : 'No InMail credits detected (may need to navigate to messaging or premium settings)',
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Rate Limits ─────────────────────────────────────────────
 
 app.get('/api/linkedin/rate-limits', (_req: Request, res: Response) => {
@@ -652,19 +807,17 @@ app.put('/api/linkedin/rate-limits', (req: Request, res: Response) => {
 // ─── Prospecting Pipeline ────────────────────────────────────
 
 app.post('/api/linkedin/prospect/search-score', async (req: Request, res: Response) => {
-  try {
-    if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
-    const { search, targetTitles, targetCompanies, targetLocations } = req.body;
-    if (!search) return res.status(400).json({ error: 'search config required' });
+  if (!checkHourlyLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+  const { search, targetTitles, targetCompanies, targetLocations } = req.body;
+  if (!search) return res.status(400).json({ error: 'search config required' });
+  await withSafariLock(res, 'prospect/search-score', async () => {
     const results = await searchAndScore(search, targetTitles, targetCompanies, targetLocations);
     res.json({
       results,
       count: results.length,
       qualified: results.filter((r: any) => r.score.recommendation !== 'skip').length,
     });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.post('/api/linkedin/prospect/pipeline', async (req: Request, res: Response) => {
@@ -697,12 +850,12 @@ app.post('/api/linkedin/prospect/pipeline', async (req: Request, res: Response) 
       delayBetweenActions: req.body.delayMs || 30000,
     };
 
-    const result = await runProspectingPipeline(config);
-
-    if (result.summary.connectionsSent > 0) connectionsToday += result.summary.connectionsSent;
-    if (result.summary.messagesSent > 0) messagesToday += result.summary.messagesSent;
-
-    res.json(result);
+    await withSafariLock(res, 'prospect/pipeline', async () => {
+      const result = await runProspectingPipeline(config);
+      if (result.summary.connectionsSent > 0) connectionsToday += result.summary.connectionsSent;
+      if (result.summary.messagesSent > 0) messagesToday += result.summary.messagesSent;
+      res.json(result);
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -751,14 +904,14 @@ app.get('/api/linkedin/outreach/runs', (req: Request, res: Response) => {
 
 // Run outreach cycle
 app.post('/api/linkedin/outreach/run', async (req: Request, res: Response) => {
-  try {
-    const { campaignId, dryRun, skipDiscovery, skipFollowUps } = req.body;
-    if (!campaignId) return res.status(400).json({ error: 'campaignId required' });
+  const { campaignId, dryRun, skipDiscovery, skipFollowUps } = req.body;
+  if (!campaignId) return res.status(400).json({ error: 'campaignId required' });
+  await withSafariLock(res, `outreach/run:${campaignId}`, async () => {
     const result = await runOutreachCycle(campaignId, { dryRun, skipDiscovery, skipFollowUps });
     if (result.summary.connectionsSent > 0) connectionsToday += result.summary.connectionsSent;
     if (result.summary.dmsSent > 0) messagesToday += result.summary.dmsSent;
     res.json(result);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 });
 
 // Manual prospect actions
@@ -784,6 +937,118 @@ app.post('/api/linkedin/outreach/prospects/:id/tag', (req: Request, res: Respons
   const p = tagProspect(req.params.id, req.body.tag || '');
   if (!p) return res.status(404).json({ error: 'Prospect not found' });
   res.json({ success: true, prospect: p });
+});
+
+// ─── Supabase Integration ───────────────────────────────────
+
+import { getSupabaseMock } from '../automation/supabase-mock.js';
+const supabaseMock = getSupabaseMock();
+
+// Test endpoints for Supabase data
+app.get('/api/linkedin/test/supabase/actions', async (_req: Request, res: Response) => {
+  const { data, error } = await supabaseMock.getRecentActions(100);
+  if (error) return res.status(500).json({ error });
+  res.json({ actions: data, count: data.length });
+});
+
+app.get('/api/linkedin/test/supabase/contacts', async (_req: Request, res: Response) => {
+  const { data, error } = await supabaseMock.getContacts();
+  if (error) return res.status(500).json({ error });
+  res.json({ contacts: data, count: data.length });
+});
+
+app.get('/api/linkedin/test/supabase/conversations', async (_req: Request, res: Response) => {
+  const { data, error } = await supabaseMock.getConversations();
+  if (error) return res.status(500).json({ error });
+  res.json({ conversations: data, count: data.length });
+});
+
+app.get('/api/linkedin/test/supabase/messages', async (_req: Request, res: Response) => {
+  const { data, error } = await supabaseMock.getMessages();
+  if (error) return res.status(500).json({ error });
+  res.json({ messages: data, count: data.length });
+});
+
+app.post('/api/linkedin/test/supabase/clear', (_req: Request, res: Response) => {
+  supabaseMock.clearAll();
+  res.json({ success: true, message: 'All Supabase mock data cleared' });
+});
+
+// ─── Session Management ──────────────────────────────────────
+
+import { getSessionManager } from '../automation/session-manager.js';
+const sessionManager = getSessionManager();
+
+app.post('/api/linkedin/sessions', (req: Request, res: Response) => {
+  try {
+    const { ttlMs, config } = req.body;
+    const session = sessionManager.createSession(config, ttlMs);
+    res.json({
+      success: true,
+      sessionId: session.id,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/linkedin/sessions', (_req: Request, res: Response) => {
+  try {
+    const sessions = sessionManager.listSessions();
+    res.json({ sessions, count: sessions.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/linkedin/sessions/:id', (req: Request, res: Response) => {
+  try {
+    const session = sessionManager.getSession(req.params.id);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found or expired' });
+    }
+    res.json({
+      id: session.id,
+      createdAt: session.createdAt,
+      lastAccessedAt: session.lastAccessedAt,
+      expiresAt: session.expiresAt,
+      timeToExpire: Math.max(0, session.expiresAt - Date.now()),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/linkedin/sessions/:id', (req: Request, res: Response) => {
+  try {
+    const removed = sessionManager.closeSession(req.params.id);
+    if (!removed) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    res.json({ success: true, message: 'Session closed' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/linkedin/sessions/:id/extend', (req: Request, res: Response) => {
+  try {
+    const { ttlMs } = req.body;
+    const extended = sessionManager.extendSession(req.params.id, ttlMs);
+    if (!extended) {
+      return res.status(404).json({ error: 'Session not found or expired' });
+    }
+    const session = sessionManager.getSession(req.params.id);
+    res.json({
+      success: true,
+      expiresAt: session?.expiresAt,
+      timeToExpire: session ? Math.max(0, session.expiresAt - Date.now()) : 0,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Start Server ────────────────────────────────────────────

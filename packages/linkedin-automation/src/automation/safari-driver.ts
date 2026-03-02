@@ -27,6 +27,8 @@ export class SafariDriver {
   private sessionUrlPattern: string | null = null;
   private sessionLastVerified: number = 0;
   private static SESSION_VERIFY_TTL_MS = 5000; // re-verify every 5s
+  private static MIN_COMMAND_INTERVAL_MS = 250; // minimum gap between AppleScript commands
+  private lastCommandAt: number = 0;
 
   constructor(config: Partial<AutomationConfig> = {}) {
     this.config = {
@@ -49,10 +51,23 @@ export class SafariDriver {
   }
 
   /**
+   * Enforce minimum inter-command delay to prevent rapid-fire AppleScript flooding.
+   */
+  private async throttleCommand(): Promise<void> {
+    const now = Date.now();
+    const gap = now - this.lastCommandAt;
+    if (gap < SafariDriver.MIN_COMMAND_INTERVAL_MS) {
+      await this.wait(SafariDriver.MIN_COMMAND_INTERVAL_MS - gap);
+    }
+    this.lastCommandAt = Date.now();
+  }
+
+  /**
    * Execute JavaScript in local Safari via AppleScript.
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
+    await this.throttleCommand();
     const cleanJS = js.trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 

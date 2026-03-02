@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "start:server": "npx tsx src/api/server.ts"
+    "start:server": "npx tsx src/api/server.ts",
+    "start:mcp": "npx tsx src/api/mcp-server.ts"
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -375,8 +375,17 @@ export async function runOutreachCycle(
   saveProspects(prospects);
 
   // ── Step 3: Check for newly accepted connections ─────────
-  const pendingConnect = prospects.filter(p => p.campaign === campaign.id && p.stage === 'connection_sent');
-  console.log(`[Outreach] Step 3: Checking ${pendingConnect.length} pending connections...`);
+  const MAX_PENDING_CHECKS_PER_CYCLE = 10;
+  const allPendingConnect = prospects.filter(p => p.campaign === campaign.id && p.stage === 'connection_sent');
+  // Sort oldest-checked first so stale checks get priority; cap to avoid navigation storms
+  const pendingConnect = allPendingConnect
+    .sort((a, b) => {
+      const aTs = a.lastCheckedAt ? new Date(a.lastCheckedAt).getTime() : 0;
+      const bTs = b.lastCheckedAt ? new Date(b.lastCheckedAt).getTime() : 0;
+      return aTs - bTs;
+    })
+    .slice(0, MAX_PENDING_CHECKS_PER_CYCLE);
+  console.log(`[Outreach] Step 3: Checking ${pendingConnect.length}/${allPendingConnect.length} pending connections (cap: ${MAX_PENDING_CHECKS_PER_CYCLE})...`);
   for (const p of pendingConnect) {
     try {
       if (dry) continue;
