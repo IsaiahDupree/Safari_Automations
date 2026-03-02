@@ -1,0 +1,629 @@
+{
+  "runAt": "2026-03-02T04:58:45.925550Z",
+  "summary": {
+    "total": 103,
+    "passed": 27,
+    "failed": 76,
+    "passRate": "26%"
+  },
+  "results": [
+    {
+      "id": "T-SAFARI-E2E-001",
+      "name": "Health check: all services",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-002",
+      "name": "Health check: instagram-dm",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-003",
+      "name": "Health check: twitter-dm",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-004",
+      "name": "Health check: tiktok-dm",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-005",
+      "name": "Health check: linkedin",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-006",
+      "name": "Health check: instagram-comments",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-007",
+      "name": "Health check: tiktok-comments",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-008",
+      "name": "Health check: twitter-comments",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-009",
+      "name": "Health check: threads-comments",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-010",
+      "name": "Health check: market-research",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-011",
+      "name": "Session ensure: Instagram",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-012",
+      "name": "Session status: Instagram",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-013",
+      "name": "Session clear: Instagram",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-014",
+      "name": "Session ensure: Twitter",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/ensure</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-015",
+      "name": "Session status: Twitter",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-016",
+      "name": "Session clear: Twitter",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/clear</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-017",
+      "name": "Session ensure: TikTok",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/session/ensure</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-018",
+      "name": "Session status: TikTok",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-019",
+      "name": "Session re-lock after clear",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-020",
+      "name": "Navigate Instagram DM inbox",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-021",
+      "name": "Get Instagram conversations",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-022",
+      "name": "Instagram conversation has required fields",
+      "passed": false,
+      "error": "No valid conversations"
+    },
+    {
+      "id": "T-SAFARI-E2E-023",
+      "name": "Send Instagram DM",
+      "passed": false,
+      "error": "HTTP 429: {\"error\":\"Outside active hours\",\"activeHours\":\"9:00 - 21:00\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-024",
+      "name": "Instagram DM has verified field",
+      "passed": false,
+      "error": "No verified field"
+    },
+    {
+      "id": "T-SAFARI-E2E-025",
+      "name": "Post Instagram comment",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-026",
+      "name": "Instagram comment has commentId",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-027",
+      "name": "Instagram session persists",
+      "passed": false,
+      "error": "HTTP 401: {\"error\":\"Unauthorized\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-028",
+      "name": "Navigate Twitter DM inbox",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/inbox/navigate</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-029",
+      "name": "Get Twitter conversations",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/conversations</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-030",
+      "name": "Twitter conversation has required fields",
+      "passed": false,
+      "error": "No valid conversations"
+    },
+    {
+      "id": "T-SAFARI-E2E-031",
+      "name": "Send Twitter DM",
+      "passed": false,
+      "error": "HTTP 429: {\"error\":\"Outside active hours\",\"activeHours\":\"9:00 - 21:00\"}"
+    },
+    {
+      "id": "T-SAFARI-E2E-032",
+      "name": "Twitter DM has strategy field",
+      "passed": false,
+      "error": "No strategy field"
+    },
+    {
+      "id": "T-SAFARI-E2E-033",
+      "name": "Post Twitter comment (no AI)",
+      "passed": false,
+      "error": "Requires real tweet URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-034",
+      "name": "Post Twitter comment with AI",
+      "passed": false,
+      "error": "Requires real tweet URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-035",
+      "name": "Twitter session persists",
+      "passed": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/session/status</pre>\n</body>\n</html>\n"
+    },
+    {
+      "id": "T-SAFARI-E2E-036",
+      "name": "Navigate TikTok DM inbox",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-037",
+      "name": "Get TikTok conversations",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-038",
+      "name": "TikTok conversation has required fields",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-039",
+      "name": "Send TikTok DM",
+      "passed": false,
+      "error": "Outside active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-040",
+      "name": "TikTok DM has strategy field",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-041",
+      "name": "Post TikTok comment",
+      "passed": false,
+      "error": "Requires real video URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-042",
+      "name": "TikTok comment URL format",
+      "passed": false,
+      "error": "Requires real video URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-043",
+      "name": "TikTok session persists",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-044",
+      "name": "Post Threads comment",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-045",
+      "name": "Threads comment endpoint",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-046",
+      "name": "Threads 500 char limit",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-047",
+      "name": "Threads comment has commentId",
+      "passed": false,
+      "error": "Requires real post URL"
+    },
+    {
+      "id": "T-SAFARI-E2E-048",
+      "name": "LinkedIn health check",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-049",
+      "name": "Send LinkedIn DM",
+      "passed": false,
+      "error": "Outside active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-050",
+      "name": "LinkedIn DM strategy field",
+      "passed": false,
+      "error": "Outside active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-051",
+      "name": "LinkedIn DM rateLimits object",
+      "passed": false,
+      "error": "Outside active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-052",
+      "name": "Market Research: Instagram search",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-053",
+      "name": "Instagram post has required fields",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-054",
+      "name": "Market Research: Twitter search",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-055",
+      "name": "Twitter post has required fields",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-056",
+      "name": "Market Research: TikTok search",
+      "passed": false,
+      "error": "Error: timed out"
+    },
+    {
+      "id": "T-SAFARI-E2E-057",
+      "name": "TikTok post has required fields",
+      "passed": false,
+      "error": "Missing required fields"
+    },
+    {
+      "id": "T-SAFARI-E2E-058",
+      "name": "Market Research: Threads search",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-059",
+      "name": "Threads post has required fields",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-060",
+      "name": "Competitor research: Instagram",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-061",
+      "name": "Competitor research has topCreators",
+      "passed": false,
+      "error": "No topCreators"
+    },
+    {
+      "id": "T-SAFARI-E2E-062",
+      "name": "Competitor research: Twitter",
+      "passed": false,
+      "error": "Skipped for time"
+    },
+    {
+      "id": "T-SAFARI-E2E-063",
+      "name": "Competitor research: TikTok",
+      "passed": false,
+      "error": "Skipped for time"
+    },
+    {
+      "id": "T-SAFARI-E2E-064",
+      "name": "Search result count > 0",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-065",
+      "name": "maxPosts parameter respected",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-066",
+      "name": "content_creation niche",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-067",
+      "name": "ai_automation niche",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-068",
+      "name": "Safari Inspector feature 68",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-069",
+      "name": "Safari Inspector feature 69",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-070",
+      "name": "Safari Inspector feature 70",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-071",
+      "name": "Safari Inspector feature 71",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-072",
+      "name": "Safari Inspector feature 72",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-073",
+      "name": "Safari Inspector feature 73",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-074",
+      "name": "Safari Inspector feature 74",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-075",
+      "name": "Safari Inspector feature 75",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-076",
+      "name": "Safari Inspector feature 76",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-077",
+      "name": "Safari Inspector feature 77",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-078",
+      "name": "Safari Inspector feature 78",
+      "passed": false,
+      "error": "Safari Inspector MCP server not implemented"
+    },
+    {
+      "id": "T-SAFARI-E2E-079",
+      "name": "Integration test 79",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-080",
+      "name": "Integration test 80",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-081",
+      "name": "Integration test 81",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-082",
+      "name": "Integration test 82",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-083",
+      "name": "Integration test 83",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-084",
+      "name": "Integration test 84",
+      "passed": false,
+      "error": "Requires Safari automation + active hours"
+    },
+    {
+      "id": "T-SAFARI-E2E-085",
+      "name": "Rate limit test 85",
+      "passed": false,
+      "error": "Requires active hours + DM sending"
+    },
+    {
+      "id": "T-SAFARI-E2E-086",
+      "name": "Rate limit test 86",
+      "passed": false,
+      "error": "Requires active hours + DM sending"
+    },
+    {
+      "id": "T-SAFARI-E2E-087",
+      "name": "Rate limit test 87",
+      "passed": false,
+      "error": "Requires active hours + DM sending"
+    },
+    {
+      "id": "T-SAFARI-E2E-088",
+      "name": "Rate limit test 88",
+      "passed": false,
+      "error": "Requires active hours + DM sending"
+    },
+    {
+      "id": "T-SAFARI-E2E-089",
+      "name": "Error: invalid platform",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-090",
+      "name": "Error: empty username",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-091",
+      "name": "Error: invalid postUrl",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-092",
+      "name": "Error: TikTok short-link URL",
+      "passed": false,
+      "error": "Not tested"
+    },
+    {
+      "id": "T-SAFARI-E2E-093",
+      "name": "Execute JS: Instagram",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-094",
+      "name": "Execute JS: Twitter",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-095",
+      "name": "Execute JS: TikTok",
+      "passed": false,
+      "error": "Requires Safari automation"
+    },
+    {
+      "id": "T-SAFARI-E2E-096",
+      "name": "Results file written",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-097",
+      "name": "Results file has required fields",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-098",
+      "name": "Results has summary block",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-099",
+      "name": "Results has timestamp",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-100",
+      "name": "Feature list updated",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-101",
+      "name": "Overall pass rate",
+      "passed": true,
+      "error": null
+    },
+    {
+      "id": "T-SAFARI-E2E-102",
+      "name": "Git commit",
+      "passed": false,
+      "error": "Will be done manually"
+    },
+    {
+      "id": "T-SAFARI-E2E-103",
+      "name": "Services restartable",
+      "passed": true,
+      "error": null
+    }
+  ]
+}
