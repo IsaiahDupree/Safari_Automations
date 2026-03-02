@@ -9,9 +9,16 @@ import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import type { AutomationConfig } from './types.js';
 
 const execAsync = promisify(exec);
+
+export interface AutomationConfig {
+  instanceType: 'local' | 'remote';
+  remoteUrl?: string;
+  timeout?: number;
+  actionDelay?: number;
+  verbose?: boolean;
+}
 
 export interface SessionInfo {
   found: boolean;

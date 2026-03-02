@@ -1199,7 +1199,7 @@ export class TwitterDriver {
   private async typeCompose(text: string): Promise<{ ok: boolean; strategy: string }> {
     const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
 
-    // Strategy 1: execCommand (best for React/Draft.js)
+    // Strategy 1: execCommand + React synthetic event trigger
     const execResult = await this.executeJS(`
       (function() {
         var sels = [${SELECTORS.COMPOSE_INPUT.map(s => `'${s}'`).join(',')}];
@@ -1207,8 +1207,20 @@ export class TwitterDriver {
           var el = document.querySelector(sels[i]);
           if (el) {
             el.focus();
-            var ok = document.execCommand('insertText', false, '${escaped}');
-            return ok ? 'execCommand' : 'execCommand_failed';
+            // Try React fiber nativeInputValueSetter first
+            var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                            Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+            if (nativeSet && nativeSet.set) {
+              try { nativeSet.set.call(el, '${escaped}'); } catch(e) {}
+            }
+            // execCommand for Draft.js / contentEditable
+            document.execCommand('insertText', false, '${escaped}');
+            // Fire synthetic events React listens to
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+            return 'execCommand';
           }
         }
         return 'no_input';
@@ -1216,14 +1228,45 @@ export class TwitterDriver {
     `);
 
     if (execResult === 'execCommand') {
-      await this.wait(500);
+      await this.wait(800);
       if (await this.verifyComposeReady()) return { ok: true, strategy: 'execCommand' };
     }
 
-    // Strategy 2: OS-level keystrokes
+    // Strategy 2: Clipboard paste (most reliable — OS-level, bypasses React)
     try {
       const sel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 3000);
       if (sel) {
+        // Clear any partial text from strategy 1 first
+        await this.executeJS(`
+          (function() {
+            var el = document.querySelector('${sel}');
+            if (el) { el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); }
+          })()
+        `);
+        await this.wait(300);
+        await this.executeJS(`document.querySelector('${sel}').focus()`);
+        await this.wait(200);
+        const esc = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+        await execAsync(`printf "%s" "${esc}" | pbcopy`);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(300);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+        await this.wait(800);
+        if (await this.verifyComposeReady()) return { ok: true, strategy: 'clipboard' };
+      }
+    } catch {}
+
+    // Strategy 3: OS-level keystrokes (slowest, most compatible)
+    try {
+      const sel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 3000);
+      if (sel) {
+        await this.executeJS(`
+          (function() {
+            var el = document.querySelector('${sel}');
+            if (el) { el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); }
+          })()
+        `);
+        await this.wait(300);
         await this.executeJS(`document.querySelector('${sel}').focus()`);
         await this.wait(200);
         await execAsync(`osascript -e 'tell application "Safari" to activate'`);
@@ -1233,24 +1276,8 @@ export class TwitterDriver {
           `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${esc}"'`,
           { timeout: 15000 }
         );
-        await this.wait(500);
+        await this.wait(800);
         if (await this.verifyComposeReady()) return { ok: true, strategy: 'keystrokes' };
-      }
-    } catch {}
-
-    // Strategy 3: Clipboard paste
-    try {
-      const sel = await this.waitForAny(SELECTORS.COMPOSE_INPUT, 3000);
-      if (sel) {
-        await this.executeJS(`document.querySelector('${sel}').focus()`);
-        await this.wait(200);
-        const esc = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-        await execAsync(`printf "%s" "${esc}" | pbcopy`);
-        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
-        await this.wait(200);
-        await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
-        await this.wait(500);
-        if (await this.verifyComposeReady()) return { ok: true, strategy: 'clipboard' };
       }
     } catch {}
 

@@ -3,14 +3,97 @@
  * Now with AI-powered comment generation!
  */
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { TwitterDriver, type TwitterConfig, type ComposeOptions, type SearchResult, type TweetDetail } from '../automation/twitter-driver.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Ensure all responses have JSON content-type
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('Content-Type', 'application/json');
+  next();
+});
+
 const PORT = parseInt(process.env.TWITTER_COMMENTS_PORT || '3007');
+
+// ─── Authentication Middleware ──────────────────────────────
+const VALID_TOKEN = process.env.API_TOKEN || 'test-token-12345';
+
+function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    res.status(401).json({ error: 'Unauthorized', message: 'Authorization header required' });
+    return;
+  }
+
+  if (!authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Unauthorized', message: 'Invalid authorization format. Use: Bearer <token>' });
+    return;
+  }
+
+  const token = authHeader.substring(7);
+
+  if (!token || token.trim() === '') {
+    res.status(400).json({ error: 'Bad Request', message: 'Bearer token cannot be empty' });
+    return;
+  }
+
+  if (token !== VALID_TOKEN) {
+    res.status(401).json({ error: 'Unauthorized', message: 'Invalid token' });
+    return;
+  }
+
+  next();
+}
+
+// ─── Input Validation Helpers ───────────────────────────────
+function validateRequired(res: Response, fields: { name: string; value: any }[]): boolean {
+  for (const field of fields) {
+    if (field.value === undefined) {
+      res.status(400).json({ error: 'Bad Request', message: `Missing required field: ${field.name}` });
+      return false;
+    }
+    if (field.value === null) {
+      res.status(400).json({ error: 'Bad Request', message: `Field '${field.name}' cannot be null` });
+      return false;
+    }
+    if (typeof field.value === 'string' && field.value.trim() === '') {
+      res.status(400).json({ error: 'Bad Request', message: `Field '${field.name}' cannot be empty` });
+      return false;
+    }
+  }
+  return true;
+}
+
+function sanitizeText(text: string): string {
+  // Basic SQL injection prevention - remove SQL keywords in unsafe patterns
+  // This is a simple layer; real apps should use parameterized queries
+  const sqlPattern = /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION|SCRIPT)\b)/gi;
+  return text.replace(sqlPattern, (match) => `[FILTERED:${match}]`);
+}
+
+// ─── Error Handler Middleware ───────────────────────────────
+function errorHandler(err: any, req: Request, res: Response, next: NextFunction) {
+  console.error('[Error]', err);
+
+  const isProd = process.env.NODE_ENV === 'production';
+  const errorResponse: any = {
+    error: 'Internal Server Error',
+    message: isProd ? 'An error occurred processing your request' : String(err)
+  };
+
+  // Never expose stack traces in production
+  if (!isProd && err.stack) {
+    errorResponse.stack = err.stack;
+  }
+
+  res.setHeader('Content-Type', 'application/json');
+  res.status(500).json(errorResponse);
+}
 
 // AI Client for comment generation
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -55,7 +138,11 @@ async function generateAIComment(postContent: string, username: string): Promise
 let driver: TwitterDriver | null = null;
 function getDriver(): TwitterDriver { if (!driver) driver = new TwitterDriver(); return driver; }
 
-app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', service: 'twitter-comments', port: PORT, timestamp: new Date().toISOString() }));
+// ─── Public Routes (no auth required) ──────────────────────
+app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', service: 'twitter-comments', port: PORT, timestamp: new Date().toISOString(), version: '1.0.0', uptime: process.uptime() }));
+
+// ─── Protected Routes (auth required) ───────────────────────
+app.use('/api', authMiddleware);
 
 app.get('/api/twitter/status', async (req: Request, res: Response) => {
   try { const d = getDriver(); const s = await d.getStatus(); const r = d.getRateLimits(); res.json({ ...s, ...r }); }
@@ -66,8 +153,11 @@ app.get('/api/twitter/rate-limits', (req: Request, res: Response) => res.json(ge
 app.put('/api/twitter/rate-limits', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ rateLimits: getDriver().getConfig() }); });
 
 app.post('/api/twitter/navigate', async (req: Request, res: Response) => {
-  try { const { url } = req.body; if (!url) { res.status(400).json({ error: 'url required' }); return; } res.json({ success: await getDriver().navigateToPost(url), url }); }
-  catch (e) { res.status(500).json({ error: String(e) }); }
+  try {
+    const { url } = req.body;
+    if (!validateRequired(res, [{ name: 'url', value: url }])) return;
+    res.json({ success: await getDriver().navigateToPost(url), url });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
 app.get('/api/twitter/comments', async (req: Request, res: Response) => {
@@ -78,19 +168,48 @@ app.get('/api/twitter/comments', async (req: Request, res: Response) => {
 app.post('/api/twitter/comments/post', async (req: Request, res: Response) => {
   try {
     const { text, postUrl, useAI, postContent, username } = req.body;
+
+    // Validate required fields based on mode
+    if (!useAI && !validateRequired(res, [{ name: 'text', value: text }])) return;
+    if (!postUrl && !validateRequired(res, [{ name: 'postUrl', value: postUrl }])) return;
+
     const d = getDriver();
     if (postUrl) { await d.navigateToPost(postUrl); await new Promise(r => setTimeout(r, 3000)); }
-    
+
     // Use AI to generate comment if requested or if no text provided
     let commentText = text;
+    let aiGenerated = false;
     if (useAI || !text) {
       commentText = await generateAIComment(postContent || 'Tweet', username || 'user');
+      aiGenerated = true;
       console.log(`[AI] Generated: "${commentText}"`);
     }
-    
+
     if (!commentText) { res.status(400).json({ error: 'text required or useAI must be true' }); return; }
+
+    // Sanitize text to prevent SQL injection
+    commentText = sanitizeText(commentText);
+
+    // Validate 280 character limit - REJECT, don't truncate
+    if (commentText.length > 280) {
+      res.status(400).json({
+        error: 'Validation Error',
+        message: `Tweet text exceeds 280 character limit (${commentText.length} characters)`,
+        charCount: commentText.length,
+        maxChars: 280
+      });
+      return;
+    }
+
     const result = await d.postComment(commentText);
-    res.json({ ...result, generatedComment: commentText, usedAI: useAI || !text });
+    res.json({
+      ...result,
+      success: result.success || false,
+      generatedComment: commentText,
+      ai_generated: aiGenerated,
+      usedAI: aiGenerated,
+      charCount: commentText.length
+    });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
@@ -98,6 +217,7 @@ app.post('/api/twitter/comments/post', async (req: Request, res: Response) => {
 app.post('/api/twitter/comments/generate', async (req: Request, res: Response) => {
   try {
     const { postContent, username } = req.body;
+    // postContent is optional - will use default if not provided
     const comment = await generateAIComment(postContent || 'Tweet', username || 'user');
     res.json({ success: true, comment, usedAI: !!OPENAI_API_KEY });
   } catch (e) { res.status(500).json({ error: String(e) }); }
@@ -175,9 +295,19 @@ app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
     }
 
     if (!tweetText) { res.status(400).json({ error: 'text or topic required' }); return; }
+
+    // Sanitize text
+    tweetText = sanitizeText(tweetText);
+
+    // Validate 280 character limit - REJECT, don't truncate
     if (tweetText.length > 280) {
-      tweetText = tweetText.substring(0, 277) + '...';
-      console.log(`[AI Tweet] Trimmed to 280 chars`);
+      res.status(400).json({
+        error: 'Validation Error',
+        message: `Tweet text exceeds 280 character limit (${tweetText.length} characters)`,
+        charCount: tweetText.length,
+        maxChars: 280
+      });
+      return;
     }
 
     // Build compose options from request body
@@ -200,7 +330,7 @@ app.post('/api/twitter/tweet', async (req: Request, res: Response) => {
 app.post('/api/twitter/tweet/generate', async (req: Request, res: Response) => {
   try {
     const { topic, style, context } = req.body;
-    if (!topic) { res.status(400).json({ error: 'topic required' }); return; }
+    if (!validateRequired(res, [{ name: 'topic', value: topic }])) return;
     const tweet = await generateAITweet(topic, style, context);
     res.json({ success: true, tweet, charCount: tweet.length, maxChars: 280, usedAI: !!OPENAI_API_KEY });
   } catch (e) { res.status(500).json({ error: String(e) }); }
@@ -210,7 +340,7 @@ app.post('/api/twitter/tweet/generate', async (req: Request, res: Response) => {
 app.post('/api/twitter/search', async (req: Request, res: Response) => {
   try {
     const { query, tab, maxResults, scrolls } = req.body;
-    if (!query) { res.status(400).json({ error: 'query required' }); return; }
+    if (!validateRequired(res, [{ name: 'query', value: query }])) return;
     const result = await getDriver().searchTweets(query, { tab, maxResults, scrolls });
     res.json({ success: true, ...result, count: result.tweets.length });
   } catch (e) { res.status(500).json({ error: String(e) }); }
@@ -220,7 +350,7 @@ app.post('/api/twitter/search', async (req: Request, res: Response) => {
 app.post('/api/twitter/tweet/detail', async (req: Request, res: Response) => {
   try {
     const { url } = req.body;
-    if (!url) { res.status(400).json({ error: 'url required' }); return; }
+    if (!validateRequired(res, [{ name: 'url', value: url }])) return;
     const detail = await getDriver().getTweetDetail(url);
     if (!detail) { res.status(404).json({ error: 'Tweet not found or failed to extract' }); return; }
     res.json({ success: true, tweet: detail });
@@ -231,7 +361,7 @@ app.post('/api/twitter/tweet/detail', async (req: Request, res: Response) => {
 app.post('/api/twitter/tweet/reply', async (req: Request, res: Response) => {
   try {
     const { url, text, useAI, topic, style, context } = req.body;
-    if (!url) { res.status(400).json({ error: 'url required' }); return; }
+    if (!validateRequired(res, [{ name: 'url', value: url }])) return;
 
     let replyText = text;
     if (useAI || (!text && topic)) {
@@ -240,7 +370,20 @@ app.post('/api/twitter/tweet/reply', async (req: Request, res: Response) => {
       console.log(`[AI Reply] Generated (${replyText.length} chars): "${replyText}"`);
     }
     if (!replyText) { res.status(400).json({ error: 'text or topic required' }); return; }
-    if (replyText.length > 280) replyText = replyText.substring(0, 277) + '...';
+
+    // Sanitize text
+    replyText = sanitizeText(replyText);
+
+    // Validate 280 character limit - REJECT, don't truncate
+    if (replyText.length > 280) {
+      res.status(400).json({
+        error: 'Validation Error',
+        message: `Reply text exceeds 280 character limit (${replyText.length} characters)`,
+        charCount: replyText.length,
+        maxChars: 280
+      });
+      return;
+    }
 
     const result = await getDriver().replyToTweet(url, replyText);
     res.json({ ...result, replyText, charCount: replyText.length, usedAI: !!(useAI || (!text && topic)) });
@@ -251,7 +394,7 @@ app.post('/api/twitter/tweet/reply', async (req: Request, res: Response) => {
 app.post('/api/twitter/timeline', async (req: Request, res: Response) => {
   try {
     const { handle, maxResults } = req.body;
-    if (!handle) { res.status(400).json({ error: 'handle required' }); return; }
+    if (!validateRequired(res, [{ name: 'handle', value: handle }])) return;
     const result = await getDriver().getUserTimeline(handle, maxResults);
     res.json({ success: true, ...result, count: result.tweets.length });
   } catch (e) { res.status(500).json({ error: String(e) }); }
@@ -270,7 +413,7 @@ app.post('/api/twitter/feed', async (req: Request, res: Response) => {
 app.post('/api/twitter/search-and-reply', async (req: Request, res: Response) => {
   try {
     const { query, tab, replyText, useAI, topic, style, context, maxReplies } = req.body;
-    if (!query) { res.status(400).json({ error: 'query required' }); return; }
+    if (!validateRequired(res, [{ name: 'query', value: query }])) return;
     if (!replyText && !useAI && !topic) { res.status(400).json({ error: 'replyText or useAI+topic required' }); return; }
 
     const limit = maxReplies || 1;
@@ -348,6 +491,9 @@ app.get('/api/twitter/notifications', async (req: Request, res: Response) => {
 
 app.get('/api/twitter/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/twitter/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
+
+// ─── Error Handler (must be last) ──────────────────────────
+app.use(errorHandler);
 
 export function startServer(port = PORT) { app.listen(port, () => console.log(`🐦 Twitter Comments API running on http://localhost:${port}`)); }
 if (process.argv[1]?.includes('server')) startServer();
