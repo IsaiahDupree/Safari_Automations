@@ -2,11 +2,12 @@
  * TikTok DM Automation Exports
  */
 
-export { SafariDriver, type SafariDriverOptions } from './safari-driver.js';
+export { SafariDriver, type SessionInfo } from './safari-driver.js';
 
 export {
   checkAndRetryError,
   hasErrorState,
+  detectTikTokRateLimit,
   navigateToInbox,
   listConversations,
   openConversation,

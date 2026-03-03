@@ -43,8 +43,11 @@ export interface NavigationResult {
 export interface AutomationConfig {
   verbose: boolean;
   timeout: number;
-  retryAttempts: number;
-  retryDelay: number;
+  retryAttempts?: number;
+  retryDelay?: number;
+  instanceType?: 'local' | 'remote';
+  remoteUrl?: string;
+  actionDelay?: number;
 }
 
 export interface RateLimitConfig {
@@ -61,6 +64,8 @@ export const DEFAULT_CONFIG: AutomationConfig = {
   timeout: 30000,
   retryAttempts: 3,
   retryDelay: 1000,
+  instanceType: 'local',
+  actionDelay: 1000,
 };
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {

@@ -13,6 +13,37 @@ if (OPENAI_API_KEY) {
   console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
 }
 
+// Supabase CRM logging (optional)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+if (SUPABASE_ENABLED) {
+  console.log('[CRM] ✅ Supabase logging enabled');
+}
+
+/**
+ * Log a DM send to Supabase CRM (fire-and-forget).
+ */
+async function logToSupabase(data: { platform: string; to_user: string; content: string; sent_at: string; status: string }): Promise<void> {
+  if (!SUPABASE_ENABLED) return;
+
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/crm_messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY!,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(data),
+    });
+  } catch (err) {
+    // Fire-and-forget: don't throw errors
+    console.error('[CRM] Supabase logging failed:', err);
+  }
+}
+
 export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
   if (!OPENAI_API_KEY) {
     return `Hey! Wanted to connect with you about ${context.topic || 'your content'}. Let me know if you're interested!`;
@@ -64,6 +95,10 @@ import {
   getThreadId,
   getAllThreads,
   getAllConversations,
+  getUnreadConversations,
+  acceptMessageRequest,
+  declineMessageRequest,
+  enrichContact,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
@@ -262,8 +297,44 @@ app.post('/api/inbox/navigate', requireActiveSession, async (req, res) => {
 // List conversations
 app.get('/api/conversations', requireActiveSession, async (req, res) => {
   try {
-    const conversations = await listConversations(getDriver());
-    res.json({ conversations, count: conversations.length });
+    const scrollMore = req.query.scrollMore === 'true';
+    let conversations = await listConversations(getDriver());
+
+    if (scrollMore) {
+      // Scroll and paginate to get more conversations
+      const d = getDriver();
+      let prevCount = conversations.length;
+      let stableRounds = 0;
+      const maxScrolls = 3;
+
+      for (let i = 0; i < maxScrolls; i++) {
+        // Scroll conversation list
+        await d.executeJS(`
+          (function() {
+            var container = document.querySelector('[aria-label="Thread list"]') ||
+                            document.querySelector('div[role="list"]') ||
+                            document.querySelector('div[class*="inbox"]');
+            if (container) {
+              container.scrollTop += 600;
+            } else {
+              window.scrollBy(0, 600);
+            }
+          })()
+        `);
+        await d.wait(600);
+
+        conversations = await listConversations(d);
+        if (conversations.length === prevCount) {
+          stableRounds++;
+          if (stableRounds >= 2) break;
+        } else {
+          stableRounds = 0;
+        }
+        prevCount = conversations.length;
+      }
+    }
+
+    res.json({ conversations, count: conversations.length, scrolled: scrollMore });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -275,6 +346,61 @@ app.get('/api/conversations/all', requireActiveSession, async (req, res) => {
     const allConversations = await getAllConversations(getDriver());
     const totalCount = Object.values(allConversations).reduce((sum, arr) => sum + arr.length, 0);
     res.json({ conversations: allConversations, totalCount });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Get unread conversations
+app.get('/api/conversations/unread', requireActiveSession, async (req, res) => {
+  try {
+    const result = await getUnreadConversations(getDriver());
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Accept message request
+app.post('/api/requests/:username/accept', requireActiveSession, async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) {
+      res.status(400).json({ error: 'username required' });
+      return;
+    }
+    const success = await acceptMessageRequest(username, getDriver());
+    res.json({ success, username, action: 'accepted' });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Decline message request
+app.post('/api/requests/:username/decline', requireActiveSession, async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) {
+      res.status(400).json({ error: 'username required' });
+      return;
+    }
+    const success = await declineMessageRequest(username, getDriver());
+    res.json({ success, username, action: 'declined' });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Get user profile information
+app.get('/api/profile/:username', requireActiveSession, async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) {
+      res.status(400).json({ error: 'username required' });
+      return;
+    }
+    const profile = await enrichContact(username, getDriver());
+    res.json({ success: true, username, profile });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -337,12 +463,20 @@ app.post('/api/messages/send', requireActiveSession, checkRateLimit, async (req,
     }
     
     const result = await sendMessage(text, getDriver());
-    
+
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
       if (username) {
         logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+        // Log to Supabase if enabled
+        logToSupabase({
+          platform: 'instagram',
+          to_user: username,
+          content: text,
+          sent_at: new Date().toISOString(),
+          status: 'sent',
+        });
       }
     }
     
@@ -389,6 +523,13 @@ app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (r
       messagesSentToday++;
       messagesSentThisHour++;
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      logToSupabase({
+        platform: 'instagram',
+        to_user: username,
+        content: text,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+      });
       res.json({
         ...profileResult,
         username,
@@ -406,6 +547,13 @@ app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (r
         messagesSentToday++;
         messagesSentThisHour++;
         logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+        logToSupabase({
+          platform: 'instagram',
+          to_user: username,
+          content: text,
+          sent_at: new Date().toISOString(),
+          status: 'sent',
+        });
       }
       res.json({
         ...result,
@@ -424,6 +572,13 @@ app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (r
         messagesSentToday++;
         messagesSentThisHour++;
         logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+        logToSupabase({
+          platform: 'instagram',
+          to_user: username,
+          content: text,
+          sent_at: new Date().toISOString(),
+          status: 'sent',
+        });
       }
       res.json({
         ...result,
@@ -512,11 +667,18 @@ app.post('/api/messages/smart-send', checkRateLimit, async (req, res) => {
     }
     
     const result = await smartSendDM(username, text, getDriver());
-    
+
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      logToSupabase({
+        platform: 'instagram',
+        to_user: username,
+        content: text,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+      });
     }
     
     res.json({
@@ -539,13 +701,20 @@ app.post('/api/messages/send-from-profile', checkRateLimit, async (req, res) => 
     }
     
     const result = await sendDMFromProfile(username, text, getDriver());
-    
+
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
+      logToSupabase({
+        platform: 'instagram',
+        to_user: username,
+        content: text,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+      });
     }
-    
+
     res.json({
       ...result,
       username,
@@ -567,11 +736,18 @@ app.post('/api/messages/send-to-thread', checkRateLimit, async (req, res) => {
     }
     
     const result = await sendDMToThread(threadId, text, getDriver());
-    
+
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
       logDM({ platform: 'instagram', username: `thread:${threadId}`, messageText: text, isOutbound: true });
+      logToSupabase({
+        platform: 'instagram',
+        to_user: `thread:${threadId}`,
+        content: text,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+      });
     }
     
     res.json({

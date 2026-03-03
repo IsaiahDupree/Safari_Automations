@@ -35,6 +35,7 @@ export interface SendMessageResult {
   messageId?: string;
   verified?: boolean;
   verifiedRecipient?: string;
+  rateLimited?: boolean;
 }
 
 export interface NavigationResult {

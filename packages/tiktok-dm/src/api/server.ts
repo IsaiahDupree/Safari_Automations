@@ -13,6 +13,51 @@ if (OPENAI_API_KEY) {
   console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
 }
 
+// Supabase CRM logging (optional)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+if (SUPABASE_ENABLED) {
+  console.log('[CRM] ✅ Supabase logging enabled');
+} else {
+  console.log('[CRM] ⚠️ Supabase not configured - DM logging disabled');
+}
+
+/**
+ * Log DM send to Supabase CRM (fire-and-forget, non-fatal)
+ */
+async function logDMToSupabase(username: string, content: string): Promise<void> {
+  if (!SUPABASE_ENABLED) return;
+
+  try {
+    const payload = {
+      platform: 'tiktok',
+      to_user: username,
+      content,
+      sent_at: new Date().toISOString(),
+      status: 'sent',
+    };
+
+    // Fire-and-forget POST to Supabase
+    fetch(`${SUPABASE_URL}/rest/v1/crm_messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY!,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(payload),
+    }).catch((err) => {
+      console.error('[CRM] Supabase log failed (non-fatal):', err.message);
+    });
+  } catch (error) {
+    // Non-fatal: don't throw, just log
+    console.error('[CRM] Supabase log error (non-fatal):', error);
+  }
+}
+
 export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
   if (!OPENAI_API_KEY) {
     return `Hey! Your content is 🔥 Wanted to connect about ${context.topic || 'collab opportunities'}!`;
@@ -48,6 +93,7 @@ import {
   SafariDriver,
   checkAndRetryError,
   hasErrorState,
+  detectTikTokRateLimit,
   navigateToInbox,
   listConversations,
   openConversation,
@@ -133,6 +179,14 @@ function checkRateLimits(): { allowed: boolean; reason?: string } {
 // Rate limit middleware
 function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
   if (req.method === 'POST' && req.path.includes('/messages/send')) {
+    // Check for force flag to bypass active-hours
+    const body = req.body as { force?: boolean };
+    if (body.force === true) {
+      console.log('[FORCE] ⚠️ Active-hours bypass enabled for this send');
+      next();
+      return;
+    }
+
     const check = checkRateLimits();
     if (!check.allowed) {
       res.status(429).json({
@@ -256,6 +310,16 @@ app.get('/api/tiktok/rate-limits', (_req: Request, res: Response) => {
   });
 });
 
+// Detect TikTok rate limit UI
+app.get('/api/tiktok/rate-status', async (_req: Request, res: Response) => {
+  try {
+    const status = await detectTikTokRateLimit(driver);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Update rate limits
 app.put('/api/tiktok/rate-limits', (req: Request, res: Response) => {
   const updates = req.body as Partial<RateLimitConfig>;
@@ -286,6 +350,37 @@ app.get('/api/tiktok/conversations', async (_req: Request, res: Response) => {
   try {
     const conversations = await listConversations(driver);
     res.json({ conversations, count: conversations.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// List unread conversations
+app.get('/api/tiktok/conversations/unread', async (_req: Request, res: Response) => {
+  try {
+    const result = await driver.executeJS(`
+      (function() {
+        var unreadConvos = [];
+        var items = document.querySelectorAll('[data-e2e="message-item"], [data-e2e="chat-list-item"]');
+
+        items.forEach(function(item) {
+          // Check for unread indicators: badge or unread class
+          var hasUnread = !!item.querySelector('[class*="unread"], [class*="badge"], [class*="Unread"], [class*="Badge"]');
+
+          if (hasUnread) {
+            var text = item.innerText.trim().split("\\n");
+            var username = text[0] || 'Unknown';
+            var preview = text[1] ? text[1].substring(0, 100) : '';
+            unreadConvos.push({ username: username, preview: preview });
+          }
+        });
+
+        return JSON.stringify({ count: unreadConvos.length, conversations: unreadConvos });
+      })()
+    `);
+
+    const parsed = JSON.parse(result);
+    res.json(parsed);
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -397,11 +492,24 @@ app.post('/api/tiktok/messages/send-to', async (req: Request, res: Response) => 
       res.status(400).json({ error: 'username and text (or message) are required' });
       return;
     }
-    
+
+    // Check for TikTok rate limit UI before attempting to send
+    const rateLimitStatus = await detectTikTokRateLimit(driver);
+    if (rateLimitStatus.limited) {
+      res.status(429).json({
+        success: false,
+        rateLimited: true,
+        error: `TikTok rate limited: ${rateLimitStatus.message || 'detected'}`,
+        captcha: rateLimitStatus.captcha,
+      });
+      return;
+    }
+
     const result = await sendDMByUsername(username, msg, driver);
     if (result.success) {
       recordMessage();
       logDM({ platform: 'tiktok', username, messageText: msg, isOutbound: true });
+      logDMToSupabase(username, msg); // Fire-and-forget Supabase logging
       res.json({
         success: true,
         username: result.username,
@@ -433,7 +541,9 @@ app.post('/api/tiktok/messages/send-to-url', async (req: Request, res: Response)
     if (result.success) {
       recordMessage();
       const extractedUsername = profileUrl.replace(/.*\.com\/@?/, '').replace(/\/.*/, '');
-      logDM({ platform: 'tiktok', username: result.username || extractedUsername, messageText: message, isOutbound: true });
+      const finalUsername = result.username || extractedUsername;
+      logDM({ platform: 'tiktok', username: finalUsername, messageText: message, isOutbound: true });
+      logDMToSupabase(finalUsername, message); // Fire-and-forget Supabase logging
       res.json({
         success: true,
         username: result.username,
@@ -574,6 +684,40 @@ app.post('/api/tiktok/ai/generate', async (req: Request, res: Response) => {
   }
 });
 
+// Get TikTok user profile by username
+app.get('/api/tiktok/profile/:username', async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username.replace('@', '');
+    if (!username) {
+      res.status(400).json({ error: 'username is required' });
+      return;
+    }
+
+    const profile = await enrichContact(username, driver);
+    const hasData = !!(profile.followers || profile.following || profile.fullName);
+    if (!hasData) {
+      res.status(404).json({
+        success: false,
+        error: 'Profile not found or failed to load',
+        username
+      });
+      return;
+    }
+
+    res.json({
+      username,
+      displayName: profile.fullName,
+      bio: profile.bio,
+      followers: profile.followers,
+      following: profile.following,
+      likes: profile.likes,
+      verified: false // TikTok doesn't expose verified status in DOM easily
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Enrich a TikTok creator profile (followers, following, likes)
 app.post('/api/tiktok/profile/enrich', async (req: Request, res: Response) => {
   try {
@@ -625,6 +769,7 @@ app.post('/api/tiktok/dm/send', async (req: Request, res: Response) => {
     if (result.success) {
       recordMessage();
       logDM({ platform: 'tiktok', username, messageText: message, isOutbound: true });
+      logDMToSupabase(username, message); // Fire-and-forget Supabase logging
       res.json({
         success: true,
         username: result.username,

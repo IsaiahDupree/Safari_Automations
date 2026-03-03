@@ -1,0 +1,16 @@
+{
+  "projectId": "tiktok-mcp-improvements",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/tiktok-dm",
+  "lastUpdated": "2026-03-03T03:29:42.455Z",
+  "sessionType": "CODING",
+  "status": "running",
+  "stats": {
+    "total": 7,
+    "passing": 0,
+    "pending": 7,
+    "percentComplete": "0.0"
+  },
+  "pid": 49649,
+  "currentSession": 1,
+  "model": "claude-sonnet-4-5-20250929"
+}

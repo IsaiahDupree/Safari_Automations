@@ -14,6 +14,48 @@ import {
 } from './types.js';
 
 /**
+ * Detect TikTok rate limit UI indicators
+ */
+export async function detectTikTokRateLimit(driver: SafariDriver): Promise<{ limited: boolean; captcha: boolean; message?: string }> {
+  const result = await driver.executeJS(`
+    (function() {
+      var bodyText = document.body.innerText || '';
+      var hasCaptcha = !!document.querySelector('[class*="captcha"], [id*="captcha"], [class*="Captcha"]');
+
+      var rateLimitPhrases = [
+        'You are visiting too fast',
+        'temporarily blocked',
+        'verify you are human',
+        'Too many requests',
+        'slow down'
+      ];
+
+      var hasRateLimit = false;
+      var foundPhrase = '';
+      for (var i = 0; i < rateLimitPhrases.length; i++) {
+        if (bodyText.includes(rateLimitPhrases[i])) {
+          hasRateLimit = true;
+          foundPhrase = rateLimitPhrases[i];
+          break;
+        }
+      }
+
+      return JSON.stringify({
+        limited: hasRateLimit || hasCaptcha,
+        captcha: hasCaptcha,
+        message: hasRateLimit ? foundPhrase : (hasCaptcha ? 'Captcha detected' : '')
+      });
+    })()
+  `);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { limited: false, captcha: false };
+  }
+}
+
+/**
  * Check if TikTok is showing an error page and click retry if found
  * Returns true if error was detected and retry was attempted
  */

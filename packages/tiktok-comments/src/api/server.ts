@@ -151,6 +151,80 @@ app.post('/api/tiktok/search-cards', async (req: Request, res: Response) => {
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
 
+// Get trending videos from For You page
+app.get('/api/tiktok/trending', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 20;
+    const d = getDriver();
+
+    // Navigate to For You or Explore page
+    await d.navigateToPost('https://www.tiktok.com/foryou');
+    await new Promise(r => setTimeout(r, 4000)); // Wait for videos to load
+
+    const raw = await (d as any).executeJS(`
+      (function() {
+        var videos = [];
+        var seen = {};
+        // TikTok For You page uses video cards or feed items
+        var cards = document.querySelectorAll('[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"]');
+        var maxVideos = ${limit};
+
+        for (var i = 0; i < Math.min(cards.length, maxVideos); i++) {
+          var card = cards[i];
+          // Extract video link
+          var link = card.querySelector('a[href*="/video/"]');
+          if (!link) continue;
+          var href = link.getAttribute('href') || '';
+          var idMatch = href.match(/\\/video\\/(\\d+)/);
+          if (!idMatch) continue;
+          var id = idMatch[1];
+          if (seen[id]) continue;
+          seen[id] = true;
+
+          var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href;
+          var userMatch = href.match(/@([^\\/]+)\\/video/);
+          var author = userMatch ? userMatch[1] : '';
+
+          // Extract description/caption
+          var descEl = card.querySelector('[data-e2e="video-desc"], [class*="DivVideoDescription"]');
+          var description = descEl ? descEl.textContent.trim().substring(0, 200) : '';
+
+          // Extract engagement metrics
+          var likeEl = card.querySelector('[data-e2e="like-count"], [data-e2e="video-like-count"]');
+          var likes = likeEl ? likeEl.textContent.trim() : '0';
+
+          var commentEl = card.querySelector('[data-e2e="comment-count"], [data-e2e="video-comment-count"]');
+          var comments = commentEl ? commentEl.textContent.trim() : '0';
+
+          var shareEl = card.querySelector('[data-e2e="share-count"], [data-e2e="video-share-count"]');
+          var shares = shareEl ? shareEl.textContent.trim() : '0';
+
+          var viewEl = card.querySelector('[data-e2e="video-views"]');
+          var views = viewEl ? viewEl.textContent.trim() : '0';
+
+          videos.push({
+            id: id,
+            author: author,
+            description: description,
+            likes: likes,
+            comments: comments,
+            shares: shares,
+            views: views,
+            videoUrl: url
+          });
+        }
+
+        return JSON.stringify(videos);
+      })()
+    `);
+
+    const videos = JSON.parse(raw || '[]');
+    res.json({ videos, count: videos.length });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.get('/api/tiktok/video-metrics', async (req: Request, res: Response) => {
   try {
     const d = getDriver();

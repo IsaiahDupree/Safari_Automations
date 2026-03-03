@@ -386,27 +386,41 @@ export async function openConversation(username: string, driver?: SafariDriver):
  */
 export async function readMessages(limit: number = 20, driver?: SafariDriver): Promise<DMMessage[]> {
   const d = driver || getDefaultDriver();
-  
+
   const result = await d.executeJS(`
     (function() {
       var messages = [];
       var msgEls = document.querySelectorAll('div[role="row"], div[class*="message"]');
-      
+
       msgEls.forEach(function(el) {
         var text = el.innerText || '';
         if (text.length > 0 && text.length < 2000) {
           // Determine if outbound by position/styling
           var rect = el.getBoundingClientRect();
           var isRight = rect.left > (window.innerWidth / 2);
-          
+
+          // Extract timestamp
+          var timestamp = '';
+          var timeEl = el.querySelector('time');
+          if (timeEl) {
+            timestamp = timeEl.getAttribute('datetime') || timeEl.innerText || '';
+          }
+          if (!timestamp) {
+            var timestampEl = el.querySelector('[class*="timestamp"]');
+            if (timestampEl) {
+              timestamp = timestampEl.innerText || '';
+            }
+          }
+
           messages.push(JSON.stringify({
             text: text.substring(0, 500),
             isOutbound: isRight,
-            messageType: 'text'
+            messageType: 'text',
+            timestamp: timestamp
           }));
         }
       });
-      
+
       return '[' + messages.slice(-${limit}).join(',') + ']';
     })()
   `);
@@ -420,11 +434,113 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
 }
 
 /**
+ * Accept a message request from a specific user.
+ * Navigates to requests tab, finds the conversation, and clicks Accept.
+ */
+export async function acceptMessageRequest(username: string, driver?: SafariDriver): Promise<boolean> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to requests tab
+  await d.navigateTo('https://www.instagram.com/direct/requests/');
+  await d.wait(3000);
+
+  // Find and open the conversation
+  const opened = await openConversation(username, d);
+  if (!opened) return false;
+
+  await d.wait(2000);
+
+  // Click Accept button
+  const result = await d.executeJS(`
+    (function() {
+      var buttons = document.querySelectorAll('button, div[role="button"]');
+      for (var i = 0; i < buttons.length; i++) {
+        var text = (buttons[i].innerText || '').toLowerCase();
+        if (text === 'accept' || text.includes('accept')) {
+          buttons[i].click();
+          return 'accepted';
+        }
+      }
+      return 'not_found';
+    })()
+  `);
+
+  await d.wait(1500);
+  return result === 'accepted';
+}
+
+/**
+ * Decline a message request from a specific user.
+ * Navigates to requests tab, finds the conversation, and clicks Decline/Delete.
+ */
+export async function declineMessageRequest(username: string, driver?: SafariDriver): Promise<boolean> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to requests tab
+  await d.navigateTo('https://www.instagram.com/direct/requests/');
+  await d.wait(3000);
+
+  // Find and open the conversation
+  const opened = await openConversation(username, d);
+  if (!opened) return false;
+
+  await d.wait(2000);
+
+  // Click Decline/Delete button
+  const result = await d.executeJS(`
+    (function() {
+      var buttons = document.querySelectorAll('button, div[role="button"]');
+      for (var i = 0; i < buttons.length; i++) {
+        var text = (buttons[i].innerText || '').toLowerCase();
+        if (text === 'decline' || text === 'delete' || text.includes('decline')) {
+          buttons[i].click();
+          return 'declined';
+        }
+      }
+      return 'not_found';
+    })()
+  `);
+
+  await d.wait(1500);
+  return result === 'declined';
+}
+
+/**
+ * Detect if Instagram is showing a rate limit or action blocked banner.
+ * Returns true if rate limited, false otherwise.
+ */
+export async function detectRateLimitBanner(driver?: SafariDriver): Promise<boolean> {
+  const d = driver || getDefaultDriver();
+
+  const result = await d.executeJS(`
+    (function() {
+      var bodyText = document.body.innerText.toLowerCase();
+      if (bodyText.includes('action blocked') ||
+          bodyText.includes('try again later') ||
+          bodyText.includes('temporarily blocked') ||
+          bodyText.includes('slow down') ||
+          bodyText.includes('too many requests')) {
+        return 'rate_limited';
+      }
+      return 'ok';
+    })()
+  `);
+
+  return result === 'rate_limited';
+}
+
+/**
  * Send a DM to the current open conversation.
  * Uses OS-level keystrokes for React contenteditable compatibility.
  */
 export async function sendMessage(text: string, driver?: SafariDriver): Promise<SendMessageResult> {
   const d = driver || getDefaultDriver();
+
+  // Check for rate limit banner before sending
+  const isRateLimited = await detectRateLimitBanner(d);
+  if (isRateLimited) {
+    return { success: false, rateLimited: true, error: 'Instagram action blocked - rate limited' };
+  }
   
   // Focus message input — try selectors one at a time (comma selectors break through AppleScript)
   const selectors = [
@@ -773,6 +889,89 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
     return JSON.parse(raw);
   } catch {
     return { fullName: '', bio: '', followers: '', following: '', posts: '', isPrivate: false };
+  }
+}
+
+/**
+ * Get unread conversations by detecting visual unread indicators.
+ * Returns count and list of conversations with unread messages.
+ */
+export async function getUnreadConversations(driver?: SafariDriver): Promise<{ count: number; conversations: DMConversation[] }> {
+  const d = driver || getDefaultDriver();
+
+  const result = await d.executeJS(`
+    (function() {
+      var unreadConvs = [];
+      var seen = {};
+
+      // Look for unread badges/indicators
+      var badges = document.querySelectorAll('[class*="unread"], [class*="badge"], [class*="dot"]');
+      var unreadCount = 0;
+
+      badges.forEach(function(badge) {
+        // Verify this is actually an unread indicator (small, circular, positioned)
+        var rect = badge.getBoundingClientRect();
+        if (rect.width > 0 && rect.width < 30 && rect.height > 0 && rect.height < 30) {
+          unreadCount++;
+
+          // Find the conversation row containing this badge
+          var container = badge;
+          for (var i = 0; i < 10; i++) {
+            container = container.parentElement;
+            if (!container) break;
+
+            var link = container.querySelector('a[href*="/direct/t/"]');
+            if (link) {
+              var href = link.getAttribute('href') || '';
+              var match = href.match(/\\/direct\\/t\\/([0-9]+)/);
+              var threadId = match ? match[1] : '';
+
+              var img = container.querySelector('img[alt*="profile picture"]');
+              var username = '';
+              if (img) {
+                username = (img.getAttribute('alt') || '').replace("'s profile picture", '').trim();
+              }
+              if (!username) {
+                var span = container.querySelector('span[dir="auto"]');
+                if (span) username = span.textContent.trim();
+              }
+
+              if (username && !seen[username]) {
+                seen[username] = true;
+                var lastMsg = '';
+                var spans = container.querySelectorAll('span');
+                for (var j = spans.length - 1; j >= 0; j--) {
+                  var t = (spans[j].textContent || '').trim();
+                  if (t.length > 5 && t !== username && t.length < 200) {
+                    lastMsg = t;
+                    break;
+                  }
+                }
+                unreadConvs.push(JSON.stringify({
+                  username: username,
+                  threadId: threadId,
+                  lastMessage: lastMsg.substring(0, 100)
+                }));
+              }
+              break;
+            }
+          }
+        }
+      });
+
+      return JSON.stringify({
+        count: unreadCount,
+        conversations: '[' + unreadConvs.join(',') + ']'
+      });
+    })()
+  `);
+
+  try {
+    const parsed = JSON.parse(result || '{"count":0,"conversations":"[]"}');
+    const conversations = JSON.parse(parsed.conversations || '[]');
+    return { count: parsed.count || 0, conversations };
+  } catch {
+    return { count: 0, conversations: [] };
   }
 }
 

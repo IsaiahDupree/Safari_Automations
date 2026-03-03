@@ -24,7 +24,7 @@
 // Automation exports
 export {
   SafariDriver,
-  type SafariDriverOptions,
+  type SessionInfo,
   navigateToInbox,
   listConversations,
   openConversation,
