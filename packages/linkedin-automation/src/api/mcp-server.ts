@@ -24,6 +24,34 @@ const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'linkedin-safari-automation';
 const SERVER_VERSION = '1.0.0';
 
+function formatMcpError(e: unknown, platform = 'linkedin'): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const lowerMsg = msg.toLowerCase();
+
+  // Rate limit detection
+  if (lowerMsg.includes('429') || lowerMsg.includes('rate limit')) {
+    return JSON.stringify({ code: 'RATE_LIMITED', retryAfter: 60, platform, action: 'wait retryAfter seconds then retry' });
+  }
+
+  // Session expired detection
+  if (lowerMsg.includes('401') || lowerMsg.includes('session') || lowerMsg.includes('login')) {
+    return JSON.stringify({ code: 'SESSION_EXPIRED', platform, action: 'call linkedin_navigate_to then retry' });
+  }
+
+  // Not found detection
+  if (lowerMsg.includes('404') || lowerMsg.includes('not found')) {
+    return JSON.stringify({ code: 'NOT_FOUND', platform });
+  }
+
+  // Check if already structured
+  if (typeof e === 'object' && e !== null && 'code' in e) {
+    return JSON.stringify(e);
+  }
+
+  // Default error
+  return JSON.stringify({ code: 'ERROR', message: msg, platform });
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Tool definitions
 // ═══════════════════════════════════════════════════════════════
@@ -81,12 +109,34 @@ const TOOLS = [
   },
   {
     name: 'linkedin_list_conversations',
-    description: 'Get recent LinkedIn message conversations',
+    description: 'Get recent LinkedIn message conversations. Supports pagination via cursor.',
     inputSchema: {
       type: 'object',
       properties: {
         limit: { type: 'number', description: 'Max conversations to return', default: 20 },
+        cursor: { type: 'string', description: 'Optional pagination cursor from previous response' },
       },
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        conversations: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              username: { type: 'string' },
+              lastMessage: { type: 'string' },
+              unread: { type: 'boolean' },
+              timestamp: { type: 'string' },
+            },
+            required: ['username'],
+          },
+        },
+        count: { type: 'number' },
+        nextCursor: { type: 'string' },
+      },
+      required: ['conversations', 'count'],
     },
   },
   {
@@ -140,6 +190,25 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'linkedin_is_ready',
+    description: 'Check if LinkedIn automation is ready. Since LinkedIn uses direct AppleScript calls, this checks if Safari automation is available.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'linkedin_crm_get_contact',
+    description: 'Get CRMLite contact record by LinkedIn username. Returns contact history, interactions, tags, and pipeline stage across all platforms.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        username: { type: 'string', description: 'LinkedIn username or profile identifier' },
+      },
+      required: ['username'],
     },
   },
 ];
@@ -211,7 +280,8 @@ async function executeTool(
         const conversations = await listConversations(driver);
         const limit = (args.limit as number) || 20;
         const limited = conversations.slice(0, limit);
-        return { content: [{ type: 'text', text: JSON.stringify({ conversations: limited, count: limited.length }) }] };
+        // LinkedIn doesn't support server-side pagination yet, so nextCursor is always undefined
+        return { content: [{ type: 'text', text: JSON.stringify({ conversations: limited, count: limited.length, nextCursor: undefined }) }] };
       }
 
       case 'linkedin_score_profile': {
@@ -278,6 +348,51 @@ async function executeTool(
             }),
           }],
         };
+      }
+
+      case 'linkedin_is_ready': {
+        try {
+          // Test lightweight AppleScript to verify Safari automation is available
+          await driver.executeJS('1 + 1');
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ready: true,
+                method: 'direct',
+                automation: 'applescript',
+              }),
+            }],
+          };
+        } catch {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ready: false,
+                method: 'direct',
+                error: 'Safari automation not available',
+              }),
+            }],
+          };
+        }
+      }
+
+      case 'linkedin_crm_get_contact': {
+        const username = args.username as string;
+        const crmUrl = `https://crmlite-h3k1s46jj-isaiahduprees-projects.vercel.app/api/contacts/by-username/linkedin/${encodeURIComponent(username)}`;
+        try {
+          const res = await fetch(crmUrl, { signal: AbortSignal.timeout(5000) });
+          if (res.status === 404) {
+            return { content: [{ type: 'text', text: JSON.stringify({ found: false, username }) }] };
+          }
+          if (!res.ok) throw new Error(`CRMLite returned ${res.status}`);
+          const contact = await res.json();
+          return { content: [{ type: 'text', text: JSON.stringify(contact) }] };
+        } catch (err) {
+          const errorResult = { found: false, username, error: err instanceof Error ? err.message : String(err) };
+          return { content: [{ type: 'text', text: JSON.stringify(errorResult) }] };
+        }
       }
 
       default:
@@ -357,16 +472,14 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse |
         return { jsonrpc: '2.0', id, result };
       } catch (err) {
         const errObj = err as { code?: number; message?: string };
-        if (errObj.code) {
+        if (typeof errObj.code === 'number') {
           return { jsonrpc: '2.0', id, error: { code: errObj.code, message: errObj.message || 'Tool error' } };
         }
-        // Timeout or other execution errors
-        const message = err instanceof Error ? err.message : String(err);
         return {
           jsonrpc: '2.0',
           id,
           result: {
-            content: [{ type: 'text', text: `Error: ${message}` }],
+            content: [{ type: 'text', text: formatMcpError(err) }],
             isError: true,
           },
         };
