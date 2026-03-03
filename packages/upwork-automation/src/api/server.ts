@@ -22,6 +22,10 @@ import {
   scoreJob,
   recommendConnects,
   saveJob,
+  unsaveJob,
+  getSavedJobs,
+  getConnectsBalance,
+  detectUpworkRateLimit,
   submitProposal,
   getApplications,
   navigateToMessages,
@@ -30,6 +34,7 @@ import {
   openConversation,
   sendMessage,
   getUnreadCount,
+  getUnreadMessages,
   DEFAULT_RATE_LIMITS,
   addWatch,
   removeWatch,
@@ -42,6 +47,13 @@ import {
   PRESET_WATCHES,
 } from '../automation/index.js';
 import type { RateLimitConfig, JobSearchConfig, JobTab } from '../automation/types.js';
+import {
+  listTemplates,
+  getTemplateById,
+  createTemplate,
+  deleteTemplate,
+} from '../automation/template-manager.js';
+import { getAnalyticsSummary } from '../automation/analytics-tracker.js';
 
 const PORT = process.env.UPWORK_PORT || 3104;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -291,6 +303,59 @@ app.post('/api/upwork/jobs/:id/save', async (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/upwork/jobs/save', async (req: Request, res: Response) => {
+  try {
+    const { jobUrl } = req.body;
+    if (!jobUrl) return res.status(400).json({ error: 'jobUrl required' });
+    const saved = await saveJob(jobUrl);
+    res.json({ success: saved });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/upwork/jobs/unsave', async (req: Request, res: Response) => {
+  try {
+    const { jobUrl } = req.body;
+    if (!jobUrl) return res.status(400).json({ error: 'jobUrl required' });
+    const unsaved = await unsaveJob(jobUrl);
+    res.json({ success: unsaved });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/upwork/jobs/saved', async (_req: Request, res: Response) => {
+  try {
+    const jobs = await getSavedJobs();
+    res.json({ jobs, count: jobs.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Connects Balance ────────────────────────────────────────
+
+app.get('/api/upwork/connects', async (_req: Request, res: Response) => {
+  try {
+    const result = await getConnectsBalance();
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Rate Limit Detection ────────────────────────────────────
+
+app.get('/api/upwork/rate-status', async (_req: Request, res: Response) => {
+  try {
+    const result = await detectUpworkRateLimit();
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Proposal Submission ────────────────────────────────────
 
 app.post('/api/upwork/proposals/submit', async (req: Request, res: Response) => {
@@ -372,8 +437,8 @@ app.get('/api/upwork/messages', async (req: Request, res: Response) => {
 
 app.get('/api/upwork/messages/unread', async (_req: Request, res: Response) => {
   try {
-    const count = await getUnreadCount();
-    res.json({ unreadCount: count });
+    const result = await getUnreadMessages();
+    res.json(result);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -396,6 +461,75 @@ app.post('/api/upwork/messages/send', async (req: Request, res: Response) => {
     if (!text) return res.status(400).json({ error: 'text required' });
     const result = await sendMessage(text);
     res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── AI Proposal Improvement ────────────────────────────────
+
+app.post('/api/upwork/proposals/improve', async (req: Request, res: Response) => {
+  try {
+    const { existingProposal, jobDescription, feedback } = req.body;
+    if (!existingProposal) return res.status(400).json({ error: 'existingProposal required' });
+
+    if (!OPENAI_API_KEY) {
+      return res.json({
+        improvedProposal: existingProposal,
+        changes: ['No OpenAI API key configured - returning original proposal'],
+        confidence: 0.1,
+      });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `You are an expert Upwork proposal editor. Review and improve the given proposal. Make it more concise, professional, and compelling. Focus on: 1) Clear value proposition, 2) Specific relevant experience, 3) Understanding of client needs, 4) Professional tone. Return ONLY the improved proposal text, without any preamble or explanation.${feedback ? `\n\nClient feedback: ${feedback}` : ''}`,
+            },
+            {
+              role: 'user',
+              content: `Job description:\n${(jobDescription || '').substring(0, 800)}\n\nCurrent proposal:\n${existingProposal}`,
+            },
+          ],
+          max_tokens: 600,
+          temperature: 0.6,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        console.error(`[AI] OpenAI returned ${response.status}`);
+        return res.json({ improvedProposal: existingProposal, changes: ['API error'], confidence: 0.1 });
+      }
+
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const improved = data.choices?.[0]?.message?.content?.trim() || existingProposal;
+
+      // Detect changes
+      const changes: string[] = [];
+      if (improved.length < existingProposal.length) changes.push('Made more concise');
+      if (improved.length > existingProposal.length) changes.push('Added more detail');
+      if (improved !== existingProposal) changes.push('Improved tone and structure');
+
+      res.json({
+        improvedProposal: improved,
+        changes: changes.length > 0 ? changes : ['Minor improvements'],
+        confidence: 0.85,
+      });
+    } catch (aiError) {
+      clearTimeout(timeout);
+      console.error('[AI] OpenAI request failed:', aiError instanceof Error ? aiError.message : aiError);
+      res.json({ improvedProposal: existingProposal, changes: ['Request timeout or error'], confidence: 0.1 });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -562,6 +696,63 @@ app.post('/api/upwork/monitor/setup', async (_req: Request, res: Response) => {
 
 app.get('/api/upwork/monitor/presets', (_req: Request, res: Response) => {
   res.json({ presets: Object.keys(PRESET_WATCHES).map(k => ({ key: k, ...PRESET_WATCHES[k] })) });
+});
+
+// ─── Analytics ───────────────────────────────────────────────
+
+app.get('/api/upwork/analytics', (_req: Request, res: Response) => {
+  try {
+    const analytics = getAnalyticsSummary();
+    res.json(analytics);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Proposal Templates ──────────────────────────────────────
+
+app.get('/api/upwork/templates', (_req: Request, res: Response) => {
+  try {
+    const templates = listTemplates();
+    res.json({ templates, count: templates.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/upwork/templates/:id', (req: Request, res: Response) => {
+  try {
+    const template = getTemplateById(req.params.id);
+    if (!template) return res.status(404).json({ error: 'Template not found' });
+    res.json(template);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/upwork/templates', (req: Request, res: Response) => {
+  try {
+    const { name, category, template, tone } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+    if (!category) return res.status(400).json({ error: 'category required' });
+    if (!template) return res.status(400).json({ error: 'template required' });
+    if (!tone) return res.status(400).json({ error: 'tone required (professional | friendly | technical)' });
+
+    const newTemplate = createTemplate(name, category, template, tone);
+    res.json(newTemplate);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/upwork/templates/:id', (req: Request, res: Response) => {
+  try {
+    const deleted = deleteTemplate(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Template not found' });
+    res.json({ deleted: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Start Server ────────────────────────────────────────────

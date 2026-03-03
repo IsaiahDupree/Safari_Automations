@@ -285,3 +285,67 @@ export async function getUnreadCount(driver?: SafariDriver): Promise<number> {
 
   return parseInt(countStr) || 0;
 }
+
+export interface UnreadMessagesResult {
+  count: number;
+  conversations: Array<{
+    clientName: string;
+    preview: string;
+  }>;
+}
+
+export async function getUnreadMessages(driver?: SafariDriver): Promise<UnreadMessagesResult> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to messages page
+  await navigateToMessages(d);
+  await d.wait(2000);
+
+  // Extract unread conversations
+  const result = await d.executeJS(`
+    (function() {
+      var conversations = [];
+      var unreadSelectors = [
+        '[class*="unread"]',
+        '[data-test*="unread"]',
+        '.room-list-item.is-unread',
+        'a.conversation-item.unread',
+        '[aria-label*="unread"]'
+      ];
+
+      var found = new Set();
+
+      for (var selector of unreadSelectors) {
+        var elements = document.querySelectorAll(selector);
+        for (var el of elements) {
+          // Skip if already found
+          var text = el.innerText || el.textContent || '';
+          if (found.has(text)) continue;
+
+          // Extract client name and preview
+          var clientName = '';
+          var preview = '';
+
+          var nameEl = el.querySelector('[data-test="client-name"], .client-name, h3, strong');
+          if (nameEl) clientName = (nameEl.innerText || nameEl.textContent || '').trim();
+
+          var previewEl = el.querySelector('[data-test="message-preview"], .message-preview, p');
+          if (previewEl) preview = (previewEl.innerText || previewEl.textContent || '').trim();
+
+          if (clientName && preview) {
+            found.add(text);
+            conversations.push({ clientName: clientName, preview: preview });
+          }
+        }
+      }
+
+      return JSON.stringify({ count: conversations.length, conversations: conversations });
+    })()
+  `);
+
+  try {
+    return JSON.parse(result as string);
+  } catch {
+    return { count: 0, conversations: [] };
+  }
+}

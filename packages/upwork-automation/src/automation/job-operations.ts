@@ -920,6 +920,165 @@ export async function saveJob(jobUrl: string, driver?: SafariDriver): Promise<bo
   return result === 'saved';
 }
 
+export async function unsaveJob(jobUrl: string, driver?: SafariDriver): Promise<boolean> {
+  const d = driver || getDefaultDriver();
+  await navigateToJob(jobUrl, d);
+  await d.wait(2000);
+
+  const result = await d.executeJS(`
+    (function() {
+      var btn = document.querySelector('[data-test="JobActionUnsave"]') ||
+                document.querySelector('[data-test="unsave-job"]') ||
+                document.querySelector('[aria-label*="Unsave"]') ||
+                document.querySelector('[aria-label*="Remove"]');
+      if (btn) { btn.click(); return 'unsaved'; }
+      // If already unsaved, the button might show "Save" instead
+      var saveBtn = document.querySelector('[data-test="JobActionSave"]');
+      if (saveBtn && !saveBtn.classList.contains('active')) return 'already_unsaved';
+      return 'not_found';
+    })()
+  `);
+
+  return result === 'unsaved' || result === 'already_unsaved';
+}
+
+export async function getSavedJobs(driver?: SafariDriver): Promise<UpworkJob[]> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to saved jobs tab
+  await navigateToTab('saved_jobs', d);
+  await d.wait(3000);
+
+  // Extract jobs from the saved jobs page
+  const jobs = await extractJobsFromCurrentPage(d);
+
+  return jobs;
+}
+
+// ─── Rate Limit Detection ────────────────────────────────────
+
+export interface RateLimitStatus {
+  limited: boolean;
+  captcha: boolean;
+  message: string;
+}
+
+export async function detectUpworkRateLimit(driver?: SafariDriver): Promise<RateLimitStatus> {
+  const d = driver || getDefaultDriver();
+
+  const result = await d.executeJS(`
+    (function() {
+      var bodyText = document.body.innerText || document.body.textContent || '';
+      var lowerText = bodyText.toLowerCase();
+
+      // Check for rate limit keywords
+      var rateLimitKeywords = ['robot', 'unusual activity', 'verify', 'captcha', 'too many requests', 'rate limit'];
+      var hasRateLimitText = rateLimitKeywords.some(function(keyword) {
+        return lowerText.includes(keyword);
+      });
+
+      // Check for captcha elements
+      var captchaSelectors = [
+        '[class*="captcha"]',
+        '#px-captcha',
+        '[id*="captcha"]',
+        'iframe[src*="captcha"]',
+        '[data-test*="captcha"]'
+      ];
+
+      var hasCaptcha = false;
+      for (var selector of captchaSelectors) {
+        if (document.querySelector(selector)) {
+          hasCaptcha = true;
+          break;
+        }
+      }
+
+      // Determine message
+      var message = '';
+      if (hasCaptcha) {
+        message = 'CAPTCHA detected - manual verification required';
+      } else if (hasRateLimitText) {
+        message = 'Rate limit or unusual activity detected';
+      } else {
+        message = 'No rate limit detected';
+      }
+
+      return JSON.stringify({
+        limited: hasRateLimitText || hasCaptcha,
+        captcha: hasCaptcha,
+        message: message
+      });
+    })()
+  `);
+
+  try {
+    return JSON.parse(result as string);
+  } catch {
+    return {
+      limited: false,
+      captcha: false,
+      message: 'Could not detect rate limit status',
+    };
+  }
+}
+
+// ─── Connects Balance ────────────────────────────────────────
+
+export interface ConnectsBalance {
+  balance: number;
+  lastChecked: string;
+}
+
+export async function getConnectsBalance(driver?: SafariDriver): Promise<ConnectsBalance> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to Upwork homepage to ensure we're on the site
+  const currentUrl = await d.getCurrentUrl();
+  if (!currentUrl.includes('upwork.com')) {
+    await d.navigateTo('https://www.upwork.com/nx/find-work/');
+    await d.wait(2000);
+  }
+
+  // Extract connects balance from the page
+  const balanceStr = await d.executeJS(`
+    (function() {
+      // Try multiple selectors for connects count
+      var selectors = [
+        '[data-test="connects-count"]',
+        '[class*="connects"]',
+        '[aria-label*="connects"]',
+        'div:contains("Connects")',
+        'span:contains("Connects")'
+      ];
+
+      for (var selector of selectors) {
+        var el = document.querySelector(selector);
+        if (el) {
+          var text = el.innerText || el.textContent || '';
+          // Extract number from text like "120 Connects" or "Connects: 120"
+          var match = text.match(/\\d+/);
+          if (match) return match[0];
+        }
+      }
+
+      // Fallback: search for text containing number and "connect"
+      var allText = document.body.innerText || '';
+      var connectMatch = allText.match(/(\\d+)\\s*(?:Connects?|available)/i);
+      if (connectMatch) return connectMatch[1];
+
+      return '0';
+    })()
+  `);
+
+  const balance = parseInt(balanceStr as string, 10) || 0;
+
+  return {
+    balance,
+    lastChecked: new Date().toISOString(),
+  };
+}
+
 // ─── Proposal Submission ─────────────────────────────────────
 
 export interface ProposalSubmission {
