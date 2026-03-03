@@ -1541,4 +1541,113 @@ export class TwitterDriver {
 
   setConfig(updates: Partial<TwitterConfig>): void { this.config = { ...this.config, ...updates }; }
   getConfig(): TwitterConfig { return { ...this.config }; }
+
+  // ─── Tweet Engagement Actions ──────────────────────────────
+  async likeTweet(tweetUrl: string): Promise<{ success: boolean; action: string; error?: string }> {
+    try {
+      const navigated = await this.navigateToPost(tweetUrl);
+      if (!navigated) return { success: false, action: 'navigation_failed' };
+      await this.wait(2000);
+
+      const result = await this.executeJS(`
+        (function() {
+          var likeBtn = document.querySelector('[data-testid="like"]');
+          if (!likeBtn) return 'not_found';
+          if (likeBtn.getAttribute('data-testid') === 'like') {
+            likeBtn.click();
+            return 'liked';
+          }
+          return 'already_liked';
+        })()
+      `);
+
+      return { success: true, action: result };
+    } catch (e) {
+      return { success: false, action: 'error', error: String(e) };
+    }
+  }
+
+  async retweetTweet(tweetUrl: string): Promise<{ success: boolean; action: string; error?: string }> {
+    try {
+      const navigated = await this.navigateToPost(tweetUrl);
+      if (!navigated) return { success: false, action: 'navigation_failed' };
+      await this.wait(2000);
+
+      const result = await this.executeJS(`
+        (function() {
+          var retweetBtn = document.querySelector('[data-testid="retweet"]');
+          if (!retweetBtn) return 'not_found';
+          retweetBtn.click();
+          setTimeout(function() {
+            var confirmBtn = document.querySelector('[data-testid="retweetConfirm"]');
+            if (confirmBtn) confirmBtn.click();
+          }, 300);
+          return 'retweeted';
+        })()
+      `);
+
+      return { success: true, action: result };
+    } catch (e) {
+      return { success: false, action: 'error', error: String(e) };
+    }
+  }
+
+  async bookmarkTweet(tweetUrl: string): Promise<{ success: boolean; action: string; error?: string }> {
+    try {
+      const navigated = await this.navigateToPost(tweetUrl);
+      if (!navigated) return { success: false, action: 'navigation_failed' };
+      await this.wait(2000);
+
+      const result = await this.executeJS(`
+        (function() {
+          var bookmarkBtn = document.querySelector('[data-testid="bookmark"]') || document.querySelector('[data-testid="removeBookmark"]');
+          if (!bookmarkBtn) return 'not_found';
+          var action = bookmarkBtn.getAttribute('data-testid');
+          bookmarkBtn.click();
+          return action === 'bookmark' ? 'bookmarked' : 'unbookmarked';
+        })()
+      `);
+
+      return { success: true, action: result };
+    } catch (e) {
+      return { success: false, action: 'error', error: String(e) };
+    }
+  }
+
+  async getTweetMetrics(tweetUrl: string): Promise<{ success: boolean; metrics?: { likes: number; retweets: number; replies: number; views: number; bookmarks: number }; error?: string }> {
+    try {
+      const navigated = await this.navigateToPost(tweetUrl);
+      if (!navigated) return { success: false, error: 'navigation_failed' };
+      await this.wait(2000);
+
+      const raw = await this.executeJS(`
+        (function() {
+          function extractCount(testId) {
+            var el = document.querySelector('[data-testid="' + testId + '"]');
+            if (!el) return 0;
+            var text = el.innerText || el.textContent || '0';
+            var match = text.match(/([0-9,.]+[KMB]?)/);
+            if (!match) return 0;
+            var val = match[1].replace(/,/g, '');
+            if (val.indexOf('K') !== -1) return parseFloat(val) * 1000;
+            if (val.indexOf('M') !== -1) return parseFloat(val) * 1000000;
+            if (val.indexOf('B') !== -1) return parseFloat(val) * 1000000000;
+            return parseInt(val) || 0;
+          }
+          return JSON.stringify({
+            likes: extractCount('like'),
+            retweets: extractCount('retweet'),
+            replies: extractCount('reply'),
+            views: extractCount('app-text-transition-container') || 0,
+            bookmarks: 0
+          });
+        })()
+      `);
+
+      const metrics = JSON.parse(raw || '{}');
+      return { success: true, metrics };
+    } catch (e) {
+      return { success: false, error: String(e) };
+    }
+  }
 }

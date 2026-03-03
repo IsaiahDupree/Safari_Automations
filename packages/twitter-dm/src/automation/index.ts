@@ -21,6 +21,9 @@ export {
   getUnreadConversations,
   scrollConversation,
   getAllConversations,
+  detectTwitterRateLimit,
+  searchConversations,
+  getProfileInfo,
 } from './dm-operations.js';
 
 export {

@@ -709,20 +709,179 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
  */
 export async function getAllConversations(driver?: SafariDriver): Promise<Record<DMTab, DMConversation[]>> {
   const d = driver || getDefaultDriver();
-  
+
   await navigateToInbox(d);
-  
+
   const results: Record<DMTab, DMConversation[]> = {
     inbox: [],
     requests: [],
   };
-  
+
   // Get inbox conversations
   results.inbox = await listConversations(d);
-  
+
   // Try requests tab
   await switchTab('requests', d);
   results.requests = await listConversations(d);
-  
+
   return results;
+}
+
+/**
+ * Detect Twitter rate limit or suspension from page content.
+ */
+export async function detectTwitterRateLimit(driver?: SafariDriver): Promise<{ limited: boolean; suspended: boolean; message: string }> {
+  const d = driver || getDefaultDriver();
+
+  const bodyText = await d.executeJS(`document.body.innerText.toLowerCase()`);
+
+  const rateLimitKeywords = ['rate limit', 'too many requests', 'try again later'];
+  const suspensionKeywords = ['suspended', 'temporarily locked', 'unusual login activity', 'account locked'];
+
+  const limited = rateLimitKeywords.some(keyword => bodyText.includes(keyword));
+  const suspended = suspensionKeywords.some(keyword => bodyText.includes(keyword));
+
+  let message = 'No rate limit or suspension detected';
+  if (suspended) {
+    message = 'Account appears to be suspended or locked';
+  } else if (limited) {
+    message = 'Rate limit detected - too many requests';
+  }
+
+  return { limited, suspended, message };
+}
+
+/**
+ * Get profile information for a Twitter/X user.
+ */
+export async function getProfileInfo(handle: string, driver?: SafariDriver): Promise<{ handle: string; displayName: string; bio: string; followers: string; following: string; verified: boolean }> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to profile
+  const profileUrl = `https://x.com/${handle.replace('@', '')}`;
+  await d.navigateTo(profileUrl);
+  await d.wait(2000);
+
+  const result = await d.executeJS(`
+    (function() {
+      var displayName = '';
+      var nameEl = document.querySelector('[data-testid="UserName"] span');
+      if (nameEl) displayName = nameEl.innerText || '';
+
+      var bio = '';
+      var bioEl = document.querySelector('[data-testid="UserDescription"]');
+      if (bioEl) bio = bioEl.innerText || '';
+
+      var followers = '';
+      var followersLink = document.querySelector('[href*="followers"] span');
+      if (followersLink) followers = followersLink.innerText || '';
+
+      var following = '';
+      var followingLink = document.querySelector('[href*="following"] span');
+      if (followingLink) following = followingLink.innerText || '';
+
+      var verified = !!document.querySelector('[data-testid="icon-verified"]');
+
+      return JSON.stringify({
+        displayName: displayName,
+        bio: bio,
+        followers: followers,
+        following: following,
+        verified: verified
+      });
+    })()
+  `);
+
+  try {
+    const parsed = JSON.parse(result || '{}');
+    return {
+      handle: handle.replace('@', ''),
+      displayName: parsed.displayName || '',
+      bio: parsed.bio || '',
+      followers: parsed.followers || '',
+      following: parsed.following || '',
+      verified: parsed.verified || false
+    };
+  } catch {
+    return {
+      handle: handle.replace('@', ''),
+      displayName: '',
+      bio: '',
+      followers: '',
+      following: '',
+      verified: false
+    };
+  }
+}
+
+/**
+ * Search conversations in DM inbox by username or keyword.
+ */
+export async function searchConversations(query: string, driver?: SafariDriver): Promise<DMConversation[]> {
+  const d = driver || getDefaultDriver();
+
+  // Navigate to inbox first
+  await navigateToInbox(d);
+  await d.wait(1000);
+
+  // Find and fill search box
+  const searchResult = await d.executeJS(`
+    (function() {
+      var searchBox = document.querySelector('[data-testid="SearchBox_Search_Input"]');
+      if (!searchBox) return 'not_found';
+      searchBox.value = '${query.replace(/'/g, "\\'")}';
+      searchBox.dispatchEvent(new Event('input', { bubbles: true }));
+      searchBox.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'typed';
+    })()
+  `);
+
+  if (searchResult !== 'typed') {
+    return [];
+  }
+
+  // Wait for results
+  await d.wait(800);
+
+  // Extract matching conversations
+  const result = await d.executeJS(`
+    (function() {
+      var conversations = [];
+      var items = document.querySelectorAll('[data-testid="conversation"]');
+
+      items.forEach(function(item) {
+        var nameEl = item.querySelector('[data-testid="conversation-name"]') ||
+                     item.querySelector('span[dir="ltr"]');
+        var username = nameEl ? nameEl.innerText : '';
+
+        var textEls = item.querySelectorAll('span');
+        var preview = '';
+        for (var i = 0; i < textEls.length; i++) {
+          var text = textEls[i].innerText || '';
+          if (text.length > 10 && text !== username) {
+            preview = text;
+            break;
+          }
+        }
+
+        var unread = !!item.querySelector('[data-testid="unread-indicator"]');
+
+        if (username) {
+          conversations.push(JSON.stringify({
+            username: username,
+            preview: preview.substring(0, 100),
+            unread: unread
+          }));
+        }
+      });
+
+      return '[' + conversations.slice(0, 20).join(',') + ']';
+    })()
+  `);
+
+  try {
+    return JSON.parse(result || '[]');
+  } catch {
+    return [];
+  }
 }

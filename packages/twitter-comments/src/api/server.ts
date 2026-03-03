@@ -499,6 +499,47 @@ app.get('/api/twitter/notifications', async (req: Request, res: Response) => {
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
 
+// ─── Tweet Engagement ───────────────────────────────────────
+app.post('/api/twitter/tweet/like', async (req: Request, res: Response) => {
+  try {
+    const { tweetUrl } = req.body;
+    if (!validateRequired(res, [{ name: 'tweetUrl', value: tweetUrl }])) return;
+
+    const result = await getDriver().likeTweet(tweetUrl);
+    res.json({ ...result, tweetUrl });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+app.post('/api/twitter/tweet/retweet', async (req: Request, res: Response) => {
+  try {
+    const { tweetUrl } = req.body;
+    if (!validateRequired(res, [{ name: 'tweetUrl', value: tweetUrl }])) return;
+
+    const result = await getDriver().retweetTweet(tweetUrl);
+    res.json({ ...result, tweetUrl });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+app.post('/api/twitter/tweet/bookmark', async (req: Request, res: Response) => {
+  try {
+    const { tweetUrl } = req.body;
+    if (!validateRequired(res, [{ name: 'tweetUrl', value: tweetUrl }])) return;
+
+    const result = await getDriver().bookmarkTweet(tweetUrl);
+    res.json({ ...result, tweetUrl });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+app.get('/api/twitter/tweet/metrics', async (req: Request, res: Response) => {
+  try {
+    const { tweetUrl } = req.query;
+    if (!validateRequired(res, [{ name: 'tweetUrl', value: tweetUrl }])) return;
+
+    const result = await getDriver().getTweetMetrics(tweetUrl as string);
+    res.json({ ...result, tweetUrl });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
 app.get('/api/twitter/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/twitter/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
 

@@ -13,6 +13,38 @@ if (OPENAI_API_KEY) {
   console.log('[AI] ✅ OpenAI API key loaded - AI DMs enabled');
 }
 
+// Supabase CRM logging (optional)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  console.log('[CRM] ✅ Supabase credentials loaded - CRM logging enabled');
+}
+
+async function logToSupabase(username: string, text: string): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/crm_messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        platform: 'twitter',
+        to_user: username,
+        content: text,
+        sent_at: new Date().toISOString(),
+        status: 'sent'
+      })
+    }).catch(() => {}); // Fire and forget
+  } catch {
+    // Non-fatal - don't block DM send on CRM logging failure
+  }
+}
+
 export async function generateAIDM(context: { recipientUsername: string; purpose: string; topic?: string }): Promise<string> {
   if (!OPENAI_API_KEY) {
     return `Hey! Really enjoy your takes on ${context.topic || 'things'}. Would love to connect and chat more about it.`;
@@ -58,6 +90,9 @@ import {
   getUnreadConversations,
   scrollConversation,
   getAllConversations,
+  detectTwitterRateLimit,
+  searchConversations,
+  getProfileInfo,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
@@ -109,26 +144,31 @@ async function ensureTwitterSession(): Promise<{ ok: boolean; windowIndex: numbe
 // Rate limit check middleware
 function checkRateLimit(req: Request, res: Response, next: NextFunction): void {
   const now = Date.now();
-  
+  const force = req.body?.force === true;
+
   // Reset hourly counter
   if (now - lastHourReset > 60 * 60 * 1000) {
     messagesSentThisHour = 0;
     lastHourReset = now;
   }
-  
+
   // Reset daily counter
   if (now - lastDayReset > 24 * 60 * 60 * 1000) {
     messagesSentToday = 0;
     lastDayReset = now;
   }
-  
-  // Check active hours
+
+  // Check active hours (can be bypassed with force flag)
   if (!isWithinActiveHours(rateLimits.activeHoursStart, rateLimits.activeHoursEnd)) {
-    res.status(429).json({ 
-      error: 'Outside active hours',
-      activeHours: `${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`
-    });
-    return;
+    if (force) {
+      console.log('[FORCE] ⚠️  Active hours check bypassed by force flag');
+    } else {
+      res.status(429).json({
+        error: 'Outside active hours',
+        activeHours: `${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`
+      });
+      return;
+    }
   }
   
   // Check limits
@@ -239,6 +279,15 @@ app.put('/api/twitter/rate-limits', (req: Request, res: Response) => {
   res.json({ rateLimits });
 });
 
+app.get('/api/twitter/rate-status', async (req: Request, res: Response) => {
+  try {
+    const result = await detectTwitterRateLimit(getDriver());
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ limited: false, suspended: false, message: String(error) });
+  }
+});
+
 // === NAVIGATION ===
 
 app.post('/api/twitter/inbox/navigate', async (req: Request, res: Response) => {
@@ -284,6 +333,20 @@ app.get('/api/twitter/conversations/all', async (req: Request, res: Response) =>
 app.get('/api/twitter/conversations/unread', async (req: Request, res: Response) => {
   try {
     const conversations = await getUnreadConversations(getDriver());
+    res.json({ conversations, count: conversations.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/twitter/conversations/search', async (req: Request, res: Response) => {
+  try {
+    const query = req.query.q as string;
+    if (!query) {
+      res.status(400).json({ error: 'Query parameter "q" is required' });
+      return;
+    }
+    const conversations = await searchConversations(query, getDriver());
     res.json({ conversations, count: conversations.length });
   } catch (error) {
     res.status(500).json({ error: String(error) });
@@ -364,6 +427,7 @@ app.post('/api/twitter/messages/send-to', checkRateLimit, async (req: Request, r
     if (result.success) {
       recordMessageSent();
       logDM({ platform: 'twitter', username, messageText: text, isOutbound: true });
+      logToSupabase(username, text); // Fire and forget
     }
 
     res.json({
@@ -384,8 +448,9 @@ app.post('/api/twitter/messages/send-to-url', checkRateLimit, async (req: Reques
       recordMessageSent();
       const username = profileUrl.replace(/.*\.com\//, '').replace(/\/.*/, '');
       logDM({ platform: 'twitter', username, messageText: text, isOutbound: true });
+      logToSupabase(username, text); // Fire and forget
     }
-    
+
     res.json({
       ...result,
       rateLimits: { messagesSentToday, messagesSentThisHour },
@@ -499,6 +564,22 @@ app.get('/api/twitter/outreach/stats', async (_req: Request, res: Response) => {
     const stats = await getOutreachStats('twitter');
     res.json({ success: true, stats });
   } catch (error) { res.status(500).json({ success: false, error: String(error) }); }
+});
+
+// === PROFILE ===
+
+app.get('/api/twitter/profile/:handle', async (req: Request, res: Response) => {
+  try {
+    const { handle } = req.params;
+    if (!handle) {
+      res.status(400).json({ error: 'Handle parameter is required' });
+      return;
+    }
+    const profile = await getProfileInfo(handle, getDriver());
+    res.json({ success: true, profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // === AI DM GENERATION ===
