@@ -20,6 +20,13 @@ export interface SessionInfo {
   url: string;
 }
 
+export interface TabInfo {
+  windowIndex: number;
+  tabIndex: number;
+  purpose: string;
+  createdAt: number;
+}
+
 export class SafariDriver {
   private config: AutomationConfig;
   private trackedWindow: number | null = null;
@@ -29,6 +36,7 @@ export class SafariDriver {
   private static SESSION_VERIFY_TTL_MS = 5000; // re-verify every 5s
   private static MIN_COMMAND_INTERVAL_MS = 250; // minimum gap between AppleScript commands
   private lastCommandAt: number = 0;
+  private tabPool: Map<string, TabInfo> = new Map(); // purpose -> tab info
 
   constructor(config: Partial<AutomationConfig> = {}) {
     this.config = {
@@ -313,6 +321,31 @@ export class SafariDriver {
   }
 
   /**
+   * Check if logged in to LinkedIn.
+   * Returns true if the user is logged in, false if on authwall/login page.
+   */
+  async isLoggedInToLinkedIn(): Promise<boolean> {
+    const url = await this.getCurrentUrl();
+
+    // If on authwall or login page, not logged in
+    if (url.includes('linkedin.com/authwall') || url.includes('linkedin.com/login')) {
+      return false;
+    }
+
+    // Check for logged-in indicators
+    const result = await this.executeJS(`
+      (function() {
+        var navMe = document.querySelector('[data-test-id="nav-settings-profileName"], .global-nav__me-photo');
+        var feedContainer = document.querySelector('[data-test-id="feed-container"]');
+        var globalNav = document.querySelector('.global-nav__me');
+        return (navMe || feedContainer || globalNav) ? 'true' : 'false';
+      })()
+    `);
+
+    return result === 'true';
+  }
+
+  /**
    * Wait for specified milliseconds.
    */
   async wait(ms: number): Promise<void> {
@@ -328,21 +361,100 @@ export class SafariDriver {
   }
 
   /**
-   * Wait for an element to appear.
+   * Wait for an element to appear using polling (legacy method).
    */
   async waitForElement(selector: string, maxWaitMs: number = 10000): Promise<boolean> {
     const startTime = Date.now();
-    
+
     while (Date.now() - startTime < maxWaitMs) {
       const found = await this.executeJS(`
         document.querySelector('${selector}') ? 'found' : 'not_found'
       `);
-      
+
       if (found === 'found') return true;
       await this.wait(500);
     }
-    
+
     return false;
+  }
+
+  /**
+   * Inject a MutationObserver into the page that watches for a selector to appear.
+   * This is more efficient than polling with waitForElement.
+   * Returns true if the element appears within timeoutMs, false otherwise.
+   */
+  async injectMutationWatcher(selector: string, timeoutMs: number = 10000): Promise<boolean> {
+    const watcherId = `watcher_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const safeSelector = selector.replace(/'/g, "\\'").replace(/"/g, '\\"');
+
+    const watcherScript = `
+(function() {
+  var selector = "${safeSelector}";
+  var timeout = ${timeoutMs};
+  var startTime = Date.now();
+
+  // Check if element already exists
+  if (document.querySelector(selector)) {
+    return 'found';
+  }
+
+  return new Promise(function(resolve) {
+    var observer = new MutationObserver(function(mutations) {
+      if (document.querySelector(selector)) {
+        observer.disconnect();
+        delete window.__mcpWatcher_${watcherId};
+        resolve('found');
+      } else if (Date.now() - startTime > timeout) {
+        observer.disconnect();
+        delete window.__mcpWatcher_${watcherId};
+        resolve('timeout');
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false
+    });
+
+    window.__mcpWatcher_${watcherId} = observer;
+
+    // Timeout fallback
+    setTimeout(function() {
+      if (window.__mcpWatcher_${watcherId}) {
+        observer.disconnect();
+        delete window.__mcpWatcher_${watcherId};
+        resolve('timeout');
+      }
+    }, timeout);
+  });
+})()`;
+
+    try {
+      const result = await this.executeJS(watcherScript);
+      return result === 'found';
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error('[SafariDriver] injectMutationWatcher error:', error);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Wait for a selector to appear using MutationObserver (preferred) or polling fallback.
+   * This is more efficient than waitForElement for dynamic SPAs like LinkedIn.
+   */
+  async waitForSelector(selector: string, timeoutMs: number = 10000): Promise<boolean> {
+    try {
+      return await this.injectMutationWatcher(selector, timeoutMs);
+    } catch (error) {
+      if (this.config.verbose) {
+        console.warn('[SafariDriver] MutationObserver failed, falling back to polling:', error);
+      }
+      return await this.waitForElement(selector, timeoutMs);
+    }
   }
 
   /**
@@ -385,10 +497,39 @@ export class SafariDriver {
   }
 
   /**
-   * Type text by copying to clipboard and pasting (works for contenteditable).
+   * Type text character by character using OS-level keystrokes.
+   * Slower but more reliable when clipboard paste is rejected.
    */
-  async typeViaClipboard(text: string): Promise<boolean> {
+  async typeCharByChar(text: string, delayMs: number = 30): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
+    try {
+      await this.activateSafari();
+      await this.wait(300);
+
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const escaped = char.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await execAsync(
+          `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${escaped}"'`,
+          { timeout: this.config.timeout }
+        );
+        if (delayMs > 0) {
+          await this.wait(delayMs);
+        }
+      }
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] typeCharByChar error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Type text by copying to clipboard and pasting (works for contenteditable).
+   * Returns an object indicating success and which method was used.
+   */
+  async typeViaClipboard(text: string): Promise<{ success: boolean; method: 'clipboard' | 'keystroke' }> {
+    if (this.config.instanceType !== 'local') return { success: false, method: 'clipboard' };
     try {
       const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
       await execAsync(`printf "%s" "${escaped}" | pbcopy`);
@@ -396,10 +537,32 @@ export class SafariDriver {
       await this.activateSafari();
       await this.wait(200);
       await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
-      return true;
+
+      // Wait and check if the paste succeeded
+      await this.wait(500);
+      const contentLength = await this.executeJS(`
+        (function() {
+          var el = document.querySelector('[contenteditable="true"]');
+          if (!el) el = document.querySelector('.msg-form__contenteditable');
+          return el ? el.textContent.trim().length : 0;
+        })()
+      `);
+
+      const pasteSucceeded = parseInt(contentLength || '0', 10) > 0;
+
+      if (pasteSucceeded) {
+        return { success: true, method: 'clipboard' };
+      } else {
+        // Paste was rejected, fall back to char-by-char typing
+        if (this.config.verbose) console.log('[SafariDriver] Clipboard paste rejected, falling back to char-by-char');
+        const charByCharSuccess = await this.typeCharByChar(text, 30);
+        return { success: charByCharSuccess, method: 'keystroke' };
+      }
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
-      return false;
+      // Try char-by-char as fallback
+      const charByCharSuccess = await this.typeCharByChar(text, 30);
+      return { success: charByCharSuccess, method: 'keystroke' };
     }
   }
 
@@ -761,6 +924,115 @@ end tell`;
    */
   setConfig(config: Partial<AutomationConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  /**
+   * Open a new Safari tab and register it in the tab pool.
+   * Returns the window and tab indices of the newly opened tab.
+   */
+  async openTab(purpose: string, url?: string): Promise<{ windowIndex: number; tabIndex: number } | null> {
+    if (this.config.instanceType !== 'local') return null;
+    try {
+      // Create new tab in frontmost window
+      const script = `
+tell application "Safari"
+  tell front window
+    set newTab to make new tab with properties {URL:"${url || 'about:blank'}"}
+    set tabIdx to (index of newTab)
+    set winIdx to (index of front window)
+    return (winIdx as text) & ":" & (tabIdx as text)
+  end tell
+end tell`;
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      const parts = stdout.trim().split(':');
+      const windowIndex = parseInt(parts[0], 10);
+      const tabIndex = parseInt(parts[1], 10);
+
+      if (isNaN(windowIndex) || isNaN(tabIndex)) return null;
+
+      // Register in tab pool
+      this.tabPool.set(purpose, {
+        windowIndex,
+        tabIndex,
+        purpose,
+        createdAt: Date.now(),
+      });
+
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] Opened tab: purpose=${purpose} w=${windowIndex} t=${tabIndex}`);
+      }
+
+      return { windowIndex, tabIndex };
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] openTab error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Acquire a tab from the pool for a specific purpose.
+   * If the tab doesn't exist, this will open a new one.
+   */
+  async acquireTab(purpose: string): Promise<TabInfo | null> {
+    const existing = this.tabPool.get(purpose);
+    if (existing) {
+      // Verify the tab still exists
+      const url = await this.getTabUrl(existing.windowIndex, existing.tabIndex);
+      if (url) {
+        await this.activateTab(existing.windowIndex, existing.tabIndex);
+        return existing;
+      } else {
+        // Tab was closed, remove from pool
+        this.tabPool.delete(purpose);
+      }
+    }
+
+    // Open new tab
+    const tab = await this.openTab(purpose);
+    if (!tab) return null;
+
+    return this.tabPool.get(purpose) || null;
+  }
+
+  /**
+   * Release a tab back to the pool (currently a no-op, but could implement tab closing).
+   */
+  releaseTab(purpose: string): void {
+    const tab = this.tabPool.get(purpose);
+    if (this.config.verbose && tab) {
+      console.log(`[SafariDriver] Released tab: purpose=${purpose} w=${tab.windowIndex} t=${tab.tabIndex}`);
+    }
+    // Keep tab in pool for reuse
+  }
+
+  /**
+   * Get all tabs in the pool.
+   */
+  getTabPool(): TabInfo[] {
+    return Array.from(this.tabPool.values());
+  }
+
+  /**
+   * Close a tab from the pool.
+   */
+  async closeTab(purpose: string): Promise<boolean> {
+    const tab = this.tabPool.get(purpose);
+    if (!tab) return false;
+
+    if (this.config.instanceType !== 'local') return false;
+
+    try {
+      const script = `tell application "Safari" to close tab ${tab.tabIndex} of window ${tab.windowIndex}`;
+      await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      this.tabPool.delete(purpose);
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] Closed tab: purpose=${purpose}`);
+      }
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] closeTab error:', error);
+      return false;
+    }
   }
 }
 

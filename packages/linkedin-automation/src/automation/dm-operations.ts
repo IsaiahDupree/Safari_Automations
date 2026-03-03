@@ -264,9 +264,10 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
   }
 
   await d.wait(500);
-  const typed = await d.typeViaClipboard(text);
-  if (!typed) return { success: false, error: 'Failed to type message' };
+  const typeResult = await d.typeViaClipboard(text);
+  if (!typeResult.success) return { success: false, error: 'Failed to type message' };
 
+  console.log(`[DM] Typed message using method: ${typeResult.method}`);
   await d.wait(500);
 
   // Click send
@@ -331,10 +332,7 @@ export async function sendMessageToProfile(
   await d.navigateTo(url);
 
   // Wait for main element to load
-  const mainReady = await d.waitForCondition(
-    `(function(){var m=document.querySelector('main');return m?'ready':'';})()`,
-    10000
-  );
+  const mainReady = await d.waitForSelector('main', 10000);
 
   if (!mainReady) {
     return { success: false, error: 'Profile page did not load (no main element)' };
@@ -400,8 +398,9 @@ export async function sendMessageToProfile(
   await d.wait(300);
 
   // ── Step 5: Type message via clipboard ──
-  const typed = await d.typeViaClipboard(text);
-  if (!typed) return { success: false, error: 'Failed to type message' };
+  const typeResult = await d.typeViaClipboard(text);
+  if (!typeResult.success) return { success: false, error: 'Failed to type message' };
+  log(`Typed message using method: ${typeResult.method}`);
   await d.wait(1000);
 
   // ── Step 6: Wait for Send to enable and click ──

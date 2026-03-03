@@ -44,10 +44,24 @@ import type { ProspectStage } from '../automation/outreach-engine.js';
 const PORT = process.env.LINKEDIN_PORT || 3105;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AUTH_TOKEN = process.env.LINKEDIN_AUTH_TOKEN || 'test-token-12345';
+const REPLY_POLL_INTERVAL_MS = parseInt(process.env.REPLY_POLL_INTERVAL_MS || '300000', 10); // 5 min default
+const SESSION_HEALTH_INTERVAL_MS = parseInt(process.env.SESSION_HEALTH_INTERVAL_MS || '1800000', 10); // 30 min default
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Reply watcher state
+let replyWatcherInterval: NodeJS.Timeout | null = null;
+let conversationSnapshot = new Map<string, number>(); // conversationId -> lastMessageTimestamp
+let unreadReplies: Array<{ conversationId: string; senderHandle: string; messagePreview: string; detectedAt: string }> = [];
+
+// Session health state
+let sessionHealthInterval: NodeJS.Timeout | null = null;
+let sessionHealthy: boolean = true;
+let lastSessionHealthCheck: string = new Date().toISOString();
 
 // Authentication middleware
 function requireAuth(req: Request, res: Response, next: any): void {
@@ -276,6 +290,121 @@ app.get('/api/linkedin/debug/screenshot', async (_req: Request, res: Response) =
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
     }
+  });
+});
+
+// ─── Tab Management ──────────────────────────────────────────
+
+app.post('/api/linkedin/tabs/open', async (req: Request, res: Response) => {
+  try {
+    const { purpose, url } = req.body;
+    if (!purpose) {
+      return res.status(400).json({ error: 'Missing purpose parameter' });
+    }
+
+    const d = getDefaultDriver();
+    const tab = await d.openTab(purpose, url);
+
+    if (!tab) {
+      return res.status(500).json({ error: 'Failed to open tab' });
+    }
+
+    res.json({
+      success: true,
+      purpose,
+      windowIndex: tab.windowIndex,
+      tabIndex: tab.tabIndex,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/linkedin/tabs/list', async (_req: Request, res: Response) => {
+  try {
+    const d = getDefaultDriver();
+    const tabs = d.getTabPool();
+    res.json({ tabs });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/linkedin/tabs/:purpose', async (req: Request, res: Response) => {
+  try {
+    const { purpose } = req.params;
+    const d = getDefaultDriver();
+    const success = await d.closeTab(purpose);
+
+    if (!success) {
+      return res.status(404).json({ error: 'Tab not found or failed to close' });
+    }
+
+    res.json({ success: true, purpose });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/linkedin/debug/wait-for-selector', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'debug/wait-for-selector', async () => {
+    const { selector, timeoutMs } = req.body;
+    if (!selector) {
+      return res.status(400).json({ error: 'Missing selector parameter' });
+    }
+
+    const d = getDefaultDriver();
+    const startTime = Date.now();
+    const found = await d.waitForSelector(selector, timeoutMs || 10000);
+    const elapsed = Date.now() - startTime;
+
+    res.json({
+      found,
+      selector,
+      elapsed,
+      method: 'MutationObserver',
+    });
+  });
+});
+
+app.get('/api/linkedin/debug/selector-health', async (_req: Request, res: Response) => {
+  await withSafariLock(res, 'debug/selector-health', async () => {
+    const d = getDefaultDriver();
+    const { LINKEDIN_SELECTORS } = await import('../automation/types.js');
+    const results: Record<string, boolean> = {};
+
+    for (const [key, selector] of Object.entries(LINKEDIN_SELECTORS)) {
+      const found = await d.executeJS(`
+        document.querySelector('${selector.replace(/'/g, "\\'")}') !== null ? 'true' : 'false'
+      `);
+      results[key] = found === 'true';
+    }
+
+    const healthy = Object.values(results).every(v => v);
+
+    res.json({
+      healthy,
+      results,
+      timestamp: new Date().toISOString(),
+    });
+  });
+});
+
+app.post('/api/linkedin/debug/type-test', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'debug/type-test', async () => {
+    const { text } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'Missing text parameter' });
+    }
+
+    const d = getDefaultDriver();
+    const result = await d.typeViaClipboard(text);
+
+    res.json({
+      success: result.success,
+      method: result.method,
+      text: text.substring(0, 50),
+    });
   });
 });
 
@@ -1122,6 +1251,246 @@ app.post('/api/linkedin/sessions/:id/extend', (req: Request, res: Response) => {
   }
 });
 
+// ─── Reply Watcher ───────────────────────────────────────────
+
+async function checkForNewReplies(): Promise<void> {
+  try {
+    const conversations = await listConversations();
+    const now = new Date().toISOString();
+
+    for (const convo of conversations) {
+      const lastTimestamp = conversationSnapshot.get(convo.conversationId);
+      const currentTimestamp = new Date(convo.lastMessageAt || now).getTime();
+
+      if (lastTimestamp && currentTimestamp > lastTimestamp) {
+        // New reply detected
+        const senderHandle = convo.participantName.replace(/\s+/g, '-').toLowerCase();
+        const reply = {
+          conversationId: convo.conversationId,
+          senderHandle,
+          messagePreview: convo.lastMessage.substring(0, 100),
+          detectedAt: now,
+        };
+
+        unreadReplies.push(reply);
+        console.log(`[REPLY WATCHER] New reply from @${senderHandle}`);
+
+        // Insert to Supabase if configured
+        if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+          try {
+            const response = await fetch(`${SUPABASE_URL}/rest/v1/linkedin_replies`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'Prefer': 'return=minimal',
+              },
+              body: JSON.stringify(reply),
+            });
+
+            if (!response.ok) {
+              console.error(`[REPLY WATCHER] Failed to insert to Supabase: ${response.statusText}`);
+            }
+          } catch (supabaseError) {
+            console.error('[REPLY WATCHER] Supabase error:', supabaseError);
+          }
+        }
+      }
+
+      // Update snapshot
+      conversationSnapshot.set(convo.conversationId, currentTimestamp);
+    }
+  } catch (error) {
+    console.error('[REPLY WATCHER] Error checking for replies:', error);
+  }
+}
+
+export function startReplyWatcher(): void {
+  if (replyWatcherInterval) {
+    console.log('[REPLY WATCHER] Already running');
+    return;
+  }
+
+  console.log(`[REPLY WATCHER] Starting (interval: ${REPLY_POLL_INTERVAL_MS}ms)`);
+  replyWatcherInterval = setInterval(checkForNewReplies, REPLY_POLL_INTERVAL_MS);
+
+  // Initial check after 10 seconds
+  setTimeout(checkForNewReplies, 10000);
+}
+
+export function stopReplyWatcher(): void {
+  if (replyWatcherInterval) {
+    clearInterval(replyWatcherInterval);
+    replyWatcherInterval = null;
+    console.log('[REPLY WATCHER] Stopped');
+  }
+}
+
+app.get('/api/linkedin/replies/unread', (_req: Request, res: Response) => {
+  res.json({
+    count: unreadReplies.length,
+    replies: unreadReplies,
+  });
+});
+
+app.post('/api/linkedin/replies/watcher/start', (_req: Request, res: Response) => {
+  startReplyWatcher();
+  res.json({ success: true, status: 'started', interval: REPLY_POLL_INTERVAL_MS });
+});
+
+app.post('/api/linkedin/replies/watcher/stop', (_req: Request, res: Response) => {
+  stopReplyWatcher();
+  res.json({ success: true, status: 'stopped' });
+});
+
+app.delete('/api/linkedin/replies/unread', (_req: Request, res: Response) => {
+  const count = unreadReplies.length;
+  unreadReplies = [];
+  res.json({ success: true, cleared: count });
+});
+
+// ─── Session Health Monitor ──────────────────────────────────
+
+async function checkSessionHealth(): Promise<void> {
+  try {
+    const d = getDefaultDriver();
+    const loggedIn = await d.isLoggedInToLinkedIn();
+    const now = new Date().toISOString();
+
+    lastSessionHealthCheck = now;
+
+    if (!loggedIn) {
+      sessionHealthy = false;
+      console.log('[SESSION HEALTH] ⚠️ LinkedIn session expired');
+
+      // Insert to Supabase if configured
+      if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+        try {
+          const response = await fetch(`${SUPABASE_URL}/rest/v1/service_health`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+              'Prefer': 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify({
+              service: 'linkedin',
+              healthy: false,
+              checked_at: now,
+            }),
+          });
+
+          if (!response.ok) {
+            console.error(`[SESSION HEALTH] Failed to update Supabase: ${response.statusText}`);
+          }
+        } catch (supabaseError) {
+          console.error('[SESSION HEALTH] Supabase error:', supabaseError);
+        }
+      }
+    } else {
+      if (!sessionHealthy) {
+        console.log('[SESSION HEALTH] ✅ LinkedIn session restored');
+      }
+      sessionHealthy = true;
+
+      // Update Supabase
+      if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+        try {
+          await fetch(`${SUPABASE_URL}/rest/v1/service_health`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+              'Prefer': 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify({
+              service: 'linkedin',
+              healthy: true,
+              checked_at: now,
+            }),
+          });
+        } catch {
+          // Silently skip Supabase update errors
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[SESSION HEALTH] Error checking session:', error);
+  }
+}
+
+export function startSessionHealthMonitor(): void {
+  if (sessionHealthInterval) {
+    console.log('[SESSION HEALTH] Already running');
+    return;
+  }
+
+  console.log(`[SESSION HEALTH] Starting (interval: ${SESSION_HEALTH_INTERVAL_MS}ms)`);
+  sessionHealthInterval = setInterval(checkSessionHealth, SESSION_HEALTH_INTERVAL_MS);
+
+  // Initial check after 5 seconds
+  setTimeout(checkSessionHealth, 5000);
+}
+
+export function stopSessionHealthMonitor(): void {
+  if (sessionHealthInterval) {
+    clearInterval(sessionHealthInterval);
+    sessionHealthInterval = null;
+    console.log('[SESSION HEALTH] Stopped');
+  }
+}
+
+app.get('/api/linkedin/health/session', async (_req: Request, res: Response) => {
+  res.json({
+    healthy: sessionHealthy,
+    lastChecked: lastSessionHealthCheck,
+    loginUrl: 'https://www.linkedin.com/login',
+  });
+});
+
+app.get('/api/linkedin/health/full', async (_req: Request, res: Response) => {
+  await withSafariLock(res, 'health/full', async () => {
+    const d = getDefaultDriver();
+    const { LINKEDIN_SELECTORS } = await import('../automation/types.js');
+
+    // Selector health
+    const selectorResults: Record<string, boolean> = {};
+    for (const [key, selector] of Object.entries(LINKEDIN_SELECTORS)) {
+      try {
+        const found = await d.executeJS(`
+          document.querySelector('${selector.replace(/'/g, "\\'")}') !== null ? 'true' : 'false'
+        `);
+        selectorResults[key] = found === 'true';
+      } catch {
+        selectorResults[key] = false;
+      }
+    }
+    const selectorsHealthy = Object.values(selectorResults).every(v => v);
+
+    // Tab pool status
+    const tabs = d.getTabPool();
+
+    res.json({
+      session: {
+        healthy: sessionHealthy,
+        lastChecked: lastSessionHealthCheck,
+      },
+      selectors: {
+        healthy: selectorsHealthy,
+        results: selectorResults,
+      },
+      tabs: {
+        count: tabs.length,
+        tabs: tabs,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+});
+
 // ─── Start Server ────────────────────────────────────────────
 
 app.listen(PORT, () => {
@@ -1144,6 +1513,36 @@ app.listen(PORT, () => {
   console.log(`   Rate limits: connections ${rateLimits.connectionRequestsPerDay}/day, messages ${rateLimits.messagesPerDay}/day`);
   console.log(`   Active hours: ${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`);
   console.log('');
+
+  // Startup selector health check
+  setTimeout(async () => {
+    try {
+      const d = getDefaultDriver();
+      const { LINKEDIN_SELECTORS } = await import('../automation/types.js');
+      const brokenSelectors: string[] = [];
+
+      for (const [key, selector] of Object.entries(LINKEDIN_SELECTORS)) {
+        try {
+          const found = await d.executeJS(`
+            document.querySelector('${selector.replace(/'/g, "\\'")}') !== null ? 'true' : 'false'
+          `);
+          if (found !== 'true') {
+            brokenSelectors.push(key);
+          }
+        } catch {
+          // Ignore errors during health check (might not be on LinkedIn yet)
+        }
+      }
+
+      if (brokenSelectors.length > 0) {
+        console.warn(`⚠️  [SELECTOR HEALTH] ${brokenSelectors.length} broken selectors detected:`, brokenSelectors);
+      } else {
+        console.log(`✅ [SELECTOR HEALTH] All ${Object.keys(LINKEDIN_SELECTORS).length} selectors healthy`);
+      }
+    } catch (error) {
+      // Silently skip health check if Safari isn't ready
+    }
+  }, 3000);
 });
 
 export default app;

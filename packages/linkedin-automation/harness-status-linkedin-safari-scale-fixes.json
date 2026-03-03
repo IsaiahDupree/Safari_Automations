@@ -1,0 +1,16 @@
+{
+  "projectId": "linkedin-safari-scale-fixes",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/linkedin-automation",
+  "lastUpdated": "2026-03-03T06:45:02.862Z",
+  "sessionType": "CODING",
+  "status": "running",
+  "stats": {
+    "total": 6,
+    "passing": 0,
+    "pending": 6,
+    "percentComplete": "0.0"
+  },
+  "pid": 71681,
+  "currentSession": 1,
+  "model": "claude-sonnet-4-5-20250929"
+}
