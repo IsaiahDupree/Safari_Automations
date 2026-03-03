@@ -183,6 +183,88 @@ export class SafariDriver {
   }
 
   /**
+   * Navigate to a LinkedIn profile via Google search result.
+   * Bypasses bot detection that sometimes triggers on direct profile navigation.
+   */
+  async navigateViaGoogle(linkedinProfileUrl: string): Promise<boolean> {
+    try {
+      // Extract profile slug from LinkedIn URL
+      const slug = linkedinProfileUrl.split('/in/')[1]?.replace(/\/$/, '') ?? '';
+      if (!slug) {
+        if (this.config.verbose) console.error('[SafariDriver] Invalid LinkedIn profile URL');
+        return false;
+      }
+
+      // Navigate to Google search for this profile
+      const query = encodeURIComponent(`site:linkedin.com/in ${slug}`);
+      const googleUrl = `https://www.google.com/search?q=${query}`;
+
+      if (this.config.verbose) console.log(`[SafariDriver] Searching Google for: ${slug}`);
+      await this.navigateTo(googleUrl);
+
+      // Wait for Google search results to load
+      const searchReady = await this.waitForCondition(
+        `(function(){return document.querySelector('#search')?'ready':'';})()`,
+        8000
+      );
+
+      if (!searchReady) {
+        if (this.config.verbose) console.error('[SafariDriver] Google search did not load');
+        return false;
+      }
+
+      // Find the LinkedIn result link and get its position
+      const coords = await this.executeJS(`
+        (function() {
+          var links = document.querySelectorAll("a[href*='linkedin.com/in']");
+          for (var i = 0; i < links.length; i++) {
+            var href = links[i].href || '';
+            if (href.includes('linkedin.com/in/') && !href.includes('google.com')) {
+              var r = links[i].getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                return JSON.stringify({x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)});
+              }
+            }
+          }
+          return '';
+        })()
+      `);
+
+      if (!coords) {
+        if (this.config.verbose) console.error('[SafariDriver] No LinkedIn result found on Google');
+        return false;
+      }
+
+      const pos = JSON.parse(coords);
+      if (this.config.verbose) console.log(`[SafariDriver] Clicking LinkedIn result at (${pos.x}, ${pos.y})`);
+
+      // Click the LinkedIn result using native click
+      const clicked = await this.clickAtViewportPosition(pos.x, pos.y);
+      if (!clicked) {
+        if (this.config.verbose) console.error('[SafariDriver] Failed to click LinkedIn result');
+        return false;
+      }
+
+      // Wait for LinkedIn to load
+      const linkedInReady = await this.waitForCondition(
+        `(function(){return location.hostname.includes('linkedin.com')?'ready':'';})()`,
+        10000
+      );
+
+      if (!linkedInReady) {
+        if (this.config.verbose) console.error('[SafariDriver] Did not navigate to LinkedIn');
+        return false;
+      }
+
+      if (this.config.verbose) console.log(`[SafariDriver] Successfully navigated to LinkedIn via Google`);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] navigateViaGoogle error:', error);
+      return false;
+    }
+  }
+
+  /**
    * Get current URL from Safari.
    */
   async getCurrentUrl(): Promise<string> {

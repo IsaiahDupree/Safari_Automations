@@ -20,7 +20,14 @@ export async function navigateToMessaging(driver?: SafariDriver): Promise<Naviga
   const d = driver || getDefaultDriver();
   const success = await d.navigateTo(LINKEDIN_MESSAGING);
   if (!success) return { success: false, error: 'Failed to navigate to messaging' };
-  await d.wait(3000);
+
+  // Wait for messaging UI to load
+  const ready = await d.waitForCondition(
+    `(function(){return document.querySelector('.msg-overlay-list-bubble, .messaging-inbox')?'ready':'';})()`,
+    10000
+  );
+  if (!ready) return { success: false, error: 'Messaging page did not load' };
+
   const isLoggedIn = await d.isLoggedIn();
   if (!isLoggedIn) return { success: false, error: 'Not logged in to LinkedIn' };
   return { success: true, currentUrl: await d.getCurrentUrl() };
@@ -195,35 +202,32 @@ export async function openConversation(participantName: string, driver?: SafariD
       console.log(`[DM] Native click failed`);
       return false;
     }
-    await d.wait(3000);
 
-    // Verify the thread switched
-    const threadPerson = await d.executeJS(`
-      (function() {
-        var el = document.querySelector('.msg-entity-lockup__entity-title');
-        return el ? el.innerText.trim() : '';
-      })()
-    `);
-    console.log(`[DM] Thread person after click: ${threadPerson}`);
-    if (threadPerson.toLowerCase().includes(participantName.toLowerCase())) {
+    // Wait for thread to switch (entity title to appear with participant name)
+    const threadReady = await d.waitForCondition(
+      `(function(){var el=document.querySelector('.msg-entity-lockup__entity-title');return el?el.innerText.trim():'';})()`,
+      5000
+    );
+
+    if (threadReady && threadReady.toLowerCase().includes(participantName.toLowerCase())) {
+      console.log(`[DM] Thread switched to: ${threadReady}`);
       return true;
     }
+
     // Retry once — click slightly left (name area)
-    console.log(`[DM] Retrying with offset click...`);
+    console.log(`[DM] First click didn't switch thread, retrying with offset...`);
     const retryClicked = await d.clickAtViewportPosition(pos.x - 50, pos.y);
     if (retryClicked) {
-      await d.wait(3000);
-      const retryPerson = await d.executeJS(`
-        (function() {
-          var el = document.querySelector('.msg-entity-lockup__entity-title');
-          return el ? el.innerText.trim() : '';
-        })()
-      `);
-      if (retryPerson.toLowerCase().includes(participantName.toLowerCase())) {
+      const retryReady = await d.waitForCondition(
+        `(function(){var el=document.querySelector('.msg-entity-lockup__entity-title');return el?el.innerText.trim():'';})()`,
+        5000
+      );
+      if (retryReady && retryReady.toLowerCase().includes(participantName.toLowerCase())) {
+        console.log(`[DM] Thread switched after retry: ${retryReady}`);
         return true;
       }
     }
-    console.log(`[DM] Thread did not switch (showing: ${threadPerson})`);
+    console.log(`[DM] Thread did not switch (showing: ${threadReady})`);
   } catch (e: any) {
     console.log(`[DM] Error: ${e.message}`);
   }
@@ -277,10 +281,10 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
   if (sent !== 'sent') {
     // Fallback: press Enter
     await d.pressEnter();
-    await d.wait(1000);
-  } else {
-    await d.wait(2000);
   }
+
+  // Wait for message to appear in thread
+  await d.wait(1500);
 
   // Verify
   const verified = await d.executeJS(`
@@ -309,9 +313,9 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
 // ─── Send Message to Profile (New Conversation) ─────────────
 //
-// LinkedIn Feb 2026: The Message button is an <a> linking to /messaging/compose/.
-// JS .click() on this anchor tries to open an overlay that often fails to render.
-// Fix: Extract the compose URL from the anchor href and navigate directly to it.
+// LinkedIn Feb 2026 FIX: The Message button is an <a> linking to /messaging/compose/?interop=msgOverlay
+// KEEP interop=msgOverlay — stripping it causes redirects to home.
+// Use NATIVE clickAtViewportPosition() instead of JS .click() to trigger SPA routing.
 
 export async function sendMessageToProfile(
   profileUrl: string,
@@ -321,82 +325,72 @@ export async function sendMessageToProfile(
   const d = driver || getDefaultDriver();
   const log = (msg: string) => console.log(`[DM] ${msg}`);
 
-  // ── Step 1: Navigate to profile and extract compose URL ──
+  // ── Step 1: Navigate to profile page ──
   const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
+  log(`Navigating to profile: ${url}`);
   await d.navigateTo(url);
-  await d.wait(3000);
 
-  // Wait for profile action buttons to render
-  const pageReady = await d.waitForCondition(
-    `(function(){var m=document.querySelector('main');if(!m)return '';var s=m.querySelector('section');if(!s)return '';var has=s.querySelector('a[href*="/messaging/compose"],button[aria-label*="Message" i]');return has?'ready':'';})()`,
+  // Wait for main element to load
+  const mainReady = await d.waitForCondition(
+    `(function(){var m=document.querySelector('main');return m?'ready':'';})()`,
     10000
   );
 
-  if (!pageReady) {
-    log('Profile buttons did not load — checking if we can message');
+  if (!mainReady) {
+    return { success: false, error: 'Profile page did not load (no main element)' };
   }
 
-  // Extract compose URL from Message anchor
-  const composeInfo = await d.executeJS(`
+  // ── Step 2: Find Message anchor with interop=msgOverlay ──
+  const messageAnchorInfo = await d.executeJS(`
     (function() {
-      var m = document.querySelector('main');
-      if (!m) return JSON.stringify({error: 'no_main'});
-      var s = m.querySelector('section');
-      var scope = s || m;
-      // Try anchor first (LinkedIn Feb 2026)
-      var anchors = scope.querySelectorAll('a');
-      for (var j = 0; j < anchors.length; j++) {
-        var href = (anchors[j].href || '');
-        if (href.includes('/messaging/compose')) {
-          // Strip interop=msgOverlay to get full-page compose
-          var cleanUrl = href.replace(/&interop=[^&]*/g, '').replace(/&screenContext=[^&]*/g, '');
-          return JSON.stringify({composeUrl: cleanUrl, method: 'anchor'});
+      var anchors = document.querySelectorAll('a[href*="interop=msgOverlay"], button[aria-label*="Message"], a[data-control-name*="message"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var href = anchors[i].href || '';
+        var ariaLabel = (anchors[i].getAttribute('aria-label') || '').toLowerCase();
+        if (href.includes('interop=msgOverlay') || ariaLabel.includes('message')) {
+          var rect = anchors[i].getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            return JSON.stringify({
+              found: true,
+              x: Math.round(rect.x + rect.width / 2),
+              y: Math.round(rect.y + rect.height / 2),
+              href: href
+            });
+          }
         }
       }
-      // Try button
-      var btns = scope.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        if (a.includes('message')) {
-          return JSON.stringify({composeUrl: '', method: 'button', label: a});
-        }
-      }
-      return JSON.stringify({error: 'not_found'});
+      return JSON.stringify({found: false, error: 'Message button not found or not visible'});
     })()
   `);
 
-  let compose: any;
-  try { compose = JSON.parse(composeInfo); } catch {
-    return { success: false, error: 'Failed to parse compose info' };
+  let anchorInfo: any;
+  try { anchorInfo = JSON.parse(messageAnchorInfo); } catch {
+    return { success: false, error: 'Failed to parse message anchor info' };
   }
 
-  if (compose.error) {
-    log(`Message button not found: ${compose.error}`);
+  if (!anchorInfo.found) {
+    log(`Message button not found: ${anchorInfo.error}`);
     return { success: false, error: 'Message button not found — may not be connected' };
   }
 
-  // ── Step 2: Navigate to compose page (or click button) ──
-  if (compose.composeUrl) {
-    log(`Navigating to compose: ${compose.composeUrl.substring(0, 80)}`);
-    await d.navigateTo(compose.composeUrl);
-    await d.wait(3000);
-  } else if (compose.method === 'button') {
-    // Legacy button fallback — click and hope overlay opens
-    log('Using legacy button click for message');
-    await d.executeJS(`
-      (function(){var m=document.querySelector('main');var s=m.querySelector('section');var scope=s||m;var btns=scope.querySelectorAll('button');for(var i=0;i<btns.length;i++){var a=(btns[i].getAttribute('aria-label')||'').toLowerCase();if(a.includes('message')){btns[i].click();return;}}})()
-    `);
-    await d.wait(3000);
+  log(`Found Message button at viewport (${anchorInfo.x}, ${anchorInfo.y})`);
+
+  // ── Step 3: Native click on Message button ──
+  const clicked = await d.clickAtViewportPosition(anchorInfo.x, anchorInfo.y);
+  if (!clicked) {
+    return { success: false, error: 'Failed to click Message button' };
   }
 
-  // ── Step 3: Wait for message input ──
+  log('Clicked Message button with native click');
+
+  // ── Step 4: Wait for message input overlay ──
   const inputReady = await d.waitForCondition(
     `(function(){var el=document.querySelector('.msg-form__contenteditable,[role="textbox"][contenteditable="true"]');return(el&&el.offsetParent!==null)?'ready':'';})()`,
-    10000
+    8000
   );
 
   if (!inputReady) {
-    return { success: false, error: 'Message input did not appear on compose page' };
+    return { success: false, error: 'Message input did not appear after clicking Message button' };
   }
 
   // Focus the input
@@ -405,12 +399,12 @@ export async function sendMessageToProfile(
   `);
   await d.wait(300);
 
-  // ── Step 4: Type message via clipboard ──
+  // ── Step 5: Type message via clipboard ──
   const typed = await d.typeViaClipboard(text);
   if (!typed) return { success: false, error: 'Failed to type message' };
   await d.wait(1000);
 
-  // ── Step 5: Wait for Send to enable and click ──
+  // ── Step 6: Wait for Send to enable and click ──
   const sendReady = await d.waitForCondition(
     `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled)return 'ready';}return '';})()`,
     5000
@@ -434,7 +428,7 @@ export async function sendMessageToProfile(
 
   await d.wait(2000);
 
-  // ── Step 6: Verify message appeared ──
+  // ── Step 7: Verify message appeared ──
   const checkText = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const verification = await d.executeJS(`
     (function() {
@@ -452,6 +446,197 @@ export async function sendMessageToProfile(
   try { result = JSON.parse(verification); } catch {}
 
   log(`Verified: ${result.verified}, Recipient: ${result.recipient || 'unknown'}, Last: ${result.lastMsg || ''}`);
+
+  return {
+    success: true,
+    verified: result.verified === true,
+    verifiedRecipient: result.recipient || undefined,
+  };
+}
+
+// ─── Open New Compose (First-Contact DMs) ───────────────────
+//
+// Use this for sending DMs to people NOT yet in your message history.
+// Opens the compose modal, types recipient name, selects from dropdown, sends message.
+
+export async function openNewCompose(
+  recipientName: string,
+  message: string,
+  driver?: SafariDriver
+): Promise<SendMessageResult> {
+  const d = driver || getDefaultDriver();
+  const log = (msg: string) => console.log(`[NewCompose] ${msg}`);
+
+  // ── Step 1: Navigate to messaging page ──
+  log(`Navigating to messaging...`);
+  await d.navigateTo('https://www.linkedin.com/messaging/');
+
+  const messagingReady = await d.waitForCondition(
+    `(function(){var el=document.querySelector('.msg-overlay-list-bubble, .scaffold-layout__aside');return el?'ready':'';})()`,
+    10000
+  );
+
+  if (!messagingReady) {
+    return { success: false, error: 'Messaging page did not load' };
+  }
+
+  // ── Step 2: Find and click compose button ──
+  const composeButtonInfo = await d.executeJS(`
+    (function() {
+      var btns = document.querySelectorAll('[data-control-name=compose], button[aria-label*="Compose"]');
+      for (var i = 0; i < btns.length; i++) {
+        var rect = btns[i].getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          return JSON.stringify({
+            found: true,
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2)
+          });
+        }
+      }
+      return JSON.stringify({found: false});
+    })()
+  `);
+
+  let composeBtnInfo: any;
+  try { composeBtnInfo = JSON.parse(composeButtonInfo); } catch {
+    return { success: false, error: 'Failed to parse compose button info' };
+  }
+
+  if (!composeBtnInfo.found) {
+    return { success: false, error: 'Compose button not found' };
+  }
+
+  log(`Clicking compose button at (${composeBtnInfo.x}, ${composeBtnInfo.y})`);
+  const composeClicked = await d.clickAtViewportPosition(composeBtnInfo.x, composeBtnInfo.y);
+  if (!composeClicked) {
+    return { success: false, error: 'Failed to click compose button' };
+  }
+
+  // ── Step 3: Wait for recipient search field ──
+  const searchReady = await d.waitForCondition(
+    `(function(){var el=document.querySelector('.msg-connections-typeahead__search-field');return el?'ready':'';})()`,
+    8000
+  );
+
+  if (!searchReady) {
+    return { success: false, error: 'Recipient search field did not appear' };
+  }
+
+  // Focus the search field
+  await d.executeJS(`
+    (function(){var el=document.querySelector('.msg-connections-typeahead__search-field');if(el){el.focus();el.click();}})()
+  `);
+  await d.wait(300);
+
+  // ── Step 4: Type recipient name character by character ──
+  log(`Typing recipient name: ${recipientName}`);
+  const typed = await d.typeViaClipboard(recipientName);
+  if (!typed) return { success: false, error: 'Failed to type recipient name' };
+  await d.wait(1500);
+
+  // ── Step 5: Wait for dropdown suggestions ──
+  const suggestionsReady = await d.waitForCondition(
+    `(function(){var el=document.querySelector('.msg-connections-typeahead__result-item');return el?'ready':'';})()`,
+    5000
+  );
+
+  if (!suggestionsReady) {
+    return { success: false, error: 'No recipient suggestions appeared' };
+  }
+
+  // ── Step 6: Click first matching suggestion ──
+  const suggestionInfo = await d.executeJS(`
+    (function() {
+      var suggestions = document.querySelectorAll('.msg-connections-typeahead__result-item');
+      if (suggestions.length > 0) {
+        var rect = suggestions[0].getBoundingClientRect();
+        return JSON.stringify({
+          found: true,
+          x: Math.round(rect.x + rect.width / 2),
+          y: Math.round(rect.y + rect.height / 2),
+          text: suggestions[0].innerText.trim().substring(0, 50)
+        });
+      }
+      return JSON.stringify({found: false});
+    })()
+  `);
+
+  let suggInfo: any;
+  try { suggInfo = JSON.parse(suggestionInfo); } catch {
+    return { success: false, error: 'Failed to parse suggestion info' };
+  }
+
+  if (!suggInfo.found) {
+    return { success: false, error: 'No suggestion to click' };
+  }
+
+  log(`Clicking suggestion: ${suggInfo.text}`);
+  const suggClicked = await d.clickAtViewportPosition(suggInfo.x, suggInfo.y);
+  if (!suggClicked) {
+    return { success: false, error: 'Failed to click suggestion' };
+  }
+
+  await d.wait(1000);
+
+  // ── Step 7: Wait for message input ──
+  const inputReady = await d.waitForCondition(
+    `(function(){var el=document.querySelector('.msg-form__contenteditable');return(el&&el.offsetParent!==null)?'ready':'';})()`,
+    8000
+  );
+
+  if (!inputReady) {
+    return { success: false, error: 'Message input did not appear' };
+  }
+
+  // Focus the input
+  await d.executeJS(`
+    (function(){var el=document.querySelector('.msg-form__contenteditable');if(el){el.focus();el.click();}})()
+  `);
+  await d.wait(300);
+
+  // ── Step 8: Type message ──
+  log(`Typing message...`);
+  const msgTyped = await d.typeViaClipboard(message);
+  if (!msgTyped) return { success: false, error: 'Failed to type message' };
+  await d.wait(1000);
+
+  // ── Step 9: Click Send ──
+  const sendReady = await d.waitForCondition(
+    `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled)return 'ready';}return '';})()`,
+    5000
+  );
+
+  if (!sendReady) {
+    await d.pressEnter();
+    log('Send button not ready — pressed Enter as fallback');
+  } else {
+    await d.executeJS(`
+      (function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled){btns[i].click();return;}}})()
+    `);
+    log('Clicked Send');
+  }
+
+  await d.wait(2000);
+
+  // ── Step 10: Verify ──
+  const checkText = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const verification = await d.executeJS(`
+    (function() {
+      var msgs = document.querySelectorAll('.msg-s-event-listitem__body, .msg-s-message-group__text');
+      var last = msgs.length > 0 ? msgs[msgs.length - 1].innerText.trim() : '';
+      var verified = last.includes('${checkText}');
+      var recipient = '';
+      var nameEl = document.querySelector('.msg-entity-lockup__entity-title, h2.msg-overlay-bubble-header__title');
+      if (nameEl) recipient = nameEl.innerText.trim();
+      return JSON.stringify({verified: verified, recipient: recipient});
+    })()
+  `);
+
+  let result: any = {};
+  try { result = JSON.parse(verification); } catch {}
+
+  log(`Verified: ${result.verified}, Recipient: ${result.recipient || 'unknown'}`);
 
   return {
     success: true,

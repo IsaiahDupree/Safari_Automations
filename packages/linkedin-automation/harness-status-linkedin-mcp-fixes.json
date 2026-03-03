@@ -1,0 +1,16 @@
+{
+  "projectId": "linkedin-mcp-fixes",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/linkedin-automation",
+  "lastUpdated": "2026-03-03T02:05:59.412Z",
+  "sessionType": "CODING",
+  "status": "running",
+  "stats": {
+    "total": 7,
+    "passing": 0,
+    "pending": 7,
+    "percentComplete": "0.0"
+  },
+  "pid": 37929,
+  "currentSession": 1,
+  "model": "claude-sonnet-4-5-20250929"
+}

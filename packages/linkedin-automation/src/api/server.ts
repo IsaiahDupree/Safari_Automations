@@ -25,6 +25,7 @@ import {
   openConversation,
   sendMessage,
   sendMessageToProfile,
+  openNewCompose,
   getUnreadCount,
   runProspectingPipeline,
   searchAndScore,
@@ -224,6 +225,16 @@ app.post('/api/linkedin/navigate/profile', async (req: Request, res: Response) =
   });
 });
 
+app.post('/api/linkedin/navigate/via-google', async (req: Request, res: Response) => {
+  const { profileUrl } = req.body;
+  if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  await withSafariLock(res, 'navigate/via-google', async () => {
+    const d = getDefaultDriver();
+    const success = await d.navigateViaGoogle(profileUrl);
+    res.json({ success, profileUrl, method: 'google_search' });
+  });
+});
+
 // ─── Debug ───────────────────────────────────────────────────
 
 app.post('/api/linkedin/debug/js', async (req: Request, res: Response) => {
@@ -233,6 +244,38 @@ app.post('/api/linkedin/debug/js', async (req: Request, res: Response) => {
     const d = getDefaultDriver();
     const result = await d.executeJS(js);
     res.json({ result });
+  });
+});
+
+app.post('/api/linkedin/debug/click', async (req: Request, res: Response) => {
+  const { x, y } = req.body;
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return res.status(400).json({ error: 'x and y coordinates required as numbers' });
+  }
+  await withSafariLock(res, 'debug/click', async () => {
+    const d = getDefaultDriver();
+    const clicked = await d.clickAtViewportPosition(x, y);
+    res.json({ success: clicked, x, y, timestamp: Date.now() });
+  });
+});
+
+app.get('/api/linkedin/debug/screenshot', async (_req: Request, res: Response) => {
+  await withSafariLock(res, 'debug/screenshot', async () => {
+    const d = getDefaultDriver();
+    const tempPath = `/tmp/linkedin-screenshot-${Date.now()}.png`;
+    const success = await d.takeScreenshot(tempPath);
+    if (!success) {
+      return res.status(500).json({ success: false, error: 'Screenshot failed' });
+    }
+    try {
+      const fs = await import('fs/promises');
+      const imageBuffer = await fs.readFile(tempPath);
+      const imageBase64 = imageBuffer.toString('base64');
+      await fs.unlink(tempPath).catch(() => {});
+      res.json({ success: true, imageBase64, timestamp: Date.now() });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
   });
 });
 
@@ -453,7 +496,7 @@ app.delete('/api/linkedin/connections/request/:requestId', async (req: Request, 
         })()
       `);
 
-      if (withdrawn === 'true' || withdrawn === true) {
+      if (withdrawn === 'true') {
         res.json({ success: true, message: 'Connection request withdrawn' });
       } else {
         res.json({ success: false, message: 'Could not find withdraw button' });
@@ -587,8 +630,11 @@ app.post('/api/linkedin/messages/open', async (req: Request, res: Response) => {
 
 app.post('/api/linkedin/messages/send', async (req: Request, res: Response) => {
   resetCountersIfNeeded();
-  if (messagesToday >= rateLimits.messagesPerDay) {
-    return res.status(429).json({ error: 'Daily message limit reached' });
+  if (messagesToday >= rateLimits.messagesPerDay && !req.body.force) {
+    return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
+  }
+  if (!isWithinActiveHours() && !req.body.force) {
+    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
   }
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
@@ -601,13 +647,38 @@ app.post('/api/linkedin/messages/send', async (req: Request, res: Response) => {
 
 app.post('/api/linkedin/messages/send-to', async (req: Request, res: Response) => {
   resetCountersIfNeeded();
-  if (messagesToday >= rateLimits.messagesPerDay) {
-    return res.status(429).json({ error: 'Daily message limit reached' });
+  if (messagesToday >= rateLimits.messagesPerDay && !req.body.force) {
+    return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
+  }
+  if (!isWithinActiveHours() && !req.body.force) {
+    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
   }
   const { profileUrl, text } = req.body;
   if (!profileUrl || !text) return res.status(400).json({ error: 'profileUrl and text required' });
   await withSafariLock(res, 'messages/send-to', async () => {
     const result = await sendMessageToProfile(profileUrl, text);
+    if (result.success) messagesToday++;
+    res.json(result);
+  });
+});
+
+app.post('/api/linkedin/messages/new-compose', async (req: Request, res: Response) => {
+  resetCountersIfNeeded();
+  if (messagesToday >= rateLimits.messagesPerDay && !req.body.force && !req.body.dryRun) {
+    return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
+  }
+  if (!isWithinActiveHours() && !req.body.force && !req.body.dryRun) {
+    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
+  }
+  const { recipientName, message, dryRun } = req.body;
+  if (!recipientName || !message) {
+    return res.status(400).json({ error: 'recipientName and message required' });
+  }
+  if (dryRun) {
+    return res.json({ success: true, dryRun: true, recipientName, message: message.substring(0, 100) });
+  }
+  await withSafariLock(res, 'messages/new-compose', async () => {
+    const result = await openNewCompose(recipientName, message);
     if (result.success) messagesToday++;
     res.json(result);
   });
