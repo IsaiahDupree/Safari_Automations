@@ -460,6 +460,17 @@ end tell`;
   }
 
   /**
+   * Pin the driver to a specific Safari window+tab (called by tab coordinator after claiming).
+   * All subsequent executeJS and navigateTo calls will target this exact tab.
+   */
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
+    this.sessionUrlPattern = urlPattern;
+    this.sessionLastVerified = Date.now();
+  }
+
+  /**
    * Bring Safari to the foreground (generic — no tab targeting).
    */
   async activateSafari(): Promise<boolean> {

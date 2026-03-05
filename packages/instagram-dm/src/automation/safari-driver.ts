@@ -53,7 +53,7 @@ export class SafariDriver {
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim(); // preserve newlines — file-based execution handles them fine; stripping breaks // comments
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
@@ -93,7 +93,7 @@ export class SafariDriver {
    * Execute JavaScript in a specific window+tab regardless of tracking state.
    */
   async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim(); // preserve newlines for same reason as executeLocalJS
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
     await fs.writeFile(tempFile, cleanJS);
     const script = `
@@ -457,6 +457,17 @@ end tell`;
     this.trackedTab = null;
     this.sessionUrlPattern = null;
     this.sessionLastVerified = 0;
+  }
+
+  /**
+   * Pin the driver to a specific Safari window+tab (called by tab coordinator after claiming).
+   * All subsequent executeJS and navigateTo calls will target this exact tab.
+   */
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
+    this.sessionUrlPattern = urlPattern;
+    this.sessionLastVerified = Date.now();
   }
 
   /**

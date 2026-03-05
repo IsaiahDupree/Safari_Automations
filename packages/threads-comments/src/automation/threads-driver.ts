@@ -314,9 +314,20 @@ export interface ThreadsStatus {
 export class ThreadsDriver {
   private config: ThreadsConfig;
   private commentLog: { timestamp: Date }[] = [];
+  private trackedWindow: number | null = null;
+  private trackedTab: number | null = null;
 
   constructor(config: Partial<ThreadsConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Pin the driver to a specific Safari window+tab (called by tab coordinator after claiming).
+   * All subsequent executeJS and navigate calls will target this exact tab.
+   */
+  setTrackedTab(windowIndex: number, tabIndex: number, _urlPattern: string): void {
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
   }
 
   private async executeJS(script: string): Promise<string> {
@@ -324,22 +335,27 @@ export class ThreadsDriver {
     const fs = await import('fs');
     const os = await import('os');
     const path = await import('path');
-    
+
     // Write JS to temp file (like Python's execute_js method)
     const jsFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.js`);
     fs.writeFileSync(jsFile, script);
-    
+
+    // Use tracked window+tab when available, else fall back to front document
+    const tabTarget = (this.trackedWindow && this.trackedTab)
+      ? `tell tab ${this.trackedTab} of window ${this.trackedWindow}`
+      : 'tell front document';
+
     const appleScript = `
 tell application "Safari"
-  tell front document
+  ${tabTarget}
     set jsCode to read POSIX file "${jsFile}"
     do JavaScript jsCode
   end tell
 end tell`;
-    
+
     const scptFile = path.join(os.tmpdir(), `safari_cmd_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     fs.writeFileSync(scptFile, appleScript);
-    
+
     try {
       const { stdout } = await execAsync(`osascript "${scptFile}"`, { timeout: 15000 });
       return stdout.trim();

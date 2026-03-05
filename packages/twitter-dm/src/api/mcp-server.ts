@@ -90,6 +90,9 @@ const TOOLS = [
   { name: 'twitter_navigate_inbox', description: 'Navigate Safari to the Twitter/X DM inbox.', inputSchema: { type: 'object', properties: {} } },
   { name: 'twitter_is_ready', description: 'Check if DM service (:3003) and Comments service (:3007) are reachable before attempting any action. Call this first each session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'twitter_crm_get_contact', description: 'Get CRMLite contact record by Twitter username. Returns contact history, interactions, tags, and pipeline stage across all platforms.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Twitter username without @' } }, required: ['username'] } },
+  { name: 'twitter_discover_prospects', description: 'Discover and score ICP-matching Twitter/X users from search results and recent DM conversations. Returns ranked candidates with bio keyword signals and follower data. Set dryRun=true to skip navigation.', inputSchema: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords/hashtags (default: buildinpublic, saasfounder, aiautomation)' }, sources: { type: 'array', items: { type: 'string', enum: ['search', 'conversations'] }, description: 'Data sources to use (default: both)' }, maxCandidates: { type: 'number', description: 'Max profiles to enrich (default 15, max 20)', default: 15 }, minScore: { type: 'number', description: 'Minimum ICP score to include (default 30)', default: 30 }, dryRun: { type: 'boolean', description: 'Return empty immediately without navigating', default: false } } } },
+  { name: 'twitter_score_prospect', description: 'Enrich and score a single Twitter/X user against the ICP. Returns profile data + icpScore (0-100) + icpSignals explaining the score.', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Twitter handle without @' } }, required: ['handle'] } },
+  { name: 'twitter_queue_prospect', description: 'Add a scored Twitter/X prospect to the suggested_actions outreach queue. No DM is sent — requires human review first.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Twitter username without @' }, message: { type: 'string', description: 'Outreach message to queue' }, priority: { type: 'number', description: 'Priority 1-10 (default 5)', default: 5 } }, required: ['username', 'message'] } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -151,6 +154,27 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         result = { found: false, username, error: err instanceof Error ? err.message : String(err) };
       }
       break;
+    }
+    case 'twitter_discover_prospects':
+      result = await api(DM_BASE, 'POST', '/api/twitter/prospect/discover', {
+        keywords: args.keywords, sources: args.sources, maxCandidates: args.maxCandidates,
+        minScore: args.minScore, dryRun: args.dryRun,
+      }); break;
+    case 'twitter_score_prospect':
+      result = await api(DM_BASE, 'GET', `/api/twitter/prospect/score/${encodeURIComponent(args.handle as string)}`); break;
+    case 'twitter_queue_prospect': {
+      const username = args.username as string;
+      result = await api(DM_BASE, 'POST', '/api/twitter/outreach/queue', {
+        contact_id: username,
+        platform: 'twitter',
+        template_id: 'manual',
+        lane: 'cold',
+        message: args.message,
+        personalized_message: args.message,
+        priority: args.priority ?? 5,
+        phase: 'discovery',
+        status: 'pending',
+      }); break;
     }
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }

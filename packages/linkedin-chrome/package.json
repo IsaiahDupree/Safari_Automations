@@ -1,0 +1,16 @@
+{
+  "name": "@safari-automation/linkedin-chrome",
+  "version": "1.0.0",
+  "description": "LinkedIn Chrome automation — Puppeteer/CDP-based MCP server with 25 tools",
+  "scripts": {
+    "start:mcp": "npx tsx src/api/mcp-server.ts"
+  },
+  "dependencies": {
+    "puppeteer-core": "^22.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  },
+  "keywords": ["linkedin", "automation", "chrome", "puppeteer", "cdp", "mcp"]
+}

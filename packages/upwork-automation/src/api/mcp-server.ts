@@ -12,14 +12,26 @@ const SERVER_VERSION = '1.0.0';
 const BASE = 'http://localhost:3104';
 const TIMEOUT_MS = 60_000;
 
-async function api(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<unknown> {
+function structuredError(status: number, body: string, platform: string): never {
+  if (status === 429) throw { code: 'RATE_LIMITED', message: 'Rate limit hit — wait before retrying', retryAfter: 60, platform };
+  if (status === 401 || status === 403) throw { code: 'SESSION_EXPIRED', message: 'Safari session expired or unauthorized', action: 'navigate to Upwork and log in', platform };
+  if (status === 404) throw { code: 'NOT_FOUND', message: body.slice(0, 100), platform };
+  throw { code: 'API_ERROR', message: `HTTP ${status}: ${body.slice(0, 200)}`, platform };
+}
+
+async function api(method: 'GET' | 'POST' | 'DELETE' | 'PATCH', path: string, body?: Record<string, unknown>): Promise<unknown> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
     const res = await fetch(`${BASE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal });
     const text = await res.text();
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    if (!res.ok) structuredError(res.status, text, 'upwork');
     return JSON.parse(text);
+  } catch (err) {
+    const e = err as { name?: string; cause?: { code?: string } };
+    if (e.name === 'AbortError') throw { code: 'SERVICE_DOWN', message: `${BASE} did not respond within ${TIMEOUT_MS / 1000}s — is the service running?`, base: BASE };
+    if ((e as { code?: string }).code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED') throw { code: 'SERVICE_DOWN', message: `${BASE} is not running`, base: BASE };
+    throw err;
   } finally { clearTimeout(t); }
 }
 
@@ -39,6 +51,7 @@ const TOOLS = [
   { name: 'upwork_list_watches', description: 'List all active Upwork job watches (saved search criteria for monitoring).', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_get_rate_limits', description: 'Get current Upwork rate limit state (searches this hour, applications today).', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_navigate', description: 'Navigate Safari to a specific Upwork URL or section.', inputSchema: { type: 'object', properties: { section: { type: 'string', enum: ['find-work', 'my-jobs', 'messages'], description: 'Section to navigate to' } }, required: ['section'] } },
+  { name: 'upwork_is_ready', description: 'Check if the Upwork service (:3104) is reachable and you are logged in before attempting any action. Call this first each session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_list_templates', description: 'List all saved proposal templates.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_create_template', description: 'Create a new proposal template for reuse.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Template name' }, category: { type: 'string', description: 'Template category' }, template: { type: 'string', description: 'Template text with optional placeholders' }, tone: { type: 'string', enum: ['professional', 'friendly', 'technical'], description: 'Template tone' } }, required: ['name', 'category', 'template', 'tone'] } },
   { name: 'upwork_save_job', description: 'Save an Upwork job for later (adds to Saved Jobs list).', inputSchema: { type: 'object', properties: { jobUrl: { type: 'string', description: 'Upwork job URL' } }, required: ['jobUrl'] } },
@@ -72,6 +85,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'upwork_navigate': {
       const sectionMap: Record<string, string> = { 'find-work': '/api/upwork/navigate/find-work', 'my-jobs': '/api/upwork/navigate/my-jobs', 'messages': '/api/upwork/navigate/messages' };
       result = await api('POST', sectionMap[args.section as string] || '/api/upwork/navigate/find-work');
+      break;
+    }
+    case 'upwork_is_ready': {
+      const check = async () => { try { const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(5000) }); return r.ok; } catch { return false; } };
+      const up = await check();
+      result = { service: up, ready: up, serviceUrl: BASE };
       break;
     }
     case 'upwork_list_templates':    result = await api('GET',  '/api/upwork/templates'); break;
@@ -111,7 +130,8 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
         return { jsonrpc: '2.0', id, result: await executeTool(toolName, toolArgs) };
       } catch (err) {
         const e = err as { code?: number; message?: string };
-        if (e.code) return { jsonrpc: '2.0', id, error: { code: e.code, message: e.message || 'Tool error' } };
+        if (typeof e.code === 'number') return { jsonrpc: '2.0', id, error: { code: e.code, message: e.message || 'Tool error' } };
+        if (e.code) return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(err) }], isError: true } };
         return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true } };
       }
     }

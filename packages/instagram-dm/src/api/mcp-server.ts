@@ -84,6 +84,13 @@ const TOOLS = [
   { name: 'instagram_ai_generate_dm', description: 'Generate an AI-written DM for a user using GPT-4o.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Target username' }, purpose: { type: 'string', description: 'Purpose of outreach (e.g. "collab offer", "lead follow-up")' }, topic: { type: 'string', description: 'Optional topic to reference' } }, required: ['username', 'purpose'] } },
   { name: 'instagram_is_ready', description: 'Check if DM service (:3100) and Comments service (:3005) are reachable before attempting any action. Call this first each session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'instagram_crm_get_contact', description: 'Get CRMLite contact record by Instagram username. Returns contact history, interactions, tags, and pipeline stage across all platforms.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Instagram username without @' } }, required: ['username'] } },
+  { name: 'instagram_discover_prospects', description: 'Discover and score ICP-matching Instagram accounts from hashtag search or recent followers. Returns ranked candidates with bio, follower count, and ICP score. Never auto-sends DMs — only surfaces candidates for human review. Uses targetCount + maxRounds to keep searching until enough candidates are found.', inputSchema: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' }, description: 'Hashtags/keywords to search (e.g. ["buildinpublic","saasfounder"])', default: ['buildinpublic', 'saasfounder', 'aiautomation'] }, sources: { type: 'array', items: { type: 'string' }, description: 'Discovery sources: "hashtag" and/or "followers"', default: ['hashtag', 'followers'] }, targetCount: { type: 'number', description: 'Target number of qualifying candidates to collect. Runs multiple rounds until met (max 20).', default: 10 }, maxCandidates: { type: 'number', description: 'Alias for targetCount (legacy, use targetCount)', default: 15 }, maxRounds: { type: 'number', description: 'Max keyword expansion rounds before stopping (default 3)', default: 3 }, niches: { type: 'object', description: 'Per-niche quotas e.g. {"buildinpublic":5,"saasfounder":3}. Stops collecting a niche when quota is met.' }, minScore: { type: 'number', description: 'Min ICP score to include (0-100)', default: 30 }, dryRun: { type: 'boolean', description: 'Return empty results without navigating Safari', default: false } } } },
+  { name: 'instagram_score_prospect', description: 'Enrich an Instagram profile and score it against the ICP (software founders, SaaS, AI automation). Returns profile data + icpScore 0-100 + matched signals.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Instagram username without @' } }, required: ['username'] } },
+  { name: 'instagram_queue_prospect', description: 'Add a scored prospect to the outreach queue (suggested_actions table) for later DM. Does NOT send a DM — only queues for human review.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Instagram username without @' }, message: { type: 'string', description: 'Draft DM message to queue' }, priority: { type: 'number', description: 'Priority 1-10 (default 5)', default: 5 } }, required: ['username', 'message'] } },
+  { name: 'instagram_discover_from_top_posts', description: 'Full 3-step pipeline: (1) navigate to hashtag pages and rank posts by engagement, (2) rank the creators of those posts by their total engagement, (3) scrape followers of top creators and enrich as ICP prospects. Returns topPosts, topCreators, and enriched candidates in one call. Use this when you want prospects sourced from followers of proven high-engagement creators.', inputSchema: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' }, description: 'Hashtags to find top posts from (e.g. ["buildinpublic","saasfounder"]). Uses defaults if omitted.' }, maxPostsPerKeyword: { type: 'number', description: 'Posts to visit per keyword to find creators (default 6)', default: 6 }, maxTopCreators: { type: 'number', description: 'How many top-ranked creators to scrape followers from (default 5)', default: 5 }, minScore: { type: 'number', description: 'Min ICP score to store', default: 20 }, dryRun: { type: 'boolean', default: false } } } },
+  { name: 'instagram_scale_discover', description: 'Accumulate prospects in the DB across multiple calls. Each call runs one discovery batch and persists new candidates to suggested_actions (status=suggested). Call repeatedly until done=true or looping=true. When looping=true, add topAccounts or topPostKeywords to break out. topPostKeywords automatically finds top post creators then scrapes their followers.', inputSchema: { type: 'object', properties: { targetTotal: { type: 'number', description: 'Total prospect count to reach across all calls', default: 500 }, keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords (uses defaults if omitted)' }, topAccounts: { type: 'array', items: { type: 'string' }, description: 'Instagram accounts whose followers to scrape. e.g. ["levelsio", "marc_louvion"]' }, topPostKeywords: { type: 'array', items: { type: 'string' }, description: 'Keywords to find top posts from, then scrape followers of those post creators. Highest quality source.' }, minScore: { type: 'number', description: 'Min ICP score to store', default: 30 }, maxRounds: { type: 'number', description: 'Discovery rounds per call (default 2)', default: 2 }, dryRun: { type: 'boolean', default: false } } } },
+  { name: 'instagram_dm_top_n', description: 'Promote the top N highest-ICP-score prospects from suggested_actions to the outreach queue (status=pending). Applies a message template. Call AFTER scale_discover has accumulated enough prospects. Always use dryRun=true first to preview.', inputSchema: { type: 'object', properties: { n: { type: 'number', description: 'Number of prospects to promote to DM queue', default: 100 }, messageTemplate: { type: 'string', description: 'Message template, use {username} as placeholder', default: 'Hey {username}! Your work caught my eye — would love to connect about AI automation.' }, dryRun: { type: 'boolean', description: 'Preview without queueing', default: true } }, required: [] } },
+  { name: 'instagram_send_queued', description: 'Send pending prospect DMs from the outreach queue. Navigates to each profile, clicks Message, sends the queued message. Use batchSize≤5 and sendDelay≥45000ms (45s) to stay safe. Always dryRun:true first to preview. Returns {sent, failed, remaining, rateLimits}.', inputSchema: { type: 'object', properties: { batchSize: { type: 'number', description: 'Max DMs to send per call (max 10, default 5)', default: 5 }, sendDelay: { type: 'number', description: 'Ms to wait between DMs (default 45000 = 45s)', default: 45000 }, dryRun: { type: 'boolean', description: 'Preview queue without sending', default: true } } } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -140,6 +147,69 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
       break;
     }
+    case 'instagram_discover_prospects':
+      result = await api(DM_BASE, 'POST', '/api/prospect/discover', {
+        keywords: args.keywords,
+        sources: args.sources,
+        targetCount: args.targetCount ?? args.maxCandidates,
+        maxRounds: args.maxRounds,
+        niches: args.niches,
+        minScore: args.minScore,
+        dryRun: args.dryRun,
+      });
+      break;
+    case 'instagram_score_prospect':
+      result = await api(DM_BASE, 'GET', `/api/prospect/score/${encodeURIComponent(args.username as string)}`);
+      break;
+    case 'instagram_queue_prospect': {
+      const u = args.username as string;
+      const msg = args.message as string;
+      result = await api(DM_BASE, 'POST', '/api/outreach/queue', {
+        contact_id: u,
+        message: msg,
+        personalized_message: msg,
+        template_id: 'prospect_discovery',
+        lane: 'cold_outreach',
+        phase: 'awareness',
+        priority: (args.priority as number) ?? 5,
+        status: 'pending',
+      });
+      break;
+    }
+    case 'instagram_discover_from_top_posts':
+      result = await api(DM_BASE, 'POST', '/api/prospect/discover-from-top-posts', {
+        keywords: args.keywords,
+        maxPostsPerKeyword: args.maxPostsPerKeyword,
+        maxTopCreators: args.maxTopCreators,
+        minScore: args.minScore,
+        dryRun: args.dryRun,
+      });
+      break;
+    case 'instagram_scale_discover':
+      result = await api(DM_BASE, 'POST', '/api/prospect/scale-discover', {
+        targetTotal: args.targetTotal,
+        keywords: args.keywords,
+        topAccounts: args.topAccounts,
+        topPostKeywords: args.topPostKeywords,
+        minScore: args.minScore,
+        maxRounds: args.maxRounds,
+        dryRun: args.dryRun,
+      });
+      break;
+    case 'instagram_dm_top_n':
+      result = await api(DM_BASE, 'POST', '/api/prospect/dm-top-n', {
+        n: args.n,
+        messageTemplate: args.messageTemplate,
+        dryRun: args.dryRun,
+      });
+      break;
+    case 'instagram_send_queued':
+      result = await api(DM_BASE, 'POST', '/api/prospect/send-queued', {
+        batchSize: args.batchSize,
+        sendDelay: args.sendDelay,
+        dryRun: args.dryRun,
+      });
+      break;
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };

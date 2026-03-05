@@ -100,6 +100,8 @@ import { isWithinActiveHours } from '../utils/index.js';
 import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
 import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
 import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule } from '../utils/template-engine.js';
+import { discoverProspects, scoreICP, ICP_KEYWORDS } from './prospect-discovery.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 const app = express();
 app.use(cors());
@@ -121,7 +123,10 @@ let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 let driver: SafariDriver | null = null;
 
 // URL pattern that identifies the Twitter Safari session
-const SESSION_URL_PATTERN = 'twitter.com';
+// x.com is the canonical domain (twitter.com redirects to x.com in Safari)
+const SESSION_URL_PATTERN = 'x.com';
+const SERVICE_NAME = 'twitter-dm';
+const SERVICE_PORT = 3003;
 
 function getDriver(): SafariDriver {
   if (!driver) {
@@ -597,6 +602,50 @@ app.post('/api/twitter/ai/generate', async (req: Request, res: Response) => {
       topic,
     });
     res.json({ success: true, message, aiEnabled: !!OPENAI_API_KEY });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// === PROSPECT DISCOVERY ===
+
+app.post('/api/twitter/prospect/discover', async (req: Request, res: Response) => {
+  const params = req.body || {};
+  if (params.dryRun) {
+    const result = await discoverProspects(params);
+    res.json({ success: true, ...result });
+    return;
+  }
+  const agentId = `prospect-discovery-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    await getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+  } catch (err) {
+    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
+    coord = null;
+  }
+  try {
+    const result = await discoverProspects(params);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  } finally {
+    if (coord) {
+      try { await coord.release(); } catch { /* ignore */ }
+    }
+  }
+});
+
+app.get('/api/twitter/prospect/score/:handle', async (req: Request, res: Response) => {
+  try {
+    const { handle } = req.params;
+    if (!handle) { res.status(400).json({ error: 'handle required' }); return; }
+    const profile = await getProfileInfo(handle, getDriver());
+    const { score, signals } = scoreICP(profile as Parameters<typeof scoreICP>[0], 'direct');
+    res.json({ success: true, username: handle, ...profile, icpScore: score, icpSignals: signals, icpKeywords: ICP_KEYWORDS });
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
   }

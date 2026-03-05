@@ -203,6 +203,8 @@ const commentRateTracker = {
   hourlyLimit: 5,
   hourlySent: 0,
   resetAt: new Date(new Date().setHours(24, 0, 0, 0)).toISOString(),
+  activeHoursStart: 9,
+  activeHoursEnd: 21,
 };
 
 // ─── Idempotency Tracking ────────────────────────────────────────────
@@ -387,6 +389,16 @@ app.get('/api/instagram/comments/rate-limits', (_req: Request, res: Response) =>
 app.post('/api/instagram/comments/post', async (req: Request, res: Response) => {
   try {
     const { text, postUrl } = req.body;
+
+    // Check active hours
+    const hour = new Date().getHours();
+    if (hour < commentRateTracker.activeHoursStart || hour >= commentRateTracker.activeHoursEnd) {
+      res.status(429).json({
+        error: 'Outside active hours',
+        activeHours: `${commentRateTracker.activeHoursStart}:00 - ${commentRateTracker.activeHoursEnd}:00`
+      });
+      return;
+    }
 
     if (text === undefined || text === null) {
       res.status(400).json({ error: 'Validation Error', message: 'text is required' });

@@ -79,6 +79,7 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
   }
 }
 import cors from 'cors';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 import {
   SafariDriver,
   navigateToInbox,
@@ -104,7 +105,8 @@ import {
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
 import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
 import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
-import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule, determineLane, fillTemplate } from '../utils/template-engine.js';
+import { initTemplateEngine, getNextBestAction, getTemplates, detectFitSignals, getPendingActions, queueOutreachAction, markActionSent, markActionFailed, getOutreachStats, check31Rule, determineLane, fillTemplate, isAlreadySuggested, insertProspectSuggestion, countSuggestedProspects, getTopSuggestedProspects, promoteToOutreachQueue, listSuggestedProspects, removeProspectSuggestion, getProspectStats } from '../utils/template-engine.js';
+import { discoverProspects, scoreICP, SOURCE_PRIORITY_BONUS, fetchTopPostCreators, type DiscoverParams } from './prospect-discovery.js';
 
 const app = express();
 app.use(cors());
@@ -127,6 +129,11 @@ let driver: SafariDriver | null = null;
 
 // URL pattern that identifies the Instagram DM Safari session
 const SESSION_URL_PATTERN = 'instagram.com';
+const SERVICE_NAME = 'instagram-dm';
+const SERVICE_PORT = parseInt(process.env.PORT || '3100', 10);
+
+// Active tab coordinators by agentId (in-process map; file is cross-process)
+const activeCoordinators = new Map<string, TabCoordinator>();
 
 function getDriver(): SafariDriver {
   if (!driver) {
@@ -187,7 +194,7 @@ function checkRateLimit(req: Request, res: Response, next: NextFunction): void {
   // Check active hours
   const hour = new Date().getHours();
   if (hour < rateLimits.activeHoursStart || hour >= rateLimits.activeHoursEnd) {
-    res.status(429).json({ 
+    res.status(429).json({
       error: 'Outside active hours',
       activeHours: `${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`
     });
@@ -283,6 +290,102 @@ app.post('/api/session/clear', (req, res) => {
   getDriver().clearTrackedSession();
   res.json({ ok: true, message: 'Tracked session cleared' });
 });
+
+// ─── Tab Coordination API ──────────────────────────────────────────────────
+// Cross-agent tab claim registry. Agents call these to register ownership
+// of a specific Safari window+tab, preventing other agents from interfering.
+
+// GET /api/tabs/claims — list all live tab claims across all services
+app.get('/api/tabs/claims', async (_req, res) => {
+  try {
+    const claims = await TabCoordinator.listClaims();
+    res.json({ claims, count: claims.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/claim — agent claims a Safari tab for this service
+// Body: { agentId: string, windowIndex?: number, tabIndex?: number }
+// If windowIndex/tabIndex omitted, auto-discovers first available instagram.com tab.
+app.post('/api/tabs/claim', async (req, res) => {
+  const { agentId, windowIndex, tabIndex } = req.body as {
+    agentId: string;
+    windowIndex?: number;
+    tabIndex?: number;
+  };
+
+  if (!agentId) {
+    res.status(400).json({ error: 'agentId required' });
+    return;
+  }
+
+  try {
+    // Reuse or create coordinator
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(agentId, coord);
+    }
+
+    const claim = await coord.claim(windowIndex, tabIndex);
+
+    // Pin the SafariDriver to this window+tab so all JS runs there
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+
+    res.json({
+      ok: true,
+      claim,
+      message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'`,
+    });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+// POST /api/tabs/release — agent releases its tab claim
+// Body: { agentId: string }
+app.post('/api/tabs/release', async (req, res) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) {
+    res.status(400).json({ error: 'agentId required' });
+    return;
+  }
+
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (coord) {
+      await coord.release();
+      activeCoordinators.delete(agentId);
+    }
+    res.json({ ok: true, message: `Claim released for '${agentId}'` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/heartbeat — refresh claim TTL to prevent expiry
+// Body: { agentId: string }
+app.post('/api/tabs/heartbeat', async (req, res) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) {
+    res.status(400).json({ error: 'agentId required' });
+    return;
+  }
+
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (!coord?.activeClaim) {
+      res.status(404).json({ error: `No active claim for '${agentId}'` });
+      return;
+    }
+    await coord.heartbeat();
+    res.json({ ok: true, heartbeat: Date.now() });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+// ──────────────────────────────────────────────────────────────────────────
 
 // Navigate to inbox
 app.post('/api/inbox/navigate', requireActiveSession, async (req, res) => {
@@ -865,6 +968,436 @@ app.get('/api/outreach/stats', async (req, res) => {
   }
 });
 
+// === PROSPECT DISCOVERY ===
+
+// Discover ICP prospects from hashtags/followers.
+// Claims the Safari tab for the duration of the run so no other request
+// navigates the same tab mid-discovery. Releases on completion or error.
+app.post('/api/prospect/discover', async (req, res) => {
+  const params = req.body as DiscoverParams;
+
+  if (params.dryRun) {
+    const result = await discoverProspects(params, undefined);
+    res.json(result);
+    return;
+  }
+
+  // Claim the instagram.com tab so discovery owns it for the full run
+  const agentId = `prospect-discovery-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex} (${agentId})`);
+  } catch (err) {
+    // No matching Instagram tab open — still attempt with whatever tab the driver has
+    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
+    coord = null;
+  }
+
+  try {
+    const result = await discoverProspects(params, getDriver());
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  } finally {
+    if (coord) {
+      try { await coord.release(); } catch { /* ignore */ }
+      console.log(`[prospect-discover] Tab claim released (${agentId})`);
+    }
+  }
+});
+
+// Score a single prospect by username
+app.get('/api/prospect/score/:username', requireActiveSession, async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) { res.status(400).json({ error: 'username required' }); return; }
+    const profile = await enrichContact(username, getDriver());
+    const { score, signals } = scoreICP(profile, 'manual');
+    res.json({ username, profile, icpScore: score, icpSignals: signals, priority: score });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Scale-discover: accumulate prospects across multiple calls until targetTotal reached.
+// Each call runs one discovery batch (up to MAX_ENRICH), persists new candidates to
+// suggested_actions, deduplicates via DB, and returns progress.
+app.post('/api/prospect/scale-discover', async (req, res) => {
+  const {
+    targetTotal = 500,
+    keywords,
+    topAccounts,
+    topPostKeywords,
+    followerScrollCount = 20,
+    minScore = 30,
+    maxRounds = 2,
+    dryRun = false,
+  } = req.body as {
+    targetTotal?: number;
+    keywords?: string[];
+    topAccounts?: string[];
+    topPostKeywords?: string[];
+    followerScrollCount?: number;
+    minScore?: number;
+    maxRounds?: number;
+    dryRun?: boolean;
+  };
+
+  const currentTotal = await countSuggestedProspects('instagram');
+  if (currentTotal >= targetTotal) {
+    res.json({ newFound: 0, totalSuggested: currentTotal, targetTotal, done: true, progress: `${currentTotal}/${targetTotal} (100%)` });
+    return;
+  }
+
+  if (dryRun) {
+    res.json({ newFound: 0, totalSuggested: currentTotal, targetTotal, done: false, progress: `${currentTotal}/${targetTotal} (dryRun)` });
+    return;
+  }
+
+  const agentId = `scale-discover-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+  } catch (err) {
+    console.warn(`[scale-discover] Tab claim failed: ${err}`);
+    coord = null;
+  }
+
+  let newFound = 0;
+  try {
+    const result = await discoverProspects({
+      keywords,
+      topAccounts,
+      topPostKeywords,
+      followerScrollCount,
+      minScore,
+      maxRounds,
+    }, getDriver());
+
+    for (const c of result.candidates) {
+      const alreadyStored = await isAlreadySuggested(c.username, 'instagram');
+      if (!alreadyStored) {
+        await insertProspectSuggestion(c.username, c.priority, c.bio, 'instagram');
+        newFound++;
+      }
+    }
+  } finally {
+    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  }
+
+  const updatedTotal = await countSuggestedProspects('instagram');
+  const done = updatedTotal >= targetTotal;
+  const pct = Math.round((updatedTotal / targetTotal) * 100);
+  const looping = newFound === 0 && !done;
+  const loopReason = looping
+    ? `No new prospects found — hashtag pages are exhausted or all candidates already stored. Try adding topAccounts (e.g. ["levelsio", "marc_louvion", "tdinh_me"]) or different keywords.`
+    : undefined;
+  res.json({ newFound, totalSuggested: updatedTotal, targetTotal, done, progress: `${updatedTotal}/${targetTotal} (${pct}%)`, looping, loopReason });
+});
+
+// Top-post pipeline: hashtag pages → rank posts by engagement → rank creators →
+// scrape creator followers → enrich + ICP score → store as prospects.
+// Returns all 3 intermediate layers so the caller can see what happened.
+app.post('/api/prospect/discover-from-top-posts', async (req, res) => {
+  const {
+    keywords = ['buildinpublic', 'saasfounder', 'aiautomation'],
+    maxPostsPerKeyword = 6,
+    maxTopCreators = 5,
+    minScore = 20,
+    dryRun = false,
+  } = req.body as {
+    keywords?: string[];
+    maxPostsPerKeyword?: number;
+    maxTopCreators?: number;
+    minScore?: number;
+    dryRun?: boolean;
+  };
+
+  if (dryRun) {
+    res.json({ dryRun: true, message: 'Dry run — no navigation performed.', topPosts: [], topCreators: [], candidates: [] });
+    return;
+  }
+
+  const agentId = `top-posts-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+  } catch (err) {
+    console.warn(`[discover-top-posts] Tab claim failed: ${err}`);
+    coord = null;
+  }
+
+  try {
+    // Step 1 + 2: find top posts, rank creators by post engagement
+    const { posts: topPosts, creators: topCreators } = await fetchTopPostCreators(
+      keywords, getDriver(), maxPostsPerKeyword,
+    );
+
+    const creatorUsernames = topCreators.slice(0, maxTopCreators).map(c => c.username);
+
+    // Step 3: enrich creator followers as ICP prospects
+    const result = await discoverProspects({
+      topAccounts: creatorUsernames,
+      minScore,
+      maxRounds: 1,
+    }, getDriver());
+
+    // Persist new candidates
+    let newFound = 0;
+    for (const c of result.candidates) {
+      const alreadyStored = await isAlreadySuggested(c.username, 'instagram');
+      if (!alreadyStored) {
+        await insertProspectSuggestion(c.username, c.priority, c.bio, 'instagram');
+        newFound++;
+      }
+    }
+
+    const totalSuggested = await countSuggestedProspects('instagram');
+
+    res.json({
+      topPosts: topPosts.slice(0, 20),
+      topCreators,
+      candidates: result.candidates,
+      newFound,
+      totalSuggested,
+      enrichedCount: result.enrichedCount,
+      skippedLowScore: result.skippedLowScore,
+    });
+  } finally {
+    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  }
+});
+
+// DM top-N: promote the top N suggested prospects to the outreach queue (status=pending).
+// A message template is applied to each. Returns queued count + username list.
+app.post('/api/prospect/dm-top-n', async (req, res) => {
+  const {
+    n = 100,
+    messageTemplate = 'Hey {username}! Your work caught my eye — would love to connect about AI automation.',
+    dryRun = false,
+  } = req.body as { n?: number; messageTemplate?: string; dryRun?: boolean };
+
+  const prospects = await getTopSuggestedProspects(n, 'instagram');
+  if (prospects.length === 0) {
+    res.json({ queued: 0, dryRun, message: 'No suggested prospects found. Run scale-discover first.' });
+    return;
+  }
+
+  if (dryRun) {
+    res.json({ queued: prospects.length, dryRun: true, sample: prospects.slice(0, 5).map(p => p.contact_id) });
+    return;
+  }
+
+  let queued = 0;
+  const failed: string[] = [];
+  for (const prospect of prospects) {
+    try {
+      const msg = messageTemplate.replace(/{username}/g, prospect.contact_id);
+      const ok = await promoteToOutreachQueue(prospect.id!, msg);
+      if (ok) queued++;
+    } catch {
+      failed.push(prospect.contact_id);
+    }
+  }
+
+  res.json({ queued, failed: failed.length > 0 ? failed : undefined, total: prospects.length, dryRun: false });
+});
+
+// Send queued prospect DMs — processes pending suggested_actions with rate limiting.
+// Each DM send navigates Safari to the profile page, so keep batchSize small (≤5).
+// Set sendDelay to at least 30s to avoid Instagram rate-limiting.
+// Use dryRun:true first to preview what would be sent.
+app.post('/api/prospect/send-queued', async (req, res) => {
+  const {
+    batchSize = 5,       // max DMs to send per call
+    sendDelay = 45_000,  // ms between sends (45s default)
+    dryRun = false,
+  } = req.body as { batchSize?: number; sendDelay?: number; dryRun?: boolean };
+
+  const cappedBatch = Math.min(batchSize, 10);
+  const actions = await getPendingActions('instagram', cappedBatch);
+
+  if (actions.length === 0) {
+    res.json({ sent: 0, failed: 0, remaining: 0, message: 'No pending prospect DMs in queue. Run dm-top-n first.' });
+    return;
+  }
+
+  if (dryRun) {
+    const remaining = (await getPendingActions('instagram', 1000)).length;
+    res.json({
+      sent: 0, failed: 0, remaining, dryRun: true,
+      preview: actions.map(a => ({ username: a.contact_id, message: (a.personalized_message || a.message || '').slice(0, 120) })),
+    });
+    return;
+  }
+
+  const agentId = `send-queued-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[send-queued] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+  } catch (err) {
+    console.warn(`[send-queued] Tab claim failed (will use current tracked tab): ${err}`);
+    coord = null;
+  }
+
+  const results: { username: string; success: boolean; error?: string }[] = [];
+  try {
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+
+      // Refresh rate limit counters
+      const now = Date.now();
+      if (now - lastHourReset > 60 * 60 * 1000) { messagesSentThisHour = 0; lastHourReset = now; }
+      if (now - lastDayReset > 24 * 60 * 60 * 1000) { messagesSentToday = 0; lastDayReset = now; }
+
+      if (messagesSentThisHour >= rateLimits.messagesPerHour) {
+        console.log(`[send-queued] Hourly limit hit (${messagesSentThisHour}/${rateLimits.messagesPerHour}) — stopping`);
+        break;
+      }
+      if (messagesSentToday >= rateLimits.messagesPerDay) {
+        console.log(`[send-queued] Daily limit hit — stopping`);
+        break;
+      }
+
+      const username = action.contact_id;
+      const message = (action.personalized_message || action.message || '').trim();
+
+      if (!username || !message) {
+        await markActionFailed(action.id!, 'Missing username or message');
+        results.push({ username: username || '?', success: false, error: 'missing message' });
+        continue;
+      }
+
+      try {
+        const result = await sendDMFromProfile(username, message, getDriver());
+        if (result.success) {
+          messagesSentThisHour++;
+          messagesSentToday++;
+          await markActionSent(action.id!);
+          logDM({ platform: 'instagram', username, messageText: message, isOutbound: true });
+          results.push({ username, success: true });
+          console.log(`[send-queued] Sent DM to @${username}`);
+        } else {
+          await markActionFailed(action.id!, result.error || 'Send failed');
+          results.push({ username, success: false, error: result.error });
+          console.warn(`[send-queued] Failed DM to @${username}: ${result.error}`);
+        }
+      } catch (err) {
+        await markActionFailed(action.id!, String(err));
+        results.push({ username, success: false, error: String(err) });
+      }
+
+      // Wait between sends (skip delay after the last one)
+      if (i < actions.length - 1) {
+        await new Promise(r => setTimeout(r, sendDelay));
+      }
+    }
+  } finally {
+    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  }
+
+  const sent = results.filter(r => r.success).length;
+  const failed = results.filter(r => !r.success).length;
+  const remaining = (await getPendingActions('instagram', 1000)).length;
+  res.json({ sent, failed, remaining, results, rateLimits: { messagesSentToday, messagesSentThisHour, perHourLimit: rateLimits.messagesPerHour, perDayLimit: rateLimits.messagesPerDay } });
+});
+
+// GET /api/prospect/list — paginated browse of suggested prospects
+// Query params: limit, offset, minScore, maxScore, sortBy (priority|created_at), order (asc|desc)
+app.get('/api/prospect/list', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
+    const offset = parseInt(String(req.query.offset ?? '0'), 10) || 0;
+    const minScore = req.query.minScore !== undefined ? parseInt(String(req.query.minScore), 10) : undefined;
+    const maxScore = req.query.maxScore !== undefined ? parseInt(String(req.query.maxScore), 10) : undefined;
+    const sortBy = (req.query.sortBy === 'created_at' ? 'created_at' : 'priority') as 'priority' | 'created_at';
+    const order = (req.query.order === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+    const { prospects, total } = await listSuggestedProspects({ limit, offset, minScore, maxScore, sortBy, order });
+    res.json({ prospects, total, limit, offset, page: Math.floor(offset / limit) + 1, pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// DELETE /api/prospect/:username — soft-delete (mark as 'skipped') a suggested prospect
+app.delete('/api/prospect/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) { res.status(400).json({ error: 'username required' }); return; }
+    const ok = await removeProspectSuggestion(username);
+    if (ok) {
+      res.json({ success: true, username, status: 'skipped' });
+    } else {
+      res.status(404).json({ success: false, error: 'Prospect not found or already removed' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/prospect/score-batch — enrich + ICP-score multiple usernames without saving
+// Body: { usernames: string[], checkCRM?: boolean }
+// Requires active Safari session (each username navigates to its profile page).
+app.post('/api/prospect/score-batch', requireActiveSession, async (req, res) => {
+  const { usernames, checkCRM = false } = req.body as { usernames?: string[]; checkCRM?: boolean };
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    res.status(400).json({ error: 'usernames array required' });
+    return;
+  }
+  const capped = usernames.slice(0, 20); // hard cap to protect Safari rate limits
+  const results: Array<{
+    username: string;
+    icpScore: number;
+    icpSignals: string[];
+    priority: number;
+    alreadyInCRM: boolean;
+    profile: { fullName: string; bio: string; followers: string; following: string; posts: string; isPrivate: boolean } | null;
+    error?: string;
+  }> = [];
+
+  for (const username of capped) {
+    try {
+      const profile = await enrichContact(username, getDriver());
+      const { score, signals } = scoreICP(profile, 'search');
+      const alreadyInCRM = checkCRM ? await isAlreadySuggested(username) : false;
+      const sourceBonus = SOURCE_PRIORITY_BONUS['search'] ?? 10;
+      results.push({
+        username,
+        icpScore: score,
+        icpSignals: signals,
+        priority: Math.min(score + sourceBonus, 140),
+        alreadyInCRM,
+        profile,
+      });
+    } catch (err) {
+      results.push({ username, icpScore: 0, icpSignals: [], priority: 0, alreadyInCRM: false, profile: null, error: String(err) });
+    }
+  }
+
+  const scored = results.filter(r => !r.error).length;
+  res.json({ results, scored, total: capped.length, truncated: usernames.length > 20 });
+});
+
+// GET /api/prospect/stats — pipeline health: status counts + score distribution
+app.get('/api/prospect/stats', async (req, res) => {
+  try {
+    const stats = await getProspectStats('instagram');
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // AI DM generation
 app.post('/api/ai/generate', async (req, res) => {
   try {
@@ -924,6 +1457,18 @@ app.put('/api/config', (req, res) => {
     const d = getDriver();
     d.setConfig(req.body);
     res.json({ success: true, config: d.getConfig() });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Debug: run arbitrary JS in the Safari tab (dev only)
+app.post('/api/debug/eval', requireActiveSession, async (req, res) => {
+  try {
+    const { js } = req.body;
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await getDriver().executeJS(js);
+    res.json({ result });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }

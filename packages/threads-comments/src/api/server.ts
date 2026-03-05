@@ -20,6 +20,8 @@ import { ThreadsDriver, DEFAULT_CONFIG, type ThreadsConfig, type CommentResult }
 import { ThreadsAutoCommenter } from '../automation/threads-auto-commenter.js';
 import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js';
 import { CommentLogger } from '../db/comment-logger.js';
+import { discoverProspects, scoreICP, ICP_KEYWORDS } from './prospect-discovery.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 const app = express();
 
@@ -33,6 +35,9 @@ const PLATFORM_CHAR_LIMIT = 500;
 const MAX_INPUT_LENGTH = 10000;
 const AUTH_TOKEN = process.env.THREADS_AUTH_TOKEN || process.env.AUTH_TOKEN || 'threads-local-dev-token';
 const startedAt = new Date().toISOString();
+const SERVICE_NAME = 'threads-comments';
+const SERVICE_PORT = 3004;
+const SESSION_URL_PATTERN = 'threads.net';
 
 // ═══════════════════════════════════════════════════════════════
 // Rate Limiter (per-IP sliding window)
@@ -864,6 +869,45 @@ app.post('/api/threads/engage/multi', wrapAsync(async (req, res) => {
     logs: result.logs,
     database: { sessionId: logger.getSessionId(), logged: dbResult.logged, failed: dbResult.failed },
   });
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// PROSPECT DISCOVERY
+// ═══════════════════════════════════════════════════════════════
+
+app.post('/api/threads/prospect/discover', wrapAsync(async (req, res) => {
+  const params = req.body || {};
+  if (params.dryRun) {
+    const result = await discoverProspects(params);
+    res.json({ success: true, ...result });
+    return;
+  }
+  const agentId = `prospect-discovery-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+  } catch (err) {
+    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
+    coord = null;
+  }
+  try {
+    const result = await discoverProspects(params);
+    res.json({ success: true, ...result });
+  } finally {
+    if (coord) {
+      try { await coord.release(); } catch { /* ignore */ }
+    }
+  }
+}));
+
+app.get('/api/threads/prospect/score/:handle', wrapAsync(async (req, res) => {
+  const { handle } = req.params;
+  const profile = await getDriver().getCreatorProfile(handle);
+  const { score, signals } = scoreICP(profile, 'direct');
+  res.json({ success: true, username: handle, ...profile, icpScore: score, icpSignals: signals, icpKeywords: ICP_KEYWORDS });
 }));
 
 // ═══════════════════════════════════════════════════════════════

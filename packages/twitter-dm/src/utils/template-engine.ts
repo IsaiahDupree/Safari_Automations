@@ -281,6 +281,7 @@ export async function queueOutreachAction(action: OutreachAction): Promise<{ suc
     .from('suggested_actions')
     .insert({
       contact_id: action.contact_id,
+      username: action.contact_id,
       platform: action.platform,
       template_id: action.template_id,
       lane: action.lane,

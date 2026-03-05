@@ -107,7 +107,21 @@ app.get('/api/tiktok/rate-limits', (req: Request, res: Response) => res.json(get
 app.put('/api/tiktok/rate-limits', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ rateLimits: getDriver().getConfig() }); });
 
 app.post('/api/tiktok/navigate', async (req: Request, res: Response) => {
-  try { const { url } = req.body; if (!url) { res.status(400).json({ error: 'url required' }); return; } res.json({ success: await getDriver().navigateToPost(url), url }); }
+  try {
+    const { url, handle } = req.body;
+    // Accept either url or handle
+    let targetUrl = url;
+    if (!targetUrl && handle) {
+      // Construct URL from handle
+      const cleanHandle = handle.replace('@', '');
+      targetUrl = `https://www.tiktok.com/@${cleanHandle}`;
+    }
+    if (!targetUrl) {
+      res.status(400).json({ error: 'url or handle required' });
+      return;
+    }
+    res.json({ success: await getDriver().navigateToPost(targetUrl), url: targetUrl });
+  }
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
@@ -396,6 +410,15 @@ app.post('/api/tiktok/verify', async (req: Request, res: Response) => {
     const raw = await (d as any).executeJS(js);
     const data = JSON.parse(raw || '{}');
     res.json({ success: true, ...data });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+// Simple analytics endpoint — returns basic video performance data
+app.get('/api/tiktok/analytics', async (req: Request, res: Response) => {
+  try {
+    const maxVideos = parseInt(req.query.max as string) || 10;
+    const data = await getDriver().getAnalyticsContent(maxVideos);
+    res.json(data);
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
 

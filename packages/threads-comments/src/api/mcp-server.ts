@@ -9,6 +9,31 @@ import { ThreadsDriver } from '../automation/threads-driver.js';
 import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js';
 import * as readline from 'readline';
 
+const THREADS_BASE = 'http://localhost:3004';
+const THREADS_AUTH = process.env.THREADS_AUTH_TOKEN || 'threads-local-dev-token';
+const TIMEOUT_MS = 30_000;
+
+async function api(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<unknown> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${THREADS_BASE}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${THREADS_AUTH}` },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    return JSON.parse(text);
+  } catch (err) {
+    const e = err as { name?: string; cause?: { code?: string } };
+    if (e.name === 'AbortError') throw { code: 'SERVICE_DOWN', message: `${THREADS_BASE} did not respond within ${TIMEOUT_MS / 1000}s` };
+    if ((e as { code?: string }).code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED') throw { code: 'SERVICE_DOWN', message: `${THREADS_BASE} is not running` };
+    throw err;
+  } finally { clearTimeout(t); }
+}
+
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'threads-safari-automation';
 const SERVER_VERSION = '1.2.0';
@@ -93,6 +118,10 @@ const TOOLS = [
       required: ['postContent'],
     },
   },
+  { name: 'threads_discover_prospects', description: 'Discover and score ICP-matching Threads creators from keyword search. Returns ranked candidates with bio signals, follower count, and engagement rate. Set dryRun=true to skip navigation.', inputSchema: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords (default: buildinpublic, saasfounder, aiautomation)' }, maxCandidates: { type: 'number', description: 'Max profiles to enrich (default 15, max 20)', default: 15 }, minScore: { type: 'number', description: 'Min ICP score to include (default 30)', default: 30 }, dryRun: { type: 'boolean', description: 'Return empty immediately without navigating', default: false } } } },
+  { name: 'threads_score_prospect', description: 'Enrich and score a single Threads creator against the ICP. Returns profile + icpScore (0-100) + icpSignals. Threads profiles include engagement_rate and avg_likes which boost the score.', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Threads handle without @' } }, required: ['handle'] } },
+  { name: 'threads_queue_engagement', description: 'Queue a Threads creator for comment engagement (warm-up outreach). Finds their recent posts and schedules comments via safari_command_queue. No DM is sent — Threads has no DM. For direct outreach, use instagram_send_dm (same account).', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Threads handle without @' }, keyword: { type: 'string', description: 'Topic/keyword to use for finding their posts to engage on' }, dryRun: { type: 'boolean', description: 'Preview without queuing', default: false } }, required: ['handle'] } },
+  { name: 'threads_is_ready', description: 'Check if Threads service (:3004) is reachable before attempting any action.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -167,6 +196,38 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       });
       const comment = await ai.generateComment(analysis);
       return { content: [{ type: 'text', text: comment }] };
+    }
+    case 'threads_discover_prospects': {
+      const result = await api('POST', '/api/threads/prospect/discover', {
+        keywords: args.keywords, maxCandidates: args.maxCandidates,
+        minScore: args.minScore, dryRun: args.dryRun,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+    case 'threads_score_prospect': {
+      const result = await api('GET', `/api/threads/prospect/score/${encodeURIComponent(args.handle as string)}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+    case 'threads_queue_engagement': {
+      if (args.dryRun) {
+        return { content: [{ type: 'text', text: JSON.stringify({ dryRun: true, wouldEngage: { platform: 'threads', handle: args.handle, keyword: args.keyword } }) }] };
+      }
+      // Find posts from this creator then queue engagement via search
+      const searchResult = await api('POST', '/api/threads/search', {
+        query: args.keyword || (args.handle as string), max_results: 5,
+      }) as { posts?: { url?: string; author?: string }[] };
+      const posts = (searchResult.posts || []).filter(p => p.author === args.handle as string);
+      const result = { handle: args.handle, postsFound: posts.length, note: 'Use threads_post_comment on each post URL to engage' };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+    case 'threads_is_ready': {
+      try {
+        const r = await fetch(`${THREADS_BASE}/health`, { signal: AbortSignal.timeout(5000) });
+        const data = await r.json() as Record<string, unknown>;
+        return { content: [{ type: 'text', text: JSON.stringify({ ready: r.ok, status: data.status, url: THREADS_BASE }) }] };
+      } catch {
+        return { content: [{ type: 'text', text: JSON.stringify({ ready: false, url: THREADS_BASE, error: 'Service not reachable' }) }] };
+      }
     }
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };

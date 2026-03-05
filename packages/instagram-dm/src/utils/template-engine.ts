@@ -281,6 +281,7 @@ export async function queueOutreachAction(action: OutreachAction): Promise<{ suc
     .from('suggested_actions')
     .insert({
       contact_id: action.contact_id,
+      username: action.contact_id,
       platform: action.platform,
       template_id: action.template_id,
       lane: action.lane,
@@ -378,6 +379,256 @@ export async function getOutreachStats(platform: string): Promise<Record<string,
   }
 
   return stats;
+}
+
+// ============================================================================
+// SCALE PROSPECT STORE — accumulate discovered prospects across sessions
+// ============================================================================
+
+/**
+ * Check if a username is already stored as a prospect (any active status).
+ * Used to deduplicate across scale-discover batch calls.
+ */
+export async function isAlreadySuggested(username: string, platform = 'instagram'): Promise<boolean> {
+  if (!supabase) return false;
+  const { count } = await supabase
+    .from('suggested_actions')
+    .select('*', { count: 'exact', head: true })
+    .eq('contact_id', username)
+    .eq('platform', platform)
+    .in('status', ['suggested', 'pending', 'sent']);
+  return (count ?? 0) > 0;
+}
+
+/**
+ * Insert a discovered prospect into the queue with status='suggested'.
+ * priority holds the icpScore so we can rank later.
+ */
+export async function insertProspectSuggestion(
+  username: string,
+  icpScore: number,
+  bio: string,
+  platform = 'instagram',
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  if (!supabase) return { success: false, error: 'Template engine not initialized' };
+  const { data, error } = await supabase
+    .from('suggested_actions')
+    .insert({
+      contact_id: username,
+      username,
+      platform,
+      template_id: 'prospect-discovery',
+      lane: 'prospect',
+      message: bio.slice(0, 500),
+      personalized_message: '',
+      priority: icpScore,
+      phase: 'prospecting',
+      status: 'suggested',
+      scheduled_for: new Date().toISOString(),
+    })
+    .select('id')
+    .single();
+  if (error) return { success: false, error: error.message };
+  return { success: true, id: (data as Record<string, string>)?.id };
+}
+
+/**
+ * Count total prospects in the store for a platform.
+ */
+export async function countSuggestedProspects(platform = 'instagram'): Promise<number> {
+  if (!supabase) return 0;
+  const { count } = await supabase
+    .from('suggested_actions')
+    .select('*', { count: 'exact', head: true })
+    .eq('platform', platform)
+    .eq('status', 'suggested');
+  return count ?? 0;
+}
+
+/**
+ * Fetch top N suggested prospects ordered by ICP score (priority column).
+ */
+export async function getTopSuggestedProspects(n: number, platform = 'instagram'): Promise<OutreachAction[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('suggested_actions')
+    .select('*')
+    .eq('platform', platform)
+    .eq('status', 'suggested')
+    .order('priority', { ascending: false })
+    .limit(n);
+  if (error || !data) return [];
+  return data as OutreachAction[];
+}
+
+/**
+ * Promote a suggested prospect to the outreach queue (status='pending').
+ * Caller provides the personalized message to send.
+ */
+export async function promoteToOutreachQueue(id: string, message: string): Promise<boolean> {
+  if (!supabase) return false;
+  const { error } = await supabase
+    .from('suggested_actions')
+    .update({
+      status: 'pending',
+      template_id: 'outreach-dm',
+      lane: 'friendship',
+      personalized_message: message,
+      message,
+      scheduled_for: new Date().toISOString(),
+    })
+    .eq('id', id);
+  return !error;
+}
+
+// ============================================================================
+// PROSPECT LIST + REMOVE + STATS
+// ============================================================================
+
+export interface ProspectListOpts {
+  limit?: number;
+  offset?: number;
+  minScore?: number;
+  maxScore?: number;
+  sortBy?: 'priority' | 'created_at';
+  order?: 'asc' | 'desc';
+  platform?: string;
+}
+
+export interface SuggestedProspect {
+  id: string;
+  username: string;
+  priority: number;
+  bio: string;
+  status: string;
+  created_at: string;
+}
+
+/**
+ * Paginated list of suggested prospects, filterable by score range.
+ */
+export async function listSuggestedProspects(
+  opts: ProspectListOpts = {},
+): Promise<{ prospects: SuggestedProspect[]; total: number }> {
+  if (!supabase) return { prospects: [], total: 0 };
+  const {
+    limit = 50,
+    offset = 0,
+    minScore,
+    maxScore,
+    sortBy = 'priority',
+    order = 'desc',
+    platform = 'instagram',
+  } = opts;
+
+  let query = supabase
+    .from('suggested_actions')
+    .select('id, username, contact_id, priority, message, status, created_at', { count: 'exact' })
+    .eq('platform', platform)
+    .eq('status', 'suggested');
+
+  if (minScore !== undefined) query = query.gte('priority', minScore);
+  if (maxScore !== undefined) query = query.lte('priority', maxScore);
+
+  const { data, count, error } = await query
+    .order(sortBy, { ascending: order === 'asc' })
+    .range(offset, offset + limit - 1);
+
+  if (error || !data) return { prospects: [], total: 0 };
+
+  return {
+    prospects: (data as Record<string, unknown>[]).map(r => ({
+      id: r.id as string,
+      username: (r.username || r.contact_id) as string,
+      priority: r.priority as number,
+      bio: ((r.message as string) || '').slice(0, 200),
+      status: r.status as string,
+      created_at: r.created_at as string,
+    })),
+    total: count ?? 0,
+  };
+}
+
+/**
+ * Soft-delete a prospect by marking it 'skipped' so it won't be queued for DMs.
+ */
+export async function removeProspectSuggestion(
+  username: string,
+  platform = 'instagram',
+): Promise<boolean> {
+  if (!supabase) return false;
+  const { error } = await supabase
+    .from('suggested_actions')
+    .update({ status: 'skipped' })
+    .eq('contact_id', username)
+    .eq('platform', platform)
+    .eq('status', 'suggested');
+  return !error;
+}
+
+export interface ProspectStats {
+  suggested: number;
+  pending: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  scoreDistribution: { '0-29': number; '30-49': number; '50-69': number; '70-100': number };
+  platform: string;
+}
+
+/**
+ * Aggregate pipeline health stats: status counts + score distribution buckets.
+ */
+export async function getProspectStats(platform = 'instagram'): Promise<ProspectStats> {
+  if (!supabase) {
+    return {
+      suggested: 0, pending: 0, sent: 0, failed: 0, skipped: 0, total: 0,
+      scoreDistribution: { '0-29': 0, '30-49': 0, '50-69': 0, '70-100': 0 },
+      platform,
+    };
+  }
+
+  const statusCounts: Record<string, number> = {};
+  for (const status of ['suggested', 'pending', 'sent', 'failed', 'skipped']) {
+    const { count } = await supabase
+      .from('suggested_actions')
+      .select('*', { count: 'exact', head: true })
+      .eq('platform', platform)
+      .eq('status', status);
+    statusCounts[status] = count ?? 0;
+  }
+
+  const total = Object.values(statusCounts).reduce((a, b) => a + b, 0);
+
+  const buckets: Array<{ key: keyof ProspectStats['scoreDistribution']; gte: number; lte: number }> = [
+    { key: '0-29', gte: 0, lte: 29 },
+    { key: '30-49', gte: 30, lte: 49 },
+    { key: '50-69', gte: 50, lte: 69 },
+    { key: '70-100', gte: 70, lte: 100 },
+  ];
+  const scoreDistribution: ProspectStats['scoreDistribution'] = { '0-29': 0, '30-49': 0, '50-69': 0, '70-100': 0 };
+  for (const bucket of buckets) {
+    const { count } = await supabase
+      .from('suggested_actions')
+      .select('*', { count: 'exact', head: true })
+      .eq('platform', platform)
+      .eq('status', 'suggested')
+      .gte('priority', bucket.gte)
+      .lte('priority', bucket.lte);
+    scoreDistribution[bucket.key] = count ?? 0;
+  }
+
+  return {
+    suggested: statusCounts['suggested'] ?? 0,
+    pending: statusCounts['pending'] ?? 0,
+    sent: statusCounts['sent'] ?? 0,
+    failed: statusCounts['failed'] ?? 0,
+    skipped: statusCounts['skipped'] ?? 0,
+    total,
+    scoreDistribution,
+    platform,
+  };
 }
 
 /**

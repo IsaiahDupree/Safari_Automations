@@ -22,14 +22,16 @@ export interface AutomationConfig {
 
 export interface SessionInfo {
   found: boolean;
-  windowIndex: number;
+  windowId: number;    // persistent Safari window id — stable across z-order changes
+  windowIndex: number; // current z-order index — may change when windows are reordered
   tabIndex: number;
   url: string;
 }
 
 export class SafariDriver {
   private config: AutomationConfig;
-  private trackedWindow: number | null = null;
+  private trackedWindowId: number | null = null; // persistent Safari window id
+  private trackedWindow: number | null = null;   // z-order index (informational only)
   private trackedTab: number | null = null;
   private sessionUrlPattern: string | null = null;
   private sessionLastVerified: number = 0;
@@ -65,9 +67,9 @@ export class SafariDriver {
 
     await fs.writeFile(tempFile, cleanJS);
 
-    // Use tracked tab if we have one; otherwise fall back to front document
-    const tabSpec = (this.trackedWindow && this.trackedTab)
-      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+    // Use tracked tab if we have one (by persistent window id) — stable across z-order changes
+    const tabSpec = (this.trackedWindowId && this.trackedTab)
+      ? `tab ${this.trackedTab} of (first window whose id is ${this.trackedWindowId})`
       : 'front document';
 
     const script = `
@@ -150,9 +152,9 @@ export class SafariDriver {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        if (this.trackedWindow && this.trackedTab) {
+        if (this.trackedWindowId && this.trackedTab) {
           await execAsync(
-            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
+            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of (first window whose id is ${this.trackedWindowId}) to "${safeUrl}"'`,
             { timeout: this.config.timeout }
           );
         } else {
@@ -246,7 +248,12 @@ export class SafariDriver {
   async typeViaKeystrokes(text: string): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
     try {
-      await this.activateSafari();
+      // Raise the tracked window specifically (not just front window) for multi-profile isolation
+      if (this.trackedWindowId && this.trackedTab) {
+        await this.activateTab(this.trackedWindowId, this.trackedTab);
+      } else {
+        await this.activateSafari();
+      }
       await this.wait(300);
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await execAsync(
@@ -283,51 +290,54 @@ export class SafariDriver {
    */
   async findTabByUrl(urlPattern: string): Promise<SessionInfo> {
     if (this.config.instanceType !== 'local') {
-      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      return { found: false, windowId: 0, windowIndex: 1, tabIndex: 1, url: '' };
     }
     try {
       const script = `
 tell application "Safari"
-  set found to false
   repeat with w from 1 to count of windows
     repeat with t from 1 to count of tabs of window w
       set tabURL to URL of tab t of window w
       if tabURL contains "${urlPattern}" then
-        return (w as text) & ":" & (t as text) & ":" & tabURL
+        return (id of window w as text) & ":" & (w as text) & ":" & (t as text) & ":" & tabURL
       end if
     end repeat
   end repeat
-  return "not_found:0:0:"
+  return "not_found:0:0:0:"
 end tell`;
       const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
       const result = stdout.trim();
       if (result.startsWith('not_found')) {
-        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+        return { found: false, windowId: 0, windowIndex: 1, tabIndex: 1, url: '' };
       }
       const parts = result.split(':');
-      const w = parseInt(parts[0], 10);
-      const t = parseInt(parts[1], 10);
-      const url = parts.slice(2).join(':');
-      if (isNaN(w) || isNaN(t)) {
-        return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      const wid = parseInt(parts[0], 10);
+      const w = parseInt(parts[1], 10);
+      const t = parseInt(parts[2], 10);
+      const url = parts.slice(3).join(':');
+      if (isNaN(wid) || isNaN(w) || isNaN(t)) {
+        return { found: false, windowId: 0, windowIndex: 1, tabIndex: 1, url: '' };
       }
-      return { found: true, windowIndex: w, tabIndex: t, url };
+      return { found: true, windowId: wid, windowIndex: w, tabIndex: t, url };
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] findTabByUrl error:', error);
-      return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
+      return { found: false, windowId: 0, windowIndex: 1, tabIndex: 1, url: '' };
     }
   }
 
   /**
-   * Bring a specific Safari window+tab to the foreground and make it active.
+   * Bring a specific Safari window+tab to the foreground using its persistent window id.
+   * Using window id (not index) is safe for multi-profile/multi-window scenarios —
+   * other drivers' tracked sessions remain valid even as z-order changes.
    */
-  async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
+  async activateTab(windowId: number, tabIndex: number): Promise<boolean> {
     try {
       const script = `
 tell application "Safari"
   activate
-  set index of window ${windowIndex} to 1
-  set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
+  set w to first window whose id is ${windowId}
+  set current tab of w to tab ${tabIndex} of w
+  set index of w to 1
 end tell
 tell application "System Events"
   set frontmost of process "Safari" to true
@@ -345,14 +355,14 @@ end tell`;
   }
 
   /**
-   * Get the current URL of a specific Safari tab.
-   * Used for self-healing session verification.
+   * Get the current URL of a specific Safari tab by persistent window id.
+   * Used for self-healing session verification — immune to z-order changes.
    */
-  async getTabUrl(windowIndex: number, tabIndex: number): Promise<string> {
+  async getTabUrl(windowId: number, tabIndex: number): Promise<string> {
     if (this.config.instanceType !== 'local') return '';
     try {
       const { stdout } = await execAsync(
-        `osascript -e 'tell application "Safari" to get URL of tab ${tabIndex} of window ${windowIndex}'`
+        `osascript -e 'tell application "Safari" to get URL of tab ${tabIndex} of (first window whose id is ${windowId})'`
       );
       return stdout.trim();
     } catch {
@@ -365,11 +375,11 @@ end tell`;
    * Returns true if the session is healthy, false if it needs re-scanning.
    */
   async verifySession(urlPattern: string): Promise<boolean> {
-    if (!this.trackedWindow || !this.trackedTab) return false;
-    const url = await this.getTabUrl(this.trackedWindow, this.trackedTab);
+    if (!this.trackedWindowId || !this.trackedTab) return false;
+    const url = await this.getTabUrl(this.trackedWindowId, this.trackedTab);
     if (!url) {
       // Tab may have been closed — invalidate
-      console.warn(`[SafariDriver] Tracked tab w=${this.trackedWindow} t=${this.trackedTab} is gone — resetting`);
+      console.warn(`[SafariDriver] Tracked tab wid=${this.trackedWindowId} t=${this.trackedTab} is gone — resetting`);
       this.clearTrackedSession();
       return false;
     }
@@ -397,18 +407,18 @@ end tell`;
    */
   async ensureActiveSession(urlPattern: string): Promise<SessionInfo> {
     const now = Date.now();
-    const withinTTL = this.trackedWindow &&
+    const withinTTL = this.trackedWindowId &&
       this.trackedTab &&
       this.sessionUrlPattern === urlPattern &&
       (now - this.sessionLastVerified) <= SafariDriver.SESSION_VERIFY_TTL_MS;
 
-    if (withinTTL && this.trackedWindow && this.trackedTab) {
+    if (withinTTL && this.trackedWindowId && this.trackedTab) {
       // Self-healing fast path: verify URL before trusting cached tab
       const stillValid = await this.verifySession(urlPattern);
       if (stillValid) {
-        await this.activateTab(this.trackedWindow, this.trackedTab);
+        await this.activateTab(this.trackedWindowId, this.trackedTab);
         this.sessionLastVerified = now;
-        return { found: true, windowIndex: this.trackedWindow, tabIndex: this.trackedTab, url: '' };
+        return { found: true, windowId: this.trackedWindowId, windowIndex: this.trackedWindow ?? 1, tabIndex: this.trackedTab, url: '' };
       }
       // Session drifted — clearTrackedSession() already called in verifySession
     }
@@ -417,13 +427,14 @@ end tell`;
     const info = await this.findTabByUrl(urlPattern);
 
     if (info.found) {
-      await this.activateTab(info.windowIndex, info.tabIndex);
+      await this.activateTab(info.windowId, info.tabIndex);
+      this.trackedWindowId = info.windowId;
       this.trackedWindow = info.windowIndex;
       this.trackedTab = info.tabIndex;
       this.sessionUrlPattern = urlPattern;
       this.sessionLastVerified = now;
       if (this.config.verbose) {
-        console.log(`[SafariDriver] Session locked: w=${info.windowIndex} t=${info.tabIndex} url=${info.url}`);
+        console.log(`[SafariDriver] Session locked: wid=${info.windowId} w=${info.windowIndex} t=${info.tabIndex} url=${info.url}`);
       }
       return info;
     }
@@ -435,7 +446,8 @@ end tell`;
 
     const retry = await this.findTabByUrl(urlPattern);
     if (retry.found) {
-      await this.activateTab(retry.windowIndex, retry.tabIndex);
+      await this.activateTab(retry.windowId, retry.tabIndex);
+      this.trackedWindowId = retry.windowId;
       this.trackedWindow = retry.windowIndex;
       this.trackedTab = retry.tabIndex;
       this.sessionUrlPattern = urlPattern;
@@ -447,8 +459,9 @@ end tell`;
   /**
    * Return current tracked session info for diagnostics.
    */
-  getSessionInfo(): { windowIndex: number | null; tabIndex: number | null; urlPattern: string | null; lastVerified: number } {
+  getSessionInfo(): { windowId: number | null; windowIndex: number | null; tabIndex: number | null; urlPattern: string | null; lastVerified: number } {
     return {
+      windowId: this.trackedWindowId,
       windowIndex: this.trackedWindow,
       tabIndex: this.trackedTab,
       urlPattern: this.sessionUrlPattern,
@@ -460,6 +473,7 @@ end tell`;
    * Clear the tracked session (e.g. after a Safari restart).
    */
   clearTrackedSession(): void {
+    this.trackedWindowId = null;
     this.trackedWindow = null;
     this.trackedTab = null;
     this.sessionUrlPattern = null;

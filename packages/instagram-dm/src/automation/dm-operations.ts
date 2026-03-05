@@ -77,124 +77,87 @@ export async function navigateToInbox(driver?: SafariDriver): Promise<Navigation
  */
 export async function listConversations(driver?: SafariDriver): Promise<DMConversation[]> {
   const d = driver || getDefaultDriver();
-  
+
+  // Wait for conversation list to render (Instagram SPA needs time after navigation)
+  await d.wait(2000);
+
   const result = await d.executeJS(`
     (function() {
       var conversations = [];
       var seen = {};
-      
-      // Strategy 1: Find conversation links with thread IDs
-      var links = document.querySelectorAll('a[href*="/direct/t/"]');
-      links.forEach(function(link) {
-        var href = link.getAttribute('href') || '';
-        var match = href.match(/\\/direct\\/t\\/([0-9]+)/);
-        var threadId = match ? match[1] : '';
-        
-        var img = link.querySelector('img[alt*="profile picture"]');
-        var username = '';
-        if (img) {
-          username = (img.getAttribute('alt') || '').replace("'s profile picture", '').trim();
-        }
-        if (!username) {
-          var span = link.querySelector('span[dir="auto"]');
-          if (span) username = span.textContent.trim();
-        }
-        
-        if (username && !seen[username]) {
-          seen[username] = true;
-          var lastMsg = '';
-          var spans = link.querySelectorAll('span');
-          for (var i = spans.length - 1; i >= 0; i--) {
-            var t = (spans[i].textContent || '').trim();
-            if (t.length > 5 && t !== username && t.length < 200) {
-              lastMsg = t;
-              break;
+      var SKIP = ['Hidden requests','Message requests','General','Primary','Requests','Notes'];
+
+      // Strategy 1 (2025 Instagram): img[alt="user-profile-picture"] — generic alt, traverse up for spans
+      // Confirmed via live DOM inspection: Instagram no longer puts username in img alt.
+      // Conversations are rows identified by this exact alt text; spans above contain the name + preview.
+      var imgs = document.querySelectorAll('img[alt="user-profile-picture"]');
+      imgs.forEach(function(img) {
+        var el = img;
+        var texts = [];
+        for (var j = 0; j < 12; j++) {
+          el = el.parentElement;
+          if (!el) break;
+          var spans = el.querySelectorAll('span');
+          for (var k = 0; k < spans.length; k++) {
+            var t = (spans[k].innerText || '').trim();
+            if (t.length > 1 && t.length < 100 && spans[k].children.length === 0) {
+              if (texts.indexOf(t) === -1) texts.push(t);
             }
           }
-          conversations.push(JSON.stringify({
-            username: username,
-            threadId: threadId,
-            lastMessage: lastMsg.substring(0, 100)
-          }));
+          if (texts.length >= 2) break;
         }
+        if (texts.length === 0) return;
+        var username = texts[0];
+        if (!username || username.length < 2 || seen[username]) return;
+        if (SKIP.indexOf(username) !== -1) return;
+        seen[username] = true;
+        var lastMsg = texts.length > 1 ? texts[1] : '';
+        // Strip "You: " prefix from outbound preview
+        lastMsg = lastMsg.replace(/^You:\\s*/i, '');
+        conversations.push(JSON.stringify({ username: username, threadId: '', lastMessage: lastMsg.substring(0, 100) }));
       });
-      
-      // Strategy 2: Fallback to profile pictures if no links found
+
+      // Strategy 2: Legacy — a[href*="/direct/t/"] (still works in some Instagram versions)
       if (conversations.length === 0) {
-        var imgs = document.querySelectorAll('img[alt*="profile picture"]');
-        imgs.forEach(function(img) {
-          var alt = img.getAttribute('alt') || '';
-          var username = alt.replace("'s profile picture", '').trim();
-          if (username && username.length > 1 && !seen[username]) {
-            seen[username] = true;
-            var container = img.closest('a[href*="/direct/t/"]');
-            var threadId = '';
-            if (container) {
-              var href = container.getAttribute('href') || '';
-              var m = href.match(/\\/direct\\/t\\/([0-9]+)/);
-              threadId = m ? m[1] : '';
-            }
-            conversations.push(JSON.stringify({
-              username: username,
-              threadId: threadId,
-              lastMessage: ''
-            }));
+        var links = document.querySelectorAll('a[href*="/direct/t/"]');
+        links.forEach(function(link) {
+          var href = link.getAttribute('href') || '';
+          var match = href.match(/\\/direct\\/t\\/([0-9]+)/);
+          var threadId = match ? match[1] : '';
+          var spans = link.querySelectorAll('span');
+          var texts2 = [];
+          for (var i = 0; i < spans.length; i++) {
+            var t = (spans[i].innerText || '').trim();
+            if (t.length > 1 && t.length < 80 && spans[i].children.length === 0) texts2.push(t);
           }
+          if (texts2.length === 0) return;
+          var username = texts2[0];
+          if (!username || seen[username]) return;
+          seen[username] = true;
+          conversations.push(JSON.stringify({ username: username, threadId: threadId, lastMessage: (texts2[1]||'').substring(0,100) }));
         });
       }
 
-      // Strategy 3: New Instagram DOM (2025+) — Thread list with span-grouped rows
-      // Instagram removed a[href*="/direct/t/"] from the inbox list; conversations are
-      // DIV rows (~72px tall) inside [aria-label="Thread list"] containing leaf SPANs.
+      // Strategy 3: aria-label on conversation containers
       if (conversations.length === 0) {
-        var threadList = document.querySelector('[aria-label="Thread list"]');
-        if (threadList) {
-          var allSpans = threadList.querySelectorAll('span');
-          var rowMap: Record<number, string[]> = {};
-          allSpans.forEach(function(sp) {
-            var t = (sp.innerText || '').trim();
-            if (sp.children.length === 0 && t.length > 1 && t.length < 80) {
-              var el: Element | null = sp;
-              for (var j = 0; j < 10; j++) {
-                el = el ? el.parentElement : null;
-                if (!el) break;
-                var r = el.getBoundingClientRect();
-                if (r.height > 65 && r.height < 90 && r.width > 300) {
-                  var key = Math.round(r.top);
-                  if (!rowMap[key]) rowMap[key] = [];
-                  rowMap[key].push(t);
-                  break;
-                }
-              }
-            }
-          });
-          var rowKeys = Object.keys(rowMap).map(Number).sort(function(a, b) { return a - b; });
-          rowKeys.forEach(function(key) {
-            var texts = rowMap[key];
-            var name = texts[0] || '';
-            // Skip "Hidden requests" header row
-            if (!name || name === 'Hidden requests' || name.length < 2) return;
-            var lastMsg = texts.length > 1 ? texts[texts.length - 1] : '';
-            if (!seen[name]) {
-              seen[name] = true;
-              conversations.push(JSON.stringify({
-                username: name,
-                threadId: '',
-                lastMessage: lastMsg.substring(0, 100)
-              }));
-            }
-          });
-        }
+        var labeled = document.querySelectorAll('[aria-label*="Conversation with"]');
+        labeled.forEach(function(el) {
+          var username = (el.getAttribute('aria-label') || '').replace(/^Conversation with /i, '').trim();
+          if (!username || username.length < 2 || seen[username]) return;
+          seen[username] = true;
+          conversations.push(JSON.stringify({ username: username, threadId: '', lastMessage: '' }));
+        });
       }
-      
+
       return '[' + conversations.slice(0, 50).join(',') + ']';
     })()
   `);
-  
+
   try {
     const parsed = JSON.parse(result || '[]');
     return parsed as DMConversation[];
-  } catch {
+  } catch (e) {
+    console.error('[listConversations] JSON parse error:', e, 'raw:', result?.substring(0, 200));
     return [];
   }
 }
@@ -294,47 +257,45 @@ export async function sendDMToThread(
  */
 export async function switchTab(tab: DMTab, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
-  
-  const tabNames: Record<DMTab, string> = {
-    primary: 'Primary',
-    general: 'General',
-    requests: 'Requests',
-    hidden_requests: 'Hidden Requests',
+
+  // Use direct URL navigation — most reliable across Instagram DOM versions
+  const tabUrls: Record<DMTab, string> = {
+    primary:         'https://www.instagram.com/direct/inbox/',
+    general:         'https://www.instagram.com/direct/general/',
+    requests:        'https://www.instagram.com/direct/requests/',
+    hidden_requests: 'https://www.instagram.com/direct/requests/hidden/',
   };
-  
-  const tabName = tabNames[tab];
-  
-  if (tab === 'hidden_requests') {
-    // Hidden requests requires special navigation
-    const result = await d.executeJS(`
-      (function() {
-        var els = document.querySelectorAll('a, div[role="button"], span');
-        for (var i = 0; i < els.length; i++) {
-          if ((els[i].innerText || '').includes('Hidden Requests')) {
+
+  const ok = await d.navigateTo(tabUrls[tab]);
+  if (ok) {
+    await d.wait(2500);
+    return true;
+  }
+
+  // Fallback: click the tab in the UI
+  const tabLabels: Record<DMTab, string[]> = {
+    primary:         ['Primary'],
+    general:         ['General'],
+    requests:        ['Requests', 'Message Requests'],
+    hidden_requests: ['Hidden Requests', 'Hidden'],
+  };
+  const labels = tabLabels[tab];
+  const result = await d.executeJS(`
+    (function() {
+      var labels = ${JSON.stringify(labels)};
+      var els = document.querySelectorAll('[role="tab"], a, div[role="button"], span');
+      for (var i = 0; i < els.length; i++) {
+        var text = (els[i].innerText || '').trim();
+        for (var j = 0; j < labels.length; j++) {
+          if (text === labels[j] || text.includes(labels[j])) {
             els[i].click();
             return 'clicked';
           }
-        }
-        return 'not_found';
-      })()
-    `);
-    await d.wait(2000);
-    return result === 'clicked';
-  }
-  
-  const result = await d.executeJS(`
-    (function() {
-      var tabs = document.querySelectorAll('[role="tab"]');
-      for (var i = 0; i < tabs.length; i++) {
-        if (tabs[i].innerText.includes('${tabName}')) {
-          tabs[i].click();
-          return 'clicked';
         }
       }
       return 'not_found';
     })()
   `);
-  
   await d.wait(2000);
   return result === 'clicked';
 }
@@ -344,39 +305,73 @@ export async function switchTab(tab: DMTab, driver?: SafariDriver): Promise<bool
  */
 export async function openConversation(username: string, driver?: SafariDriver): Promise<boolean> {
   const d = driver || getDefaultDriver();
-  
+
+  // Primary: navigate directly to cached thread URL (most reliable)
+  const cachedThreadId = getThreadId(username);
+  if (cachedThreadId) {
+    const ok = await d.navigateTo(`https://www.instagram.com/direct/t/${cachedThreadId}`);
+    if (ok) {
+      await d.wait(2000);
+      return true;
+    }
+  }
+
+  const cleanUser = username.toLowerCase().replace('@', '');
   const result = await d.executeJS(`
     (function() {
-      var imgs = document.querySelectorAll('img[alt*="profile picture"]');
+      var cleanUser = '${cleanUser}';
+
+      // Strategy 1 (2025 Instagram): find img[alt="user-profile-picture"] whose sibling spans
+      // contain the username, then click its containing row div.
+      var imgs = document.querySelectorAll('img[alt="user-profile-picture"]');
       for (var i = 0; i < imgs.length; i++) {
-        var alt = imgs[i].getAttribute('alt') || '';
-        if (alt.toLowerCase().includes('${username.toLowerCase()}')) {
-          var container = imgs[i].closest('div[role="button"]') || 
-                          imgs[i].closest('a') || 
-                          imgs[i].parentElement.parentElement;
-          if (container) {
-            container.click();
-            return 'clicked';
+        var el = imgs[i];
+        var rowEl = null;
+        for (var j = 0; j < 12; j++) {
+          el = el.parentElement;
+          if (!el) break;
+          var spans = el.querySelectorAll('span');
+          for (var k = 0; k < spans.length; k++) {
+            var t = (spans[k].innerText || '').toLowerCase().trim();
+            if (t === cleanUser && spans[k].children.length === 0) {
+              rowEl = el;
+              break;
+            }
           }
+          if (rowEl) break;
+        }
+        if (rowEl) {
+          rowEl.click();
+          return 'clicked';
         }
       }
-      
-      // Fallback: search by username text
+
+      // Strategy 2: Legacy — a[href*="/direct/t/"] containing the username
+      var links = document.querySelectorAll('a[href*="/direct/t/"]');
+      for (var li = 0; li < links.length; li++) {
+        if ((links[li].innerText || '').toLowerCase().includes(cleanUser)) {
+          links[li].click();
+          return 'clicked';
+        }
+      }
+
+      // Strategy 3: any span with exact username text — click nearest interactive parent
       var spans = document.querySelectorAll('span');
-      for (var j = 0; j < spans.length; j++) {
-        if ((spans[j].innerText || '').toLowerCase() === '${username.toLowerCase()}') {
-          var parent = spans[j].closest('div[role="button"]') || spans[j].closest('a');
-          if (parent) {
+      for (var s = 0; s < spans.length; s++) {
+        if ((spans[s].innerText || '').toLowerCase().trim() === cleanUser && spans[s].children.length === 0) {
+          var parent = spans[s].parentElement;
+          for (var p = 0; p < 8; p++) {
+            if (!parent) break;
             parent.click();
             return 'clicked';
           }
         }
       }
-      
+
       return 'not_found';
     })()
   `);
-  
+
   await d.wait(2000);
   return result === 'clicked';
 }
@@ -390,41 +385,57 @@ export async function readMessages(limit: number = 20, driver?: SafariDriver): P
   const result = await d.executeJS(`
     (function() {
       var messages = [];
-      var msgEls = document.querySelectorAll('div[role="row"], div[class*="message"]');
+      var seen = {};
+      var W = window.innerWidth;
 
-      msgEls.forEach(function(el) {
-        var text = el.innerText || '';
-        if (text.length > 0 && text.length < 2000) {
-          // Determine if outbound by position/styling
-          var rect = el.getBoundingClientRect();
-          var isRight = rect.left > (window.innerWidth / 2);
+      // Find the message thread container — try common 2025 Instagram selectors
+      var container = document.querySelector('[role="log"]') ||
+                      document.querySelector('[aria-label*="Message thread"]') ||
+                      document.querySelector('[aria-label*="Conversation"]') ||
+                      document.querySelector('main') ||
+                      document.body;
 
-          // Extract timestamp
-          var timestamp = '';
-          var timeEl = el.querySelector('time');
-          if (timeEl) {
-            timestamp = timeEl.getAttribute('datetime') || timeEl.innerText || '';
-          }
-          if (!timestamp) {
-            var timestampEl = el.querySelector('[class*="timestamp"]');
-            if (timestampEl) {
-              timestamp = timestampEl.innerText || '';
-            }
-          }
+      // Collect all leaf text nodes in message bubbles
+      // Messages in Instagram 2025 are in div[dir="auto"] inside the thread
+      var bubbles = container.querySelectorAll('div[dir="auto"]');
+      if (bubbles.length === 0) {
+        // Fallback: any row/cell with short text content
+        bubbles = container.querySelectorAll('[role="row"], [role="gridcell"]');
+      }
 
-          messages.push(JSON.stringify({
-            text: text.substring(0, 500),
-            isOutbound: isRight,
-            messageType: 'text',
-            timestamp: timestamp
-          }));
+      bubbles.forEach(function(el) {
+        var text = (el.innerText || '').trim();
+        if (!text || text.length === 0 || text.length > 2000) return;
+        if (seen[text]) return;
+
+        // Skip navigation/UI text — must look like a message (>3 chars, not all caps label)
+        if (text.length <= 3) return;
+        if (text === text.toUpperCase() && text.length < 20) return; // skip UI labels
+
+        seen[text] = true;
+
+        var rect = el.getBoundingClientRect();
+        // outbound messages are on the right half of the screen
+        var isRight = rect.width > 0 && (rect.left + rect.width / 2) > (W * 0.55);
+
+        var timestamp = '';
+        var timeEl = el.querySelector('time') || el.closest('[data-scope]')?.querySelector('time');
+        if (timeEl) {
+          timestamp = timeEl.getAttribute('datetime') || timeEl.innerText || '';
         }
+
+        messages.push(JSON.stringify({
+          text: text.substring(0, 500),
+          isOutbound: isRight,
+          messageType: 'text',
+          timestamp: timestamp,
+        }));
       });
 
       return '[' + messages.slice(-${limit}).join(',') + ']';
     })()
   `);
-  
+
   try {
     const parsed = JSON.parse(result || '[]');
     return parsed as DMMessage[];
@@ -856,28 +867,69 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
 }> {
   const d = driver || getDefaultDriver();
   const profileUrl = `https://www.instagram.com/${username.replace('@', '')}/`;
-  await d.navigateTo(profileUrl);
-  await d.wait(2500);
+  const currentUrl = await d.getCurrentUrl();
+  if (!currentUrl.includes(`/${username.replace('@', '')}/`)) {
+    await d.navigateTo(profileUrl);
+    await d.wait(6000); // full page reload — Instagram needs time to populate meta tags
+  } else {
+    await d.wait(1000); // already on profile, just wait for any async updates
+  }
 
   const raw = await d.executeJS(`
     (function() {
-      var metas = document.querySelectorAll('meta[name="description"]');
+      // --- Stats from meta description (most reliable across all login states) ---
       var descMeta = '';
+      var metas = document.querySelectorAll('meta[name="description"], meta[property="og:description"]');
       for (var i = 0; i < metas.length; i++) {
         var c = metas[i].getAttribute('content') || '';
-        if (c.includes('Followers') || c.includes('Following')) { descMeta = c; break; }
+        if (c.match(/Followers/i)) { descMeta = c; break; }
       }
-      // "12.5K Followers, 500 Following, 87 Posts - See Instagram photos..."
-      var fMatch = descMeta.match(/([\d.,KMk]+)\\s*Followers/i);
-      var ngMatch = descMeta.match(/([\d.,KMk]+)\\s*Following/i);
-      var pMatch  = descMeta.match(/([\d.,KMk]+)\\s*Posts/i);
-      var nameEl = document.querySelector('h1, h2, [class*="FullName"], span[class*="_ap3a"]');
-      var bioEl  = document.querySelector('[class*="_aa_c"], [class*="bio"], .-vDIg span, [data-testid="user-bio"]');
-      var isPrivate = document.body.innerText.includes('This account is private') ||
+      var fMatch  = descMeta.match(/([\\d.,KkMm]+)\\s*Followers/i);
+      var ngMatch = descMeta.match(/([\\d.,KkMm]+)\\s*Following/i);
+      var pMatch  = descMeta.match(/([\\d.,KkMm]+)\\s*Posts/i);
+
+      // --- Full name from page title: "Sarah Ashley (@saraheashley) • Instagram..." ---
+      var fullName = '';
+      var titleEl = document.querySelector('title');
+      var titleText = titleEl ? titleEl.innerText : document.title;
+      var titleMatch = titleText.match(/^(.+?)\\s*\\(@/);
+      if (titleMatch) { fullName = titleMatch[1].trim(); }
+      if (!fullName) {
+        // Fallback: h1, h2, og:title meta
+        var ogTitle = document.querySelector('meta[property="og:title"]');
+        if (ogTitle) {
+          var ogMatch = (ogTitle.getAttribute('content') || '').match(/^(.+?)\\s*\\(@/);
+          if (ogMatch) fullName = ogMatch[1].trim();
+        }
+      }
+      if (!fullName) {
+        var h1 = document.querySelector('h1');
+        if (h1 && h1.innerText && h1.innerText.length > 1) fullName = h1.innerText.trim();
+      }
+
+      // --- Bio: try multiple selectors ---
+      var bio = '';
+      // span._ap3a is a common Instagram bio span class
+      var bioEl = document.querySelector('span._ap3a') ||
+                  document.querySelector('h1 + div span') ||
+                  document.querySelector('[data-testid="user-bio"]');
+      if (bioEl) {
+        bio = (bioEl.innerText || '').trim();
+      }
+      // Fallback: extract from meta description after the Instagram handle
+      if (!bio && descMeta) {
+        var bioMatch = descMeta.match(/on Instagram:\\s*"?(.+?)(?:"|$)/);
+        if (bioMatch) bio = bioMatch[1].trim();
+      }
+
+      // --- Private account check ---
+      var bodyText = document.body ? (document.body.innerText || '') : '';
+      var isPrivate = bodyText.includes('This account is private') ||
                       !!document.querySelector('[class*="PrivateAccount"]');
+
       return JSON.stringify({
-        fullName:  nameEl ? nameEl.innerText.trim() : '',
-        bio:       bioEl  ? bioEl.innerText.trim()  : '',
+        fullName:  fullName,
+        bio:       bio.substring(0, 300),
         followers: fMatch  ? fMatch[1]  : '',
         following: ngMatch ? ngMatch[1] : '',
         posts:     pMatch  ? pMatch[1]  : '',

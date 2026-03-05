@@ -15,9 +15,30 @@ import {
   scoreProfile,
   navigateToProfile,
   runProspectingPipeline,
+  // Connection ops
+  getConnectionStatus,
+  listPendingRequests,
+  acceptRequest,
+  navigateToNetwork,
+  navigateToMessaging,
+  // DM ops
+  readMessages,
+  getUnreadCount,
+  openConversation,
+  // Outreach engine
+  createCampaign,
+  getCampaigns,
+  getCampaign,
+  getProspects,
+  getStats,
+  getRecentRuns,
+  runOutreachCycle,
+  markConverted,
+  tagProspect,
 } from '../automation/index.js';
 import type { PeopleSearchConfig, ConnectionRequest } from '../automation/types.js';
 import type { ProspectingConfig } from '../automation/prospecting-pipeline.js';
+import { getSupabaseClient } from '../automation/supabase-client.js';
 import * as readline from 'readline';
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -211,6 +232,160 @@ const TOOLS = [
       required: ['username'],
     },
   },
+  // ── Connection extras ──
+  {
+    name: 'linkedin_connection_status',
+    description: 'Get the connection status with a LinkedIn profile — 1st, 2nd, 3rd, pending, or none.',
+    inputSchema: { type: 'object', properties: { profileUrl: { type: 'string' } }, required: ['profileUrl'] },
+  },
+  {
+    name: 'linkedin_accept_connection',
+    description: 'Accept a pending connection request from a specific profile URL.',
+    inputSchema: { type: 'object', properties: { profileUrl: { type: 'string' } }, required: ['profileUrl'] },
+  },
+  {
+    name: 'linkedin_list_pending',
+    description: 'List pending connection requests (sent or received).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['received', 'sent'], default: 'received' },
+        limit: { type: 'number', default: 20 },
+      },
+    },
+  },
+  {
+    name: 'linkedin_navigate_messaging',
+    description: 'Navigate Safari to the LinkedIn messaging page.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'linkedin_navigate_network',
+    description: 'Navigate Safari to the LinkedIn My Network page.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'linkedin_extract_current',
+    description: 'Extract profile data from whatever LinkedIn profile page is currently open in Safari.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  // ── DM extras ──
+  {
+    name: 'linkedin_read_messages',
+    description: 'Read recent messages from the currently open LinkedIn conversation.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', default: 20 } } },
+  },
+  {
+    name: 'linkedin_get_unread_count',
+    description: 'Get the number of unread LinkedIn DM conversations.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  // ── Reply detection ──
+  {
+    name: 'linkedin_get_replies',
+    description: 'Return all outreach prospects that have replied since their last outbound message. Surfaces new replies without running a full cycle.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaign: { type: 'string', description: 'Optional campaign ID filter' },
+        limit: { type: 'number', default: 20 },
+      },
+    },
+  },
+  // ── Campaign engine ──
+  {
+    name: 'linkedin_create_campaign',
+    description: 'Create a new LinkedIn outreach campaign with message templates and timing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        offer: { type: 'string', description: 'Your offer/value prop to mention in messages' },
+        searchQuery: { type: 'string', description: 'LinkedIn search keywords' },
+        targetTitles: { type: 'array', items: { type: 'string' } },
+        minScore: { type: 'number', default: 30 },
+        connectionNote: { type: 'string', description: 'Override default connection note template' },
+        firstDm: { type: 'string', description: 'Override default first DM template' },
+      },
+      required: ['name', 'offer', 'searchQuery'],
+    },
+  },
+  {
+    name: 'linkedin_list_campaigns',
+    description: 'List all outreach campaigns with status and stats.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'linkedin_run_outreach_cycle',
+    description: 'Run an outreach cycle for a campaign: discover prospects, send connections, send DMs, detect replies. Set dryRun=true to preview.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        dryRun: { type: 'boolean', default: true },
+        skipDiscovery: { type: 'boolean', default: false },
+        skipFollowUps: { type: 'boolean', default: false },
+      },
+      required: ['campaignId'],
+    },
+  },
+  {
+    name: 'linkedin_get_campaign_stats',
+    description: 'Get outreach campaign stats: connections sent, DMs sent, replies received, conversion rate.',
+    inputSchema: {
+      type: 'object',
+      properties: { campaignId: { type: 'string', description: 'Optional — omit for all campaigns' } },
+    },
+  },
+  {
+    name: 'linkedin_mark_converted',
+    description: 'Mark a prospect as converted (became a customer / booked a call).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prospectId: { type: 'string' },
+        notes: { type: 'string' },
+      },
+      required: ['prospectId'],
+    },
+  },
+  {
+    name: 'linkedin_tag_prospect',
+    description: 'Add a tag to a prospect in the outreach system.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prospectId: { type: 'string' },
+        tag: { type: 'string' },
+      },
+      required: ['prospectId', 'tag'],
+    },
+  },
+  // ── Supabase sync ──
+  {
+    name: 'linkedin_supabase_sync',
+    description: 'Sync local outreach prospects to Supabase crm_contacts table. Upserts by linkedin profile_url.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaign: { type: 'string', description: 'Optional — filter by campaign ID' },
+        limit: { type: 'number', default: 50 },
+      },
+    },
+  },
+  // ── Rate limit persistence ──
+  {
+    name: 'linkedin_persist_rate_limits',
+    description: 'Write in-memory rate limit counters (connectionsToday, dmsToday) to Supabase actp_agent_health_snapshots so they survive restarts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        connectionsToday: { type: 'number' },
+        dmsToday: { type: 'number' },
+        followUpsToday: { type: 'number' },
+      },
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -392,6 +567,165 @@ async function executeTool(
         } catch (err) {
           const errorResult = { found: false, username, error: err instanceof Error ? err.message : String(err) };
           return { content: [{ type: 'text', text: JSON.stringify(errorResult) }] };
+        }
+      }
+
+      // ── Connection extras ──
+      case 'linkedin_connection_status': {
+        const status = await getConnectionStatus(args.profileUrl as string, driver);
+        return { content: [{ type: 'text', text: JSON.stringify(status) }] };
+      }
+
+      case 'linkedin_accept_connection': {
+        const ok = await acceptRequest(args.profileUrl as string, driver);
+        return { content: [{ type: 'text', text: JSON.stringify({ accepted: ok, profileUrl: args.profileUrl }) }] };
+      }
+
+      case 'linkedin_list_pending': {
+        const reqType = (args.type as 'received' | 'sent') || 'received';
+        const pending = await listPendingRequests(reqType, driver);
+        const limit = (args.limit as number) || 20;
+        return { content: [{ type: 'text', text: JSON.stringify({ requests: pending.slice(0, limit), count: pending.length }) }] };
+      }
+
+      case 'linkedin_navigate_messaging': {
+        await navigateToMessaging(driver);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, url: 'https://www.linkedin.com/messaging/' }) }] };
+      }
+
+      case 'linkedin_navigate_network': {
+        await navigateToNetwork(driver);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, url: 'https://www.linkedin.com/mynetwork/' }) }] };
+      }
+
+      case 'linkedin_extract_current': {
+        const url = await driver.executeJS('window.location.href') as string;
+        const profile = await extractProfile(url, driver);
+        return { content: [{ type: 'text', text: JSON.stringify(profile) }] };
+      }
+
+      // ── DM extras ──
+      case 'linkedin_read_messages': {
+        const limit = (args.limit as number) || 20;
+        const messages = await readMessages(limit, driver);
+        return { content: [{ type: 'text', text: JSON.stringify({ messages, count: messages.length }) }] };
+      }
+
+      case 'linkedin_get_unread_count': {
+        const count = await getUnreadCount(driver);
+        return { content: [{ type: 'text', text: JSON.stringify({ unreadCount: count }) }] };
+      }
+
+      // ── Reply detection ──
+      case 'linkedin_get_replies': {
+        const prospects = getProspects({ campaign: args.campaign as string | undefined });
+        const limit = (args.limit as number) || 20;
+        const replied = prospects.filter(p => p.lastReplyAt).slice(0, limit);
+        return { content: [{ type: 'text', text: JSON.stringify({ replies: replied, count: replied.length }) }] };
+      }
+
+      // ── Campaign engine ──
+      case 'linkedin_create_campaign': {
+        const campaign = createCampaign({
+          name: args.name as string,
+          offer: args.offer as string,
+          search: { keywords: (args.searchQuery as string).split(' ') },
+          targetTitles: (args.targetTitles as string[]) || [],
+          minScore: (args.minScore as number) || 30,
+          templates: {
+            connectionNote: args.connectionNote as string | undefined,
+            firstDm: args.firstDm as string | undefined,
+          },
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(campaign) }] };
+      }
+
+      case 'linkedin_list_campaigns': {
+        const campaigns = getCampaigns();
+        return { content: [{ type: 'text', text: JSON.stringify({ campaigns, count: campaigns.length }) }] };
+      }
+
+      case 'linkedin_run_outreach_cycle': {
+        const result = await runOutreachCycle(
+          args.campaignId as string,
+          {
+            dryRun: (args.dryRun as boolean) ?? true,
+            skipDiscovery: (args.skipDiscovery as boolean) ?? false,
+            skipFollowUps: (args.skipFollowUps as boolean) ?? false,
+          },
+          driver,
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+
+      case 'linkedin_get_campaign_stats': {
+        const stats = getStats(args.campaignId as string | undefined);
+        const runs = getRecentRuns(5);
+        return { content: [{ type: 'text', text: JSON.stringify({ stats, recentRuns: runs }) }] };
+      }
+
+      case 'linkedin_mark_converted': {
+        const prospect = markConverted(args.prospectId as string, args.notes as string | undefined);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: !!prospect, prospect }) }] };
+      }
+
+      case 'linkedin_tag_prospect': {
+        const prospect = tagProspect(args.prospectId as string, args.tag as string);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: !!prospect, prospect }) }] };
+      }
+
+      // ── Supabase sync ──
+      case 'linkedin_supabase_sync': {
+        const supabase = getSupabaseClient();
+        if (!supabase) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'SUPABASE_URL / SUPABASE_ANON_KEY env vars not set', synced: 0 }) }] };
+        }
+        const prospects = getProspects({ campaign: args.campaign as string | undefined });
+        const limit = (args.limit as number) || 50;
+        const toSync = prospects.slice(0, limit);
+        let synced = 0;
+        const errors: string[] = [];
+        for (const p of toSync) {
+          const { error } = await supabase.upsertContact({
+            platform: 'linkedin',
+            profile_url: p.profileUrl,
+            name: p.name,
+            headline: p.headline,
+            location: p.location,
+            metadata: { score: p.score, stage: p.stage, campaign: p.campaign, tags: p.tags },
+          });
+          if (error) errors.push(String(error));
+          else synced++;
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ synced, errors: errors.slice(0, 5), total: toSync.length }) }] };
+      }
+
+      // ── Rate limit persistence ──
+      case 'linkedin_persist_rate_limits': {
+        const supabase = getSupabaseClient();
+        if (!supabase) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'SUPABASE_URL / SUPABASE_ANON_KEY not set' }) }] };
+        }
+        const snapshot = {
+          platform: 'linkedin',
+          connections_today: (args.connectionsToday as number) ?? 0,
+          dms_today: (args.dmsToday as number) ?? 0,
+          follow_ups_today: (args.followUpsToday as number) ?? 0,
+          recorded_at: new Date().toISOString(),
+        };
+        const url = `${process.env['SUPABASE_URL']}/rest/v1/actp_agent_health_snapshots`;
+        const headers = {
+          'Content-Type': 'application/json',
+          'apikey': process.env['SUPABASE_ANON_KEY']!,
+          'Authorization': `Bearer ${process.env['SUPABASE_SERVICE_ROLE_KEY'] || process.env['SUPABASE_ANON_KEY']}`,
+          'Prefer': 'return=representation',
+        };
+        try {
+          const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(snapshot) });
+          if (!res.ok) throw new Error(await res.text());
+          return { content: [{ type: 'text', text: JSON.stringify({ persisted: true, snapshot }) }] };
+        } catch (e) {
+          return { content: [{ type: 'text', text: JSON.stringify({ persisted: false, error: (e as Error).message }) }] };
         }
       }
 

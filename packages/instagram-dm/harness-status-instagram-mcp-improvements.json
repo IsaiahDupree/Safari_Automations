@@ -1,61 +1,14 @@
 {
-  "project": "instagram-mcp-improvements",
-  "timestamp": "2026-03-02T00:00:00Z",
-  "summary": "8/8 Instagram MCP improvements completed",
-  "features": [
-    {
-      "id": "IG-001",
-      "name": "Expose POST /api/ai/generate endpoint for AI DM generation",
-      "status": "✅ PASS",
-      "note": "Endpoint already existed, verified working"
-    },
-    {
-      "id": "IG-002",
-      "name": "Add GET /api/conversations/unread endpoint and instagram_get_unread MCP tool",
-      "status": "✅ PASS",
-      "note": "Detects unread badges, returns count + conversation list"
-    },
-    {
-      "id": "IG-003",
-      "name": "Add message timestamp extraction to readMessages()",
-      "status": "✅ PASS",
-      "note": "Extracts timestamp from <time> elements and timestamp classes"
-    },
-    {
-      "id": "IG-004",
-      "name": "Add rate-limit UI detection (Action Blocked banner) before sends",
-      "status": "✅ PASS",
-      "note": "detectRateLimitBanner() checks for action blocked messages, added to sendMessage()"
-    },
-    {
-      "id": "IG-005",
-      "name": "Add POST /api/requests/:username/accept and /decline with MCP tools",
-      "status": "✅ PASS",
-      "note": "acceptMessageRequest() and declineMessageRequest() + MCP tools"
-    },
-    {
-      "id": "IG-006",
-      "name": "Add conversation scroll pagination to GET /api/conversations",
-      "status": "✅ PASS",
-      "note": "?scrollMore=true scrolls 3x with deduplication"
-    },
-    {
-      "id": "IG-007",
-      "name": "Add optional Supabase CRM logging for DM sends",
-      "status": "✅ PASS",
-      "note": "Fire-and-forget logging to crm_messages table via SUPABASE_URL/SUPABASE_ANON_KEY env vars"
-    },
-    {
-      "id": "IG-008",
-      "name": "Add GET /api/profile/:username endpoint and instagram_get_profile MCP tool",
-      "status": "✅ PASS",
-      "note": "Uses existing enrichContact() to extract profile info"
-    }
-  ],
-  "files_modified": [
-    "src/automation/dm-operations.ts",
-    "src/automation/types.ts",
-    "src/api/server.ts",
-    "src/api/mcp-server.ts"
-  ]
+  "projectId": "instagram-mcp-improvements",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/instagram-dm",
+  "lastUpdated": "2026-03-03T03:39:32.132Z",
+  "sessionType": "CODING",
+  "status": "completed",
+  "stats": {
+    "total": 8,
+    "passing": 8,
+    "pending": 0,
+    "percentComplete": "100.0"
+  },
+  "pid": 49437
 }

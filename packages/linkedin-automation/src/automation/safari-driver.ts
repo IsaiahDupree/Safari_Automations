@@ -734,7 +734,15 @@ end tell`;
       return info;
     }
 
-    // Not found — create session by navigating in front document
+    // Not found — only navigate if the front document is already on the target domain.
+    // Never hijack a new tab (about:blank, newtab pages, or non-LinkedIn pages the user is viewing).
+    const frontUrl = await this.getCurrentUrl().catch(() => '');
+    const isBlankOrNewTab = !frontUrl || frontUrl === 'about:blank' || frontUrl.startsWith('favorites://') || frontUrl.startsWith('topsites://');
+    const isAlreadyTarget = frontUrl.includes(urlPattern);
+    if (isBlankOrNewTab || !isAlreadyTarget) {
+      console.warn(`[SafariDriver] No LinkedIn tab found and front document is '${frontUrl}' — skipping auto-navigate to avoid hijacking user tabs`);
+      return { found: false, windowIndex: 0, tabIndex: 0, url: '' };
+    }
     console.warn(`[SafariDriver] No tab found for '${urlPattern}' — navigating front document`);
     await this.navigateTo(`https://www.${urlPattern}`);
     await this.wait(2500);
