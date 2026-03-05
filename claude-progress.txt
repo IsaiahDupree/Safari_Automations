@@ -296,3 +296,69 @@ Implement all 103 features for the Threads Safari automation package
 ===========================================
 END SESSION #3
 ===========================================
+
+===========================================
+SESSION #4: Market Research MCP Server
+Date: 2026-03-04
+Agent: Initializer (Market Research MCP)
+===========================================
+
+## GOAL
+Implement all 12 features for the Market Research MCP server
+(market-research-mcp.json).
+
+## ACTIONS COMPLETED
+
+1. Scaffolded packages/market-research/src/api/mcp-server.ts (MRM-001)
+   - New file, separate from existing src/mcp/server.ts
+   - JSON-RPC 2.0 over stdio, matches project patterns
+
+2. Implemented market_research_is_ready (MRM-002)
+   - Checks GET /health on localhost:3106
+   - Returns {ready, port, timestamp}
+
+3. Ported 6 existing tools with market_research_ prefix (MRM-003)
+   - search_posts, get_trends, get_top_creators
+   - get_hashtags, score_content, get_creator_stats
+
+4. Implemented market_research_niche_pipeline (MRM-004)
+   - Delegates to POST /api/research/:platform/niche
+
+5. Implemented market_research_full_multi_niche (MRM-005)
+   - Delegates to POST /api/research/:platform/full
+
+6. Implemented market_research_all_platforms (MRM-006)
+   - Parallel search across 5 platforms with Promise.allSettled
+
+7. Implemented market_research_ingest (MRM-007)
+   - Stores to Supabase market_research_results table via REST API
+
+8. Implemented market_research_get_stored (MRM-008)
+   - Queries Supabase with niche/platform/since/limit filters
+
+9. Set 60s timeout on all long-running calls (MRM-009)
+   - TIMEOUT_MS = 60_000 in api() function
+
+10. Structured error handling (MRM-010)
+    - SERVICE_DOWN, RATE_LIMITED, TIMEOUT error codes
+    - formatMcpError() for consistent error formatting
+
+11. Stdio transport registered (MRM-011)
+    - readline on stdin, JSON responses on stdout
+
+12. Package.json entrypoint added (MRM-012)
+    - "mcp-server": "tsx src/api/mcp-server.ts"
+    - Also added "start:server" for consistency
+
+## RESULTS
+- 12/12 features passing
+- Initialize handshake: PASS
+- tools/list returns 12 tools: PASS
+
+## FILES CREATED/MODIFIED
+- packages/market-research/src/api/mcp-server.ts (new — 310 lines)
+- packages/market-research/package.json (updated scripts)
+
+===========================================
+END SESSION #4
+===========================================

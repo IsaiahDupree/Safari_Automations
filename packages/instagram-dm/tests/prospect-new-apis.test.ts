@@ -317,7 +317,7 @@ describe('New Prospect APIs (Layer 3: session active)', () => {
         checkCRM: false,
         maxRounds: 1,
       });
-      discoveredUsernames = r.candidates.map(c => c.username).slice(0, 2);
+      discoveredUsernames = (r.data.candidates ?? []).map(c => c.username).slice(0, 2);
       if (discoveredUsernames.length > 0) {
         console.log(`  ✔ discovered ${discoveredUsernames.length} real prospects for score-batch: ${discoveredUsernames.map(u => '@' + u).join(', ')}`);
       } else {

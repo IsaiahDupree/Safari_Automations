@@ -9,7 +9,9 @@
     "build": "tsc",
     "dev": "tsx src/api/server.ts",
     "start": "node dist/api/server.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start:server": "tsx src/api/server.ts",
+    "mcp-server": "tsx src/api/mcp-server.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
