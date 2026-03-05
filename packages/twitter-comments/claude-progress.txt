@@ -1,0 +1,27 @@
+Twitter Comments MCP Server — Progress Log
+============================================
+
+Session 1 — 2026-03-04
+-----------------------
+
+COMPLETED: All 12 features (TCM-001 through TCM-012)
+
+Created: packages/twitter-comments/src/api/mcp-server.ts
+
+Implementation:
+- JSON-RPC 2.0 over stdio transport (same pattern as tiktok-comments MCP)
+- Delegates to Twitter Comments REST API on port 3007
+- 9 MCP tools: is_ready, post_reply, search, timeline, compose, like, retweet, bookmark, get_metrics
+- All write tools (post_reply, compose, like, retweet) support dryRun mode
+- Structured error handling: RATE_LIMITED (4290), SESSION_EXPIRED (4010), SERVICE_DOWN (5030)
+- Error classification from HTTP status codes and error message patterns
+- Bearer token auth forwarded to REST API
+- 30s timeout on all API calls
+- Exported startMCPServer() + auto-start when run directly
+
+Verification:
+- tsx import/compile: OK
+- JSON-RPC initialize: OK (returns protocolVersion, capabilities, serverInfo)
+- tools/list: OK (returns all 9 tools with schemas)
+- tools/call compose dryRun: OK (returns dry-run response)
+- tools/call is_ready (service down): OK (returns ready:false with SERVICE_DOWN message)
