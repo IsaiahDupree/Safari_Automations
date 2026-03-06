@@ -20,7 +20,15 @@ const ICP_SEARCH_QUERIES = [
   'browser automation scraping',
   'n8n zapier integration',
   'claude openai api integration',
+  'claude api developer',
+  'anthropic claude automation',
+  'make.com automation',
+  'crm automation integration',
+  'ai agent development',
 ];
+
+// Fetch fresh most_recent tab from Upwork Safari (run before keyword searches)
+const ALSO_FETCH_MOST_RECENT = true;
 
 // RSS feeds — WeWorkRemotely + Remotive (AI/automation categories)
 const WWR_RSS_FEEDS = [
@@ -198,7 +206,7 @@ async function fetchFromUpworkAutomation(): Promise<UpworkJob[]> {
 
     const jobs: UpworkJob[] = [];
 
-    // 1. Fetch from Best Matches tab (Safari browser, requires Upwork login)
+    // 1a. Fetch from Best Matches tab (Safari browser, requires Upwork login)
     try {
       const tabRaw = await httpPost(
         `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/tab`,
@@ -219,6 +227,32 @@ async function fetchFromUpworkAutomation(): Promise<UpworkJob[]> {
       console.log(`[job-scraper] upwork-automation best_matches: ${jobs.length} jobs`);
     } catch (err) {
       console.log('[job-scraper] best_matches tab error:', err instanceof Error ? err.message : err);
+    }
+
+    // 1b. Fetch from Most Recent tab — catches brand-new postings before they get proposals
+    if (ALSO_FETCH_MOST_RECENT) {
+      try {
+        const recentRaw = await httpPost(
+          `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/tab`,
+          { tab: 'most_recent' },
+          30000,
+        );
+        const recentData = JSON.parse(recentRaw) as {
+          jobs?: Array<{ title?: string; url?: string; id?: string; description?: string; budget?: { min?: number; max?: number; amount?: number }; postedAt?: string }>;
+          error?: string;
+        };
+        const beforeCount = jobs.length;
+        for (const j of recentData.jobs || []) {
+          if (!j.title || (!j.url && !j.id)) continue;
+          const url = j.url || `https://www.upwork.com/jobs/${j.id}`;
+          const budgetText = j.budget ? `${j.budget.min || 0}–${j.budget.max || j.budget.amount || 0}` : '';
+          const score = scoreJob({ title: j.title, description: j.description || '', budget: budgetText, pubDate: j.postedAt });
+          jobs.push({ job_id: jobId(url), title: j.title, url, description: j.description || '', budget: budgetText, pub_date: j.postedAt || '', score });
+        }
+        console.log(`[job-scraper] upwork-automation most_recent: +${jobs.length - beforeCount} jobs`);
+      } catch (err) {
+        console.log('[job-scraper] most_recent tab error:', err instanceof Error ? err.message : err);
+      }
     }
 
     // 2. Keyword searches for ICP queries

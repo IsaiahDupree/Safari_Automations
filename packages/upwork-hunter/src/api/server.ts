@@ -16,6 +16,9 @@
  *   POST /api/proposals/reject/:jobId        — manually reject
  *   GET  /api/proposals/stats                — { pending, approved, rejected, submitted, won }
  *   POST /api/scan                           — full pipeline: search → score → generate → telegram
+ *   POST /api/quick-poll                      — fast new-job check, HOT alerts only (no proposal gen)
+ *   GET  /api/seen-jobs                       — { seen: N } count of tracked job IDs
+ *   POST /api/seen-jobs/clear                 — reset seen-jobs cache
  *
  * Start:
  *   npx tsx packages/upwork-hunter/src/api/server.ts
@@ -26,6 +29,7 @@ import * as http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { fetchAndScoreJobs, clearJobCache } from './job-scraper.js';
+import { hasSeen, markSeen, seenCount, clearSeen } from './seen-jobs.js';
 import { generateClientAssets } from './asset-generator.js';
 import { generateAndStoreProposal } from './proposal-gen.js';
 import { sendProposalToTelegram, startPollingLoop, isTelegramConfigured } from './telegram-gate.js';
@@ -64,6 +68,12 @@ const PORT = parseInt(process.env.PORT || '3107', 10);
 const SCORE_THRESHOLD = 30;
 const AUTO_APPROVE_THRESHOLD = 70;
 
+// ─── Scan frequency ────────────────────────────────────────────────────────────
+// quick poll: check most_recent Upwork tab + RSS — fast, no cache, no proposal gen
+// full scan: keyword searches + proposal gen + Telegram notify
+const QUICK_POLL_INTERVAL_MS  = 20 * 60 * 1000;   //  20 min — catch new postings fast
+const FULL_SCAN_INTERVAL_MS   = 2 * 60 * 60 * 1000; //  2 hr  — full keyword + proposal gen
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -73,6 +83,7 @@ app.use(express.json());
 app.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
+    seen_jobs: seenCount(),
     service: 'upwork-hunter',
     port: PORT,
     supabase: isSupabaseConfigured(),
@@ -342,39 +353,92 @@ app.post('/api/jobs/search-upwork', async (req: Request, res: Response) => {
 
 // ─── Full Pipeline Scan ────────────────────────────────────────────────────────
 
+// ─── Shared: load all jobs and mark them seen ─────────────────────────────────
+
+async function fetchNewJobs(invalidateCache = false): Promise<UpworkJob[]> {
+  if (invalidateCache) clearJobCache();
+  const all = await fetchAndScoreJobs();
+  const newJobs = all.filter((j) => !hasSeen(j.job_id));
+  markSeen(all.map((j) => j.job_id));
+  return newJobs;
+}
+
+// ─── Quick poll: detect new postings, alert on HOT matches ────────────────────
+// Runs every 20 min. No proposal generation — just checks for NEW high-scoring
+// jobs and sends a lightweight Telegram alert so you can act fast.
+
+export async function runQuickPoll(): Promise<{ new_jobs: number; hot_alerts: number }> {
+  console.log(`[quick-poll] Starting — ${seenCount()} jobs in seen-cache`);
+  let newJobs: UpworkJob[] = [];
+  try {
+    newJobs = await fetchNewJobs(true); // always fresh (no cache)
+  } catch (err) {
+    console.error('[quick-poll] Fetch failed:', err instanceof Error ? err.message : err);
+    return { new_jobs: 0, hot_alerts: 0 };
+  }
+
+  const hotJobs = newJobs.filter((j) => j.score >= AUTO_APPROVE_THRESHOLD);
+  console.log(`[quick-poll] ${newJobs.length} new jobs — ${hotJobs.length} HOT (score >= ${AUTO_APPROVE_THRESHOLD})`);
+
+  let hotAlerts = 0;
+  if (isTelegramConfigured() && hotJobs.length > 0) {
+    for (const job of hotJobs) {
+      try {
+        // Check not already in DB (might have been added by a concurrent full scan)
+        if (isSupabaseConfigured()) {
+          const { data } = await getSupabaseClient().from('upwork_proposals').select('job_id').eq('job_id', job.job_id).maybeSingle();
+          if (data) { console.log(`[quick-poll] Already in DB, skipping: ${job.job_id}`); continue; }
+        }
+        // Generate proposal + notify immediately for HOT jobs
+        const proposal = await generateAndStoreProposal(job, 'audit_build');
+        await sendProposalToTelegram(proposal);
+        hotAlerts++;
+        console.log(`[quick-poll] 🔥 HOT job notified: "${job.title}" (${job.score}/100)`);
+      } catch (err) {
+        console.error('[quick-poll] Failed to process hot job:', err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  return { new_jobs: newJobs.length, hot_alerts: hotAlerts };
+}
+
+// ─── Full scan: all qualified jobs → proposals → Telegram ─────────────────────
+// Runs every 2 hours. Generates proposals for ALL jobs above threshold (not just HOT).
+
 export async function runFullScan(): Promise<ScanSummary> {
   const summary: ScanSummary = { jobs_found: 0, above_threshold: 0, proposals_generated: 0, errors: [] };
   console.log('[scan] Starting full pipeline scan...');
 
-  let jobs: UpworkJob[];
+  let newJobs: UpworkJob[];
   try {
-    jobs = await fetchAndScoreJobs();
-    summary.jobs_found = jobs.length;
+    newJobs = await fetchNewJobs(true); // clear cache — always pull fresh data
+    summary.jobs_found = newJobs.length;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    summary.errors.push(`RSS fetch failed: ${msg}`);
-    console.error('[scan] RSS fetch failed:', msg);
+    summary.errors.push(`Fetch failed: ${msg}`);
+    console.error('[scan] Fetch failed:', msg);
     return summary;
   }
 
-  const qualified = jobs.filter((j) => j.score >= SCORE_THRESHOLD);
+  const qualified = newJobs.filter((j) => j.score >= SCORE_THRESHOLD);
   summary.above_threshold = qualified.length;
-  console.log(`[scan] Found ${jobs.length} jobs, ${qualified.length} above threshold (${SCORE_THRESHOLD})`);
+  console.log(`[scan] ${newJobs.length} new jobs — ${qualified.length} above threshold (${SCORE_THRESHOLD})`);
 
-  const existingIds = new Set<string>();
+  // Also check Supabase so we don't re-generate a proposal if quick-poll already did it
+  const dbIds = new Set<string>();
   if (isSupabaseConfigured()) {
     try {
-      const supabase = getSupabaseClient();
-      const { data } = await supabase.from('upwork_proposals').select('job_id');
-      for (const row of data || []) existingIds.add(row.job_id);
+      const { data } = await getSupabaseClient().from('upwork_proposals').select('job_id');
+      for (const row of data || []) dbIds.add(row.job_id);
     } catch (err) {
-      console.warn('[scan] Could not check existing proposals:', err instanceof Error ? err.message : String(err));
+      console.warn('[scan] Could not load DB IDs:', err instanceof Error ? err.message : err);
     }
   }
 
   for (const job of qualified) {
-    if (existingIds.has(job.job_id)) {
-      console.log(`[scan] Skipping duplicate job_id=${job.job_id}`);
+    if (dbIds.has(job.job_id)) {
+      console.log(`[scan] Already in DB: ${job.job_id}`);
       continue;
     }
 
@@ -383,23 +447,22 @@ export async function runFullScan(): Promise<ScanSummary> {
       summary.proposals_generated++;
 
       if (!isTelegramConfigured() && job.score >= AUTO_APPROVE_THRESHOLD && isSupabaseConfigured()) {
-        const supabase = getSupabaseClient();
-        await supabase
+        await getSupabaseClient()
           .from('upwork_proposals')
           .update({ status: 'approved', updated_at: new Date().toISOString() })
           .eq('job_id', job.job_id);
-        console.log(`[scan] Auto-approved job_id=${job.job_id} (score ${job.score} >= ${AUTO_APPROVE_THRESHOLD})`);
+        console.log(`[scan] Auto-approved job_id=${job.job_id} (score ${job.score})`);
       } else if (isTelegramConfigured()) {
         await sendProposalToTelegram(proposal);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       summary.errors.push(`job_id=${job.job_id}: ${msg}`);
-      console.error(`[scan] Failed to process job_id=${job.job_id}:`, msg);
+      console.error(`[scan] Failed job_id=${job.job_id}:`, msg);
     }
   }
 
-  console.log(`[scan] Complete — jobs_found=${summary.jobs_found}, above_threshold=${summary.above_threshold}, proposals_generated=${summary.proposals_generated}`);
+  console.log(`[scan] Complete — new=${summary.jobs_found}, qualified=${summary.above_threshold}, proposals=${summary.proposals_generated}`);
   return summary;
 }
 
@@ -411,6 +474,26 @@ app.post('/api/scan', async (_req: Request, res: Response) => {
     console.error('[scan] Unexpected error:', err);
     res.status(500).json({ error: 'Scan failed', details: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ── Quick poll — trigger manually or via cron ─────────────────────────────────
+app.post('/api/quick-poll', async (_req: Request, res: Response) => {
+  try {
+    const result = await runQuickPoll();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Quick poll failed', details: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ── Seen-jobs stats + management ──────────────────────────────────────────────
+app.get('/api/seen-jobs', (_req: Request, res: Response) => {
+  res.json({ seen: seenCount() });
+});
+
+app.post('/api/seen-jobs/clear', (_req: Request, res: Response) => {
+  clearSeen();
+  res.json({ cleared: true, seen: seenCount() });
 });
 
 // ── Generate preliminary client assets for an approved proposal ───────────────
@@ -462,15 +545,24 @@ async function start(): Promise<void> {
     startPollingLoop(5000);
   }
 
-  const SCAN_INTERVAL_MS = 4 * 60 * 60 * 1000;
-  setInterval(runFullScan, SCAN_INTERVAL_MS);
-  console.log(`[server] Autonomous scan loop scheduled every 4 hours`);
+  // ── Multi-frequency scan loop ──────────────────────────────────────────────
+  // Quick poll every 20 min: catches new postings, alerts on HOT jobs immediately
+  setInterval(() => {
+    runQuickPoll().catch((err) => console.error('[quick-poll] Error:', err instanceof Error ? err.message : err));
+  }, QUICK_POLL_INTERVAL_MS);
 
-  // Run initial scan on startup (don't wait 4h for first proposals)
+  // Full scan every 2 hours: generates proposals for all qualified jobs
+  setInterval(() => {
+    runFullScan().catch((err) => console.error('[scan] Error:', err instanceof Error ? err.message : err));
+  }, FULL_SCAN_INTERVAL_MS);
+
+  console.log(`[server] Quick poll: every 20 min | Full scan: every 2 hours`);
+
+  // Startup: full scan after 5s delay (give Safari/DB time to settle)
   setTimeout(() => {
-    console.log('[server] Running startup scan...');
+    console.log('[server] Running startup full scan...');
     runFullScan().catch((err) => console.error('[server] Startup scan failed:', err));
-  }, 3000);
+  }, 5000);
 }
 
 start().catch((err) => {
