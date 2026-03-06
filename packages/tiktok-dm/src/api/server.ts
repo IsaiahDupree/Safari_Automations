@@ -107,6 +107,7 @@ import {
   DEFAULT_RATE_LIMITS,
   RateLimitConfig,
 } from '../automation/index.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { isWithinActiveHours, getRandomDelay } from '../utils/index.js';
 import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
 import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
@@ -212,6 +213,13 @@ const driver = new SafariDriver({ verbose: VERBOSE });
 // URL pattern that identifies the TikTok Safari session
 const SESSION_URL_PATTERN = 'tiktok.com';
 
+// Service identity for tab coordination
+const SERVICE_NAME = 'tiktok-dm';
+const SERVICE_PORT = 3102;
+
+// Active tab coordinators by agentId (in-process map; file is cross-process)
+const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
+
 /**
  * Ensure the TikTok Safari tab is the active/front tab before any operation.
  * Scans all Safari windows, finds the tiktok.com tab, and activates it.
@@ -223,7 +231,50 @@ async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number
 
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', platform: 'tiktok', port: PORT });
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://www.tiktok.com/messages';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `tiktok-dm-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for tiktok-dm',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://www.tiktok.com/messages, or POST /api/tabs/claim with { agentId, openUrl: "https://www.tiktok.com/messages" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
+  res.json({ status: 'ok', service: 'tiktok-dm', platform: 'tiktok', port: PORT });
 });
 
 // === SESSION MANAGEMENT ===
@@ -824,6 +875,453 @@ app.post('/api/tiktok/dm/search', async (req: Request, res: Response) => {
   }
 });
 
+// === CLEAN PATH ALIASES (per PRD spec) ===
+
+// GET /api/status — alias for /api/tiktok/status
+app.get('/api/status', async (_req: Request, res: Response) => {
+  try {
+    const currentUrl = await driver.getCurrentUrl();
+    const isOnTikTok = currentUrl.includes('tiktok.com');
+    const isLoggedIn = await driver.isLoggedIn();
+    res.json({ isOnTikTok, isLoggedIn, currentUrl });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/inbox/navigate
+app.post('/api/inbox/navigate', async (_req: Request, res: Response) => {
+  try {
+    const result = await navigateToInbox(driver);
+    if (result.success) {
+      res.json({ success: true, currentUrl: result.currentUrl });
+    } else {
+      res.status(400).json({ success: false, error: result.error });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// GET /api/conversations — alias for /api/tiktok/conversations
+app.get('/api/conversations', async (_req: Request, res: Response) => {
+  try {
+    const conversations = await listConversations(driver);
+    res.json({ conversations, count: conversations.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/conversations/open — alias
+app.post('/api/conversations/open', async (req: Request, res: Response) => {
+  try {
+    const { username } = req.body as { username: string };
+    if (!username) { res.status(400).json({ error: 'username is required' }); return; }
+    const result = await openConversation(driver, username);
+    if (result.success) {
+      res.json({ success: true, currentUrl: result.currentUrl });
+    } else {
+      res.status(400).json({ success: false, error: result.error });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+// GET /api/messages — alias for /api/tiktok/messages
+app.get('/api/messages', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const messages = await readMessages(driver, limit);
+    res.json({ messages, count: messages.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// GET /api/profile/:username — alias for /api/tiktok/profile/:username
+app.get('/api/profile/:username', async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username.replace('@', '');
+    const profile = await enrichContact(username, driver);
+    const hasData = !!(profile.followers || profile.following || profile.fullName);
+    if (!hasData) {
+      res.status(404).json({ success: false, error: 'Profile not found or failed to load', username });
+      return;
+    }
+    res.json({
+      username,
+      displayName: profile.fullName,
+      bio: profile.bio,
+      followers: profile.followers,
+      following: profile.following,
+      likes: profile.likes,
+      verified: false,
+      isPrivate: false,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// GET /api/search — search TikTok users
+app.get('/api/search', async (req: Request, res: Response) => {
+  try {
+    const q = (req.query.q as string) || '';
+    if (!q) { res.status(400).json({ error: 'q is required' }); return; }
+
+    await driver.navigateTo(`https://www.tiktok.com/search/user?q=${encodeURIComponent(q)}`);
+    await driver.wait(3000);
+
+    const raw = await driver.executeJS(`(function() {
+      var results = [];
+      var seen = {};
+      // User result cards — TikTok search/user page
+      var cards = document.querySelectorAll('[data-e2e="search-user-container"], [data-e2e="search_top-item"]');
+      if (cards.length === 0) {
+        // Fallback: scrape username links from user search page
+        var links = document.querySelectorAll('a[href*="/@"]');
+        for (var i = 0; i < links.length; i++) {
+          var href = links[i].getAttribute('href') || '';
+          var m = href.match(/\\/@([a-zA-Z0-9_.]+)/);
+          if (m && !seen[m[1].toLowerCase()]) {
+            seen[m[1].toLowerCase()] = 1;
+            var container = links[i].closest('[class*="UserCard"], [class*="user-card"], div');
+            var text = container ? container.innerText : links[i].innerText;
+            var lines = text.trim().split('\\n').filter(function(l) { return l.trim(); });
+            results.push({ username: m[1], displayName: lines[0] || m[1], followers: '', verified: false });
+          }
+          if (results.length >= 10) break;
+        }
+      } else {
+        cards.forEach(function(card) {
+          var link = card.querySelector('a[href*="/@"]');
+          if (!link) return;
+          var href = link.getAttribute('href') || '';
+          var m = href.match(/\\/@([a-zA-Z0-9_.]+)/);
+          if (!m || seen[m[1].toLowerCase()]) return;
+          seen[m[1].toLowerCase()] = 1;
+          var lines = card.innerText.trim().split('\\n').filter(function(l) { return l.trim(); });
+          results.push({ username: m[1], displayName: lines[0] || m[1], followers: lines[1] || '', verified: false });
+        });
+      }
+      return JSON.stringify(results.slice(0, 10));
+    })()`);
+
+    const users = JSON.parse(raw || '[]') as { username: string; displayName: string; followers: string; verified: boolean }[];
+    res.json({ users, count: users.length, query: q });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/messages/send-to — with dryRun support
+app.post('/api/messages/send-to', async (req: Request, res: Response) => {
+  const { username, text, message, dryRun } = req.body as { username: string; text?: string; message?: string; dryRun?: boolean };
+  const msg = text || message;
+  if (!username || !msg) {
+    res.status(400).json({ error: 'username and text (or message) are required' });
+    return;
+  }
+
+  if (dryRun === true) {
+    console.log(`[send-to] DryRun: would send to @${username}: "${msg.substring(0, 50)}..."`);
+    res.json({ success: true, dryRun: true, username, message: msg });
+    return;
+  }
+
+  const agentId = `tiktok-dm-send-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[send-to] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+  } catch (err) {
+    throw new Error(`Tab claim required but failed: ${err}`);
+  }
+
+  try {
+    const rateLimitStatus = await detectTikTokRateLimit(driver);
+    if (rateLimitStatus.limited) {
+      res.status(429).json({
+        success: false, rateLimited: true,
+        error: `TikTok rate limited: ${rateLimitStatus.message || 'detected'}`,
+        captcha: rateLimitStatus.captcha,
+      });
+      return;
+    }
+
+    const result = await sendDMByUsername(username, msg, driver);
+    if (result.success) {
+      recordMessage();
+      logDM({ platform: 'tiktok', username, messageText: msg, isOutbound: true });
+      logDMToSupabase(username, msg);
+      // CRMLite sync (fire-and-forget)
+      syncToCRMLite(username, msg);
+      res.json({
+        success: true, username: result.username, verified: result.verified,
+        verifiedRecipient: result.verifiedRecipient,
+        rateLimits: { hourly: getMessagesSentThisHour(), daily: getMessagesSentToday() },
+      });
+    } else {
+      res.status(400).json({ success: false, error: result.error, username: result.username });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  } finally {
+    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  }
+});
+
+// === ICP SCORING ===
+
+const ICP_BIO_KEYWORDS = ['founder', 'saas', 'build', 'software', 'ai', 'startup', 'indie', 'developer'];
+
+function parseFollowerCount(str: string): number {
+  if (!str) return 0;
+  const s = str.replace(/,/g, '').trim();
+  const m = s.match(/^([\d.]+)\s*([KkMm]?)$/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const suffix = m[2].toUpperCase();
+  if (suffix === 'K') return Math.round(n * 1_000);
+  if (suffix === 'M') return Math.round(n * 1_000_000);
+  return Math.round(n);
+}
+
+function scoreTikTokICP(profile: { bio?: string; followers?: string; likes?: string; verified?: boolean; isPrivate?: boolean }): { score: number; signals: string[] } {
+  let score = 0;
+  const signals: string[] = [];
+  const bio = (profile.bio || '').toLowerCase();
+  const followers = parseFollowerCount(profile.followers || '');
+  const likes = parseFollowerCount(profile.likes || '');
+
+  // Bio keyword match: +15 per keyword (max 45)
+  const matched = ICP_BIO_KEYWORDS.filter(k => bio.includes(k));
+  if (matched.length > 0) {
+    score += Math.min(matched.length * 15, 45);
+    signals.push(...matched.map(k => `bio:${k}`));
+  }
+
+  // Follower range
+  if (followers >= 1_000 && followers <= 50_000) {
+    score += 25;
+    signals.push('follower_range:1K-50K');
+  } else if (followers > 50_000 && followers <= 500_000) {
+    score += 15;
+    signals.push('follower_range:50K-500K');
+  }
+
+  // Engagement ratio: likes / followers
+  if (followers > 0 && likes / followers > 0.1) {
+    score += 20;
+    signals.push('high_engagement');
+  }
+
+  // Not verified: +5
+  if (!profile.verified) {
+    score += 5;
+    signals.push('not_verified');
+  }
+
+  return { score: Math.min(score, 100), signals };
+}
+
+// GET /api/prospect/score/:username
+app.get('/api/prospect/score/:username', async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username.replace('@', '');
+    const profile = await enrichContact(username, driver);
+    const { score, signals } = scoreTikTokICP(profile);
+    res.json({
+      username,
+      score,
+      signals,
+      icp: { qualifies: score >= 50 },
+      profile: {
+        displayName: profile.fullName,
+        bio: profile.bio,
+        followers: profile.followers,
+        following: profile.following,
+        likes: profile.likes,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/prospect/discover
+app.post('/api/prospect/discover', async (req: Request, res: Response) => {
+  const agentId = `tiktok-dm-discover-${Date.now()}`;
+  let coord: InstanceType<typeof TabCoordinator> | null = null;
+  try {
+    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+    const claim = await coord.claim();
+    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+  } catch (err) {
+    throw new Error(`Tab claim required but failed: ${err}`);
+  }
+
+  try {
+    const {
+      hashtags = ['buildinpublic'],
+      minFollowers = 1000,
+      maxFollowers = 500000,
+      maxCandidates = 20,
+    } = req.body as { hashtags?: string[]; minFollowers?: number; maxFollowers?: number; maxCandidates?: number };
+
+    const seen = new Set<string>();
+    const candidates: { username: string; displayName: string; score: number; signals: string[]; qualifies: boolean; source: string }[] = [];
+
+    for (const hashtag of hashtags) {
+      const tag = hashtag.replace(/^#/, '');
+      console.log(`[prospect-discover] Navigating to #${tag}...`);
+      await driver.navigateTo(`https://www.tiktok.com/tag/${encodeURIComponent(tag)}`);
+      await driver.wait(3500);
+
+      // Scroll to load more
+      for (let s = 0; s < 2; s++) {
+        try { await driver.executeJS('window.scrollTo(0, document.body.scrollHeight)'); } catch { /* ignore */ }
+        await driver.wait(1200);
+      }
+
+      // Extract creator usernames from video links
+      const raw = await driver.executeJS(`(function() {
+        var seen = {};
+        var usernames = [];
+        var links = document.querySelectorAll('a[href*="/@"]');
+        for (var i = 0; i < links.length; i++) {
+          var href = links[i].getAttribute('href') || '';
+          var m = href.match(/\\/@([a-zA-Z0-9_.]+)/);
+          if (m && !seen[m[1].toLowerCase()]) {
+            seen[m[1].toLowerCase()] = 1;
+            usernames.push(m[1]);
+          }
+          if (usernames.length >= 30) break;
+        }
+        return JSON.stringify(usernames);
+      })()`);
+
+      const usernames: string[] = JSON.parse(raw || '[]');
+      console.log(`[prospect-discover] #${tag}: ${usernames.length} creators found`);
+
+      for (const u of usernames) {
+        if (seen.has(u.toLowerCase())) continue;
+        seen.add(u.toLowerCase());
+        if (candidates.length >= maxCandidates) break;
+
+        try {
+          const profile = await enrichContact(u, driver);
+          const followerCount = parseFollowerCount(profile.followers || '');
+          if (followerCount < minFollowers || followerCount > maxFollowers) continue;
+          const { score, signals } = scoreTikTokICP(profile);
+          candidates.push({
+            username: u,
+            displayName: profile.fullName || u,
+            score,
+            signals,
+            qualifies: score >= 50,
+            source: `hashtag:#${tag}`,
+          });
+          console.log(`[prospect-discover] @${u} score=${score} followers=${profile.followers}`);
+        } catch {
+          // skip failed enrichment
+        }
+        await driver.wait(500);
+      }
+
+      if (candidates.length >= maxCandidates) break;
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    res.json({ candidates, total: candidates.length, hashtags });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  } finally {
+    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  }
+});
+
+// === TAB MANAGEMENT ===
+
+// GET /api/tabs/claims — list all live tab claims across all services
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  const claims = await TabCoordinator.listClaims();
+  res.json({ claims, count: claims.length });
+});
+
+// POST /api/tabs/claim — claim a Safari tab for this service
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, windowIndex, tabIndex } = req.body as {
+    agentId: string; windowIndex?: number; tabIndex?: number;
+  };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json({ ok: true, claim, message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'` });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+// POST /api/tabs/release — release a tab claim
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+  res.json({ ok: true, message: `Claim released for '${agentId}'` });
+});
+
+// POST /api/tabs/heartbeat — refresh claim TTL
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
+
+// POST /api/debug/eval — execute JS in the tracked Safari tab (debugging only)
+app.post('/api/debug/eval', async (req: Request, res: Response) => {
+  try {
+    const { js } = req.body as { js: string };
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await driver.executeJS(js);
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// === CRMLITE SYNC ===
+
+const CRMLITE_BASE = 'https://crmlite-isaiahduprees-projects.vercel.app';
+
+function syncToCRMLite(username: string, message: string): void {
+  const apiKey = process.env.CRMLITE_API_KEY;
+  if (!apiKey) return;
+  fetch(`${CRMLITE_BASE}/api/sync/dm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+    body: JSON.stringify({
+      platform: 'tiktok',
+      conversations: [{ username, display_name: username, messages: [{ text: message, direction: 'outbound', sent_at: new Date().toISOString() }] }],
+    }),
+  }).catch(err => console.error('[crmlite] sync failed (non-fatal):', err.message));
+}
+
 // Start server
 export function startServer(port: number = PORT): void {
   app.listen(port, () => {
@@ -832,6 +1330,17 @@ export function startServer(port: number = PORT): void {
     console.log(`   Status: GET /api/tiktok/status`);
     console.log(`   Send DM: POST /api/tiktok/messages/send-to`);
   });
+
+  // Refresh all active tab claim heartbeats every 30s
+  setInterval(async () => {
+    for (const [agentId, coord] of activeCoordinators) {
+      try {
+        await coord.heartbeat();
+      } catch {
+        activeCoordinators.delete(agentId);
+      }
+    }
+  }, 30_000);
 }
 
 // Auto-start if run directly

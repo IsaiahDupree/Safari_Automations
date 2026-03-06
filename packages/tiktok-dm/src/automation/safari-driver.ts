@@ -236,38 +236,94 @@ export class SafariDriver {
    * Type text using OS-level keystrokes (works with React contenteditable).
    * This bypasses JavaScript event injection issues.
    */
-  async typeViaKeystrokes(text: string): Promise<boolean> {
-    if (this.config.instanceType !== 'local') return false;
+
+  /**
+   * Type text into the focused/active element via JavaScript insertText.
+   * Works in background tabs — NO focus steal, NO window activation.
+   * Handles React contenteditable (Instagram, Twitter, TikTok, LinkedIn DMs).
+   *
+   * Falls back to execCommand insertText if nativeInputValueSetter fails.
+   */
+  async typeViaJS(selector: string, text: string): Promise<boolean> {
     try {
-      await this.activateSafari();
-      await this.wait(300);
-      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(
-        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${escaped}"'`,
-        { timeout: this.config.timeout }
-      );
+      const escaped = JSON.stringify(text);
+      const js = `
+(function() {
+  var el = document.querySelector(${escaped.replace(/"/g, "'").replace(/^'|'$/g, '"')});
+  if (!el) {
+    // Try to find focused/active element
+    el = document.activeElement;
+  }
+  if (!el) return false;
+  el.focus();
+  // Try execCommand first (works for contenteditable, no focus steal)
+  var inserted = document.execCommand('selectAll', false, null) &&
+                 document.execCommand('insertText', false, ${escaped});
+  if (inserted) return true;
+  // Fallback: nativeInputValueSetter for <input>/<textarea>
+  try {
+    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+    if (nativeSetter && nativeSetter.set) {
+      nativeSetter.set.call(el, ${escaped});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
+    }
+  } catch(e) {}
+  // Last resort: direct value set
+  el.value = ${escaped};
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+})()
+`.trim();
+      const result = await this.executeJS(js.replace(/\n/g, ' '));
+      return result !== 'false';
     } catch (error) {
-      if (this.config.verbose) console.error('[SafariDriver] Keystroke error:', error);
+      if (this.config.verbose) console.error('[SafariDriver] typeViaJS error:', error);
       return false;
     }
+  }
+
+  /**
+   * Press Enter in the active element via JavaScript events.
+   * Background-safe — no window activation required.
+   */
+  async pressEnterViaJS(selector?: string): Promise<boolean> {
+    try {
+      const selectorJs = selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document.activeElement';
+      const js = `
+(function() {
+  var el = ${selectorJs} || document.activeElement;
+  if (!el) return false;
+  ['keydown','keypress','keyup'].forEach(function(t) {
+    el.dispatchEvent(new KeyboardEvent(t, {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+      bubbles: true, cancelable: true
+    }));
+  });
+  return true;
+})()
+`.trim();
+      const result = await this.executeJS(js.replace(/\n/g, ' '));
+      return result !== 'false';
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] pressEnterViaJS error:', error);
+      return false;
+    }
+  }
+
+  async typeViaKeystrokes(text: string): Promise<boolean> {
+    // Redirect to background-safe JS injection — no focus steal
+    return this.typeViaJS('', text);
   }
 
   /**
    * Press Enter key via OS-level event.
    */
   async pressEnter(): Promise<boolean> {
-    if (this.config.instanceType !== 'local') return false;
-    try {
-      await execAsync(
-        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke return'`,
-        { timeout: this.config.timeout }
-      );
-      return true;
-    } catch (error) {
-      if (this.config.verbose) console.error('[SafariDriver] Enter key error:', error);
-      return false;
-    }
+    // Redirect to background-safe JS event dispatch — no focus steal
+    return this.pressEnterViaJS();
   }
 
   /**
@@ -313,6 +369,29 @@ end tell`;
 
   /**
    * Bring a specific Safari window+tab to the foreground and make it active.
+   */
+  /**
+   * Switch to a Safari tab WITHOUT bringing Safari to the foreground.
+   * Safe to call during background automation — does not steal focus.
+   */
+  async _switchToTab(windowIndex: number, tabIndex: number): Promise<boolean> {
+    try {
+      const script = `
+tell application "Safari"
+  set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] _switchToTab error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Activate Safari and bring it to the foreground.
+   * Only call this when the user/task explicitly needs Safari focused (e.g. keystrokes).
+   * For background JS automation, use _switchToTab() instead.
    */
   async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
     try {
@@ -399,18 +478,16 @@ end tell`;
       // Self-healing fast path: verify URL before trusting cached tab
       const stillValid = await this.verifySession(urlPattern);
       if (stillValid) {
-        await this.activateTab(this.trackedWindow, this.trackedTab);
         this.sessionLastVerified = now;
         return { found: true, windowIndex: this.trackedWindow, tabIndex: this.trackedTab, url: '' };
       }
       // Session drifted — clearTrackedSession() already called in verifySession
     }
 
-    // Full scan
+    // Full scan — update tracked indices without switching tabs (no focus steal)
     const info = await this.findTabByUrl(urlPattern);
 
     if (info.found) {
-      await this.activateTab(info.windowIndex, info.tabIndex);
       this.trackedWindow = info.windowIndex;
       this.trackedTab = info.tabIndex;
       this.sessionUrlPattern = urlPattern;
@@ -421,20 +498,8 @@ end tell`;
       return info;
     }
 
-    // Not found — create session by navigating in front document
-    console.warn(`[SafariDriver] No tab found for '${urlPattern}' — navigating front document`);
-    await this.navigateTo(`https://www.${urlPattern}`);
-    await this.wait(2500);
-
-    const retry = await this.findTabByUrl(urlPattern);
-    if (retry.found) {
-      await this.activateTab(retry.windowIndex, retry.tabIndex);
-      this.trackedWindow = retry.windowIndex;
-      this.trackedTab = retry.tabIndex;
-      this.sessionUrlPattern = urlPattern;
-      this.sessionLastVerified = now;
-    }
-    return retry;
+    // Not found — never navigate front document (focus steal). requireTabClaim middleware handles tab opening.
+    throw new Error(`[SafariDriver] No '${urlPattern}' tab found. Claim a tab via TabCoordinator before running automation.`);
   }
 
   /**
@@ -457,6 +522,16 @@ end tell`;
     this.trackedTab = null;
     this.sessionUrlPattern = null;
     this.sessionLastVerified = 0;
+  }
+
+  /**
+   * Explicitly set the tracked tab (used by TabCoordinator after claiming a tab).
+   */
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
+    this.sessionUrlPattern = urlPattern;
+    this.sessionLastVerified = Date.now();
   }
 
   /**

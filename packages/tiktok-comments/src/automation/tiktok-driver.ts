@@ -31,9 +31,20 @@ export const DEFAULT_CONFIG: TikTokConfig = {
 export class TikTokDriver {
   private config: TikTokConfig;
   private commentLog: { timestamp: Date }[] = [];
+  private _trackedWindow: number | null = null;
+  private _trackedTab: number | null = null;
+  private _trackedUrlPattern: string | null = null;
 
   constructor(config: Partial<TikTokConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /** Pin this driver to a specific Safari window+tab (set by TabCoordinator after claiming). */
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+    this._trackedWindow = windowIndex;
+    this._trackedTab = tabIndex;
+    this._trackedUrlPattern = urlPattern;
+    console.log(`[TikTokDriver] Pinned to w=${windowIndex} t=${tabIndex} (${urlPattern})`);
   }
 
   async executeJS(script: string): Promise<string> {
@@ -44,7 +55,11 @@ export class TikTokDriver {
     
     const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+    // Use tracked tab if claimed; otherwise fall back to front window
+    const tabSpec = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : 'current tab of front window';
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabSpec}`;
     
     fs.writeFileSync(tmpFile, appleScript);
     try {

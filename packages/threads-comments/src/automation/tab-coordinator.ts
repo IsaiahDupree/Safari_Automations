@@ -6,7 +6,7 @@
  * Claims expire after CLAIM_TTL_MS without a heartbeat (handles crashed agents).
  *
  * Usage:
- *   const coord = new TabCoordinator('threads-sync-123', 'threads-comments', 3004, 'threads.net');
+ *   const coord = new TabCoordinator('ig-sync-123', 'instagram-dm', 3100, 'instagram.com');
  *   const claim = await coord.claim();          // auto-discover + claim
  *   await coord.heartbeat();                    // call every ~30s
  *   await coord.release();                      // on clean exit
@@ -25,10 +25,10 @@ export const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
 export const CLAIM_TTL_MS = 60_000; // 60s — claim expires if no heartbeat
 
 export interface TabClaim {
-  agentId: string;        // unique, e.g. 'threads-sync-20240304-32396'
-  service: string;        // 'instagram-dm', 'twitter-dm', 'threads-comments', etc.
-  port: number;           // server port (3100, 3003, 3004, …)
-  urlPattern: string;     // e.g. 'threads.net'
+  agentId: string;        // unique, e.g. 'ig-sync-20240304-32396'
+  service: string;        // 'instagram-dm', 'twitter-dm', 'tiktok-dm', etc.
+  port: number;           // server port (3100, 3003, 3102, …)
+  urlPattern: string;     // e.g. 'instagram.com/direct'
   windowIndex: number;    // Safari window index (1-based)
   tabIndex: number;       // Safari tab index within that window (1-based)
   tabUrl: string;         // actual URL at claim time
@@ -42,13 +42,19 @@ export class TabCoordinator {
   private service: string;
   private port: number;
   private urlPattern: string;
+  private _openUrl: string | null;
   private _claim: TabClaim | null = null;
 
-  constructor(agentId: string, service: string, port: number, urlPattern: string) {
+  /**
+   * @param openUrl  Optional URL to navigate a new Safari tab to if no existing tab matches urlPattern.
+   *                 When set, claim() will auto-open a new tab instead of throwing.
+   */
+  constructor(agentId: string, service: string, port: number, urlPattern: string, openUrl?: string) {
     this.agentId = agentId;
     this.service = service;
     this.port = port;
     this.urlPattern = urlPattern;
+    this._openUrl = openUrl ?? null;
   }
 
   // ─── Read ─────────────────────────────────────────────────────────────────
@@ -158,14 +164,26 @@ end tell`;
       // Auto-discover
       const found = await this.findAvailableTab();
       if (!found) {
-        throw new Error(
-          `No available Safari tab found matching '${this.urlPattern}'. ` +
-          `Open Safari and navigate to the site, or check /tmp/safari-tab-claims.json for existing claims.`
-        );
+        // Auto-open a new Safari tab if openUrl is provided, otherwise fail with clear message
+        if (this._openUrl) {
+          console.log(`[TabCoordinator] No existing tab found for '${this.urlPattern}' — opening new tab: ${this._openUrl}`);
+          const newTab = await this.openNewTab(this._openUrl);
+          // Wait for page to load before claiming
+          await new Promise(r => setTimeout(r, 2000));
+          windowIndex = newTab.windowIndex;
+          tabIndex = newTab.tabIndex;
+          url = this._openUrl;
+        } else {
+          throw new Error(
+            `No available Safari tab found matching '${this.urlPattern}'. ` +
+            `Open Safari and navigate to the site, or check /tmp/safari-tab-claims.json for existing claims.`
+          );
+        }
+      } else {
+        windowIndex = found.windowIndex;
+        tabIndex = found.tabIndex;
+        url = found.url;
       }
-      windowIndex = found.windowIndex;
-      tabIndex = found.tabIndex;
-      url = found.url;
     }
 
     const now = Date.now();
@@ -206,6 +224,37 @@ end tell`;
   /** The active claim for this agent (null if not claimed). */
   get activeClaim(): TabClaim | null {
     return this._claim;
+  }
+
+
+  // ─── Open new tab ─────────────────────────────────────────────────────────
+
+  /**
+   * Open a new Safari tab (in a new window) navigated to `url`.
+   * Returns { windowIndex, tabIndex } of the new tab.
+   * Called automatically by claim() when no existing tab matches urlPattern.
+   */
+  async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
+    const safeUrl = url.replace(/"/g, '\"');
+    const script = `
+tell application "Safari"
+  activate
+  make new document with properties {URL:"${safeUrl}"}
+  set w to count of windows
+  delay 1
+  return w as text
+end tell`;
+    try {
+      const { stdout } = await execAsync(
+        `osascript << 'ASEOF'\n${script}\nASEOF`,
+        { timeout: 15000 }
+      );
+      const windowIndex = parseInt(stdout.trim(), 10);
+      if (isNaN(windowIndex)) throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
+      return { windowIndex, tabIndex: 1 };
+    } catch (err) {
+      throw new Error(`Failed to open new Safari tab to '${url}': ${err}`);
+    }
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────

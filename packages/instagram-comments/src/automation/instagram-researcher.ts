@@ -617,6 +617,9 @@ export class InstagramResearcher {
           handle: post.author,
           displayName: post.authorDisplayName,
           isVerified: post.isVerified,
+          followers: 0,
+          following: 0,
+          bio: '',
           postCount: 1,
           totalLikes: post.likes,
           totalComments: post.comments,
@@ -624,6 +627,7 @@ export class InstagramResearcher {
           avgEngagement: post.engagementScore,
           topPostUrl: post.url,
           topPostEngagement: post.engagementScore,
+          topPosts: [],
           niche,
         });
       }

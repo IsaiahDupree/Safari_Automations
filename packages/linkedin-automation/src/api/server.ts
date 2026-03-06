@@ -5,7 +5,7 @@
  */
 
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import {
   SafariDriver,
@@ -40,8 +40,13 @@ import {
   markConverted, markOptedOut, addProspectNote, tagProspect,
 } from '../automation/outreach-engine.js';
 import type { ProspectStage } from '../automation/outreach-engine.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 const PORT = process.env.LINKEDIN_PORT || 3105;
+const SERVICE_NAME_TAB = 'linkedin-automation';
+const SERVICE_PORT_TAB = 3105;
+const SESSION_URL_PATTERN = 'linkedin.com';
+const activeCoordinators = new Map<string, TabCoordinator>();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AUTH_TOKEN = process.env.LINKEDIN_AUTH_TOKEN || 'test-token-12345';
 const REPLY_POLL_INTERVAL_MS = parseInt(process.env.REPLY_POLL_INTERVAL_MS || '300000', 10); // 5 min default
@@ -100,10 +105,29 @@ function requireAuth(req: Request, res: Response, next: any): void {
 // Rate limiting state
 let connectionsToday = 0;
 let messagesToday = 0;
+let messagesSentToday = 0;
+let messagesSentThisHour = 0;
 let actionsThisHour = 0;
 let lastHourReset = Date.now();
 let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
+
+// Reset messagesSentThisHour every hour
+setInterval(() => {
+  messagesSentThisHour = 0;
+}, 3_600_000);
+
+// Reset messagesSentToday every 24 hours
+setInterval(() => {
+  messagesSentToday = 0;
+}, 86_400_000);
+
+// In-memory pipeline state for prospect discovery
+let pipelineState: { running: boolean; step: string; stats: Record<string, number> } = {
+  running: false,
+  step: 'idle',
+  stats: { discovered: 0, qualified: 0, stored: 0, skipped: 0 },
+};
 
 // Safari command mutex — prevents concurrent Safari operations from crashing each other
 let safariLocked = false;
@@ -181,12 +205,67 @@ function isWithinActiveHours(): boolean {
 // ─── Health ──────────────────────────────────────────────────
 
 app.get('/health', (_req: Request, res: Response) => {
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://www.linkedin.com/messaging/';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME_TAB);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `linkedin-automation-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for linkedin-automation',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://www.linkedin.com/messaging/, or POST /api/tabs/claim with { agentId, openUrl: "https://www.linkedin.com/messaging/" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
   res.json({
+    status: 'ok',
+    service: 'linkedin-automation',
+    timestamp: new Date().toISOString(),
     platform: 'linkedin',
-    status: 'running',
     port: PORT,
     uptime: process.uptime(),
     withinActiveHours: isWithinActiveHours(),
+    rateLimits: {
+      messagesSentToday,
+      messagesSentThisHour,
+      limits: {
+        messagesPerHour: rateLimits.messagesPerDay > 0 ? Math.ceil(rateLimits.messagesPerDay / 24) : 10,
+        messagesPerDay: rateLimits.messagesPerDay || 20,
+        activeHoursStart: rateLimits.activeHoursStart,
+        activeHoursEnd: rateLimits.activeHoursEnd,
+      },
+    },
     counters: { connectionsToday, messagesToday, actionsThisHour },
     safari: { locked: safariLocked, lockedForMs: safariLocked ? Date.now() - safariLockedSince : 0 },
   });
@@ -762,14 +841,34 @@ app.post('/api/linkedin/messages/send', async (req: Request, res: Response) => {
   if (messagesToday >= rateLimits.messagesPerDay && !req.body.force) {
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
-  if (!isWithinActiveHours() && !req.body.force) {
-    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
+  const hour = new Date().getHours();
+  if ((hour < 9 || hour >= 21) && !req.body.force) {
+    return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
-  const { text } = req.body;
+  const { text, username, name } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
   await withSafariLock(res, 'messages/send', async () => {
     const result = await sendMessage(text);
-    if (result.success) messagesToday++;
+    if (result.success) {
+      messagesToday++;
+      messagesSentToday++;
+      messagesSentThisHour++;
+      // Sync to CRMLite — non-fatal
+      if (username) {
+        try {
+          await fetch('https://crmlite-isaiahduprees-projects.vercel.app/api/sync/dm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.CRMLITE_API_KEY! },
+            body: JSON.stringify({
+              platform: 'linkedin',
+              conversations: [{ username, display_name: name || username, messages: [{ text, is_outbound: true, sent_at: new Date().toISOString() }] }],
+            }),
+          });
+        } catch (syncErr) {
+          console.warn('[CRMLite] sync failed (non-fatal):', syncErr);
+        }
+      }
+    }
     res.json(result);
   });
 });
@@ -779,14 +878,33 @@ app.post('/api/linkedin/messages/send-to', async (req: Request, res: Response) =
   if (messagesToday >= rateLimits.messagesPerDay && !req.body.force) {
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
-  if (!isWithinActiveHours() && !req.body.force) {
-    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
+  const hour = new Date().getHours();
+  if ((hour < 9 || hour >= 21) && !req.body.force) {
+    return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
-  const { profileUrl, text } = req.body;
+  const { profileUrl, text, username, name } = req.body;
   if (!profileUrl || !text) return res.status(400).json({ error: 'profileUrl and text required' });
   await withSafariLock(res, 'messages/send-to', async () => {
     const result = await sendMessageToProfile(profileUrl, text);
-    if (result.success) messagesToday++;
+    if (result.success) {
+      messagesToday++;
+      messagesSentToday++;
+      messagesSentThisHour++;
+      // Sync to CRMLite — non-fatal
+      const recipient = username || profileUrl.split('/in/')[1]?.replace(/\/$/, '') || profileUrl;
+      try {
+        await fetch('https://crmlite-isaiahduprees-projects.vercel.app/api/sync/dm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.CRMLITE_API_KEY! },
+          body: JSON.stringify({
+            platform: 'linkedin',
+            conversations: [{ username: recipient, display_name: name || recipient, messages: [{ text, is_outbound: true, sent_at: new Date().toISOString() }] }],
+          }),
+        });
+      } catch (syncErr) {
+        console.warn('[CRMLite] sync failed (non-fatal):', syncErr);
+      }
+    }
     res.json(result);
   });
 });
@@ -796,10 +914,11 @@ app.post('/api/linkedin/messages/new-compose', async (req: Request, res: Respons
   if (messagesToday >= rateLimits.messagesPerDay && !req.body.force && !req.body.dryRun) {
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
-  if (!isWithinActiveHours() && !req.body.force && !req.body.dryRun) {
-    return res.status(403).json({ error: 'Outside active hours', activeHours: `${rateLimits.activeHoursStart}-${rateLimits.activeHoursEnd}`, hint: 'Add "force": true to bypass' });
+  const hour = new Date().getHours();
+  if ((hour < 9 || hour >= 21) && !req.body.force && !req.body.dryRun) {
+    return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
-  const { recipientName, message, dryRun } = req.body;
+  const { recipientName, message, dryRun, username } = req.body;
   if (!recipientName || !message) {
     return res.status(400).json({ error: 'recipientName and message required' });
   }
@@ -808,7 +927,25 @@ app.post('/api/linkedin/messages/new-compose', async (req: Request, res: Respons
   }
   await withSafariLock(res, 'messages/new-compose', async () => {
     const result = await openNewCompose(recipientName, message);
-    if (result.success) messagesToday++;
+    if (result.success) {
+      messagesToday++;
+      messagesSentToday++;
+      messagesSentThisHour++;
+      // Sync to CRMLite — non-fatal
+      const recipient = username || recipientName.replace(/\s+/g, '-').toLowerCase();
+      try {
+        await fetch('https://crmlite-isaiahduprees-projects.vercel.app/api/sync/dm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.CRMLITE_API_KEY! },
+          body: JSON.stringify({
+            platform: 'linkedin',
+            conversations: [{ username: recipient, display_name: recipientName, messages: [{ text: message, is_outbound: true, sent_at: new Date().toISOString() }] }],
+          }),
+        });
+      } catch (syncErr) {
+        console.warn('[CRMLite] sync failed (non-fatal):', syncErr);
+      }
+    }
     res.json(result);
   });
 });
@@ -1059,6 +1196,140 @@ app.post('/api/linkedin/prospect/pipeline', async (req: Request, res: Response) 
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─── Prospect Discovery Pipeline (orchestrator-compatible) ──
+
+// GET /api/prospect/pipeline-status — returns { running, step, stats } from in-memory state
+app.get('/api/prospect/pipeline-status', (_req: Request, res: Response) => {
+  res.json(pipelineState);
+});
+
+// POST /api/prospect/run-pipeline — kicks off full ICP discovery → score → batch cycle
+app.post('/api/prospect/run-pipeline', async (req: Request, res: Response) => {
+  if (pipelineState.running) {
+    return res.status(409).json({ error: 'Pipeline already running', step: pipelineState.step });
+  }
+
+  const {
+    keywords = ['aiautomation', 'saasfounder', 'buildinpublic'],
+    targetTitles = [],
+    targetCompanies = [],
+    targetLocations = [],
+    maxProspects = 20,
+    minScore = 30,
+    dryRun = false,
+  } = req.body as {
+    keywords?: string[];
+    targetTitles?: string[];
+    targetCompanies?: string[];
+    targetLocations?: string[];
+    maxProspects?: number;
+    minScore?: number;
+    dryRun?: boolean;
+  };
+
+  if (dryRun) {
+    return res.json({ discovered: 0, qualified: 0, stored: 0, skipped: 0, dryRun: true });
+  }
+
+  // Kick off async — respond immediately
+  pipelineState = { running: true, step: 'starting', stats: { discovered: 0, qualified: 0, stored: 0, skipped: 0 } };
+  res.json({ started: true, message: 'Pipeline started. Poll /api/prospect/pipeline-status for progress.' });
+
+  // Run pipeline in background
+  (async () => {
+    const agentId = `linkedin-pipeline-${Date.now()}`;
+    let coord: InstanceType<typeof TabCoordinator> | null = null;
+    try {
+      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN);
+      try {
+        const claim = await coord.claim();
+        console.log(`[prospect/run-pipeline] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+      } catch {
+        console.warn('[prospect/run-pipeline] Tab claim failed (using current tab)');
+        coord = null;
+      }
+
+      pipelineState.step = 'searching';
+      const config: ProspectingConfig = {
+        search: { keywords: keywords as string[] },
+        scoring: { targetTitles, targetCompanies, targetLocations, minScore },
+        connection: {
+          sendRequest: false,
+          noteTemplate: '',
+          skipIfConnected: true,
+          skipIfPending: true,
+        },
+        dm: {
+          enabled: false,
+          messageTemplate: '',
+          onlyIfConnected: true,
+        },
+        maxProspects,
+        dryRun: false,
+        delayBetweenActions: 5000,
+      };
+
+      const result = await runProspectingPipeline(config);
+      pipelineState.step = 'storing';
+
+      const discovered = result.prospects?.length ?? result.summary.extracted;
+      const qualified = result.summary.qualified;
+      const stored = result.summary.qualified;
+      const skipped = result.summary.skipped;
+
+      pipelineState = { running: false, step: 'done', stats: { discovered, qualified, stored, skipped } };
+      console.log(`[prospect/run-pipeline] Done: discovered=${discovered} qualified=${qualified} stored=${stored} skipped=${skipped}`);
+    } catch (err) {
+      console.error('[prospect/run-pipeline] Error:', err);
+      pipelineState = { running: false, step: 'error', stats: { ...pipelineState.stats } };
+    } finally {
+      if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+    }
+  })();
+});
+
+// POST /api/prospect/schedule-batch — schedules batched discovery run
+app.post('/api/prospect/schedule-batch', async (req: Request, res: Response) => {
+  const {
+    limit = 5,
+    dryRun = false,
+    delayMinutes = 60,
+  } = req.body as { limit?: number; dryRun?: boolean; delayMinutes?: number };
+
+  const scheduledFor = new Date(Date.now() + delayMinutes * 60_000).toISOString();
+
+  if (dryRun) {
+    return res.json({
+      scheduled: true,
+      dryRun: true,
+      scheduledFor,
+      limit,
+      message: `[dryRun] Would schedule ${limit} prospect discovery batch at ${scheduledFor}`,
+    });
+  }
+
+  // Queue via CRMLite safari_command_queue if available, else fire immediate pipeline
+  setTimeout(async () => {
+    console.log(`[prospect/schedule-batch] Firing scheduled batch (limit=${limit})`);
+    try {
+      await fetch(`http://localhost:${SERVICE_PORT_TAB}/api/prospect/run-pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AUTH_TOKEN}` },
+        body: JSON.stringify({ maxProspects: limit }),
+      });
+    } catch (err) {
+      console.warn('[prospect/schedule-batch] Deferred trigger failed:', err);
+    }
+  }, delayMinutes * 60_000);
+
+  res.json({
+    scheduled: true,
+    scheduledFor,
+    limit,
+    message: `Batch of ${limit} prospects scheduled in ${delayMinutes} minutes`,
+  });
 });
 
 // ─── Outreach Engine ─────────────────────────────────────────
@@ -1490,6 +1761,94 @@ app.get('/api/linkedin/health/full', async (_req: Request, res: Response) => {
     });
   });
 });
+
+// ─── Tab Coordination Endpoints ──────────────────────────────
+
+app.get('/api/tabs/claims', async (_req, res) => {
+  const claims = await TabCoordinator.listClaims();
+  res.json({ claims, count: claims.length });
+});
+
+app.post('/api/tabs/claim', async (req, res) => {
+  const { agentId, windowIndex, tabIndex } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    res.json({ ok: true, claim });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post('/api/tabs/release', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+  res.json({ ok: true });
+});
+
+app.post('/api/tabs/heartbeat', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
+
+app.get('/api/session/status', (req, res) => {
+  const info = getDefaultDriver().getSessionInfo();
+  res.json({
+    tracked: !!(info?.windowIndex),
+    windowIndex: info?.windowIndex ?? null,
+    tabIndex: info?.tabIndex ?? null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.post('/api/session/ensure', async (req, res) => {
+  try {
+    const info = await getDefaultDriver().ensureActiveSession(SESSION_URL_PATTERN);
+    res.json({
+      ok: info.found,
+      windowIndex: info.windowIndex,
+      tabIndex: info.tabIndex,
+      url: info.url,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (req, res) => {
+  getDefaultDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
+});
+
+app.post('/api/debug/eval', async (req, res) => {
+  try {
+    const { js } = req.body;
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await getDefaultDriver().executeJS(js);
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Global 30s heartbeat refresh
+setInterval(async () => {
+  for (const [id, coord] of activeCoordinators) {
+    try { await coord.heartbeat(); }
+    catch { activeCoordinators.delete(id); }
+  }
+}, 30_000);
 
 // ─── Start Server ────────────────────────────────────────────
 

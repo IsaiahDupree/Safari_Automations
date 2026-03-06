@@ -184,10 +184,21 @@ export const SOURCE_PRIORITY_BONUS: Record<string, number> = {
   followers: 0,
 };
 
-// Profile links to block when extracting usernames from explore pages
+// Profile links to block when extracting usernames from explore pages.
+// These are Instagram system paths, not real user accounts.
 const IG_BLOCKED_PATHS = new Set([
-  'explore', 'accounts', 'about', 'privacy', 'terms', 'help',
-  'reels', 'stories', 'direct', 'p', 'reel', 'tv', 'nametag',
+  // navigation
+  'explore', 'reels', 'stories', 'direct', 'feed',
+  // post paths
+  'p', 'reel', 'tv',
+  // account management
+  'accounts', 'login', 'signup', 'challenge', 'oauth', 'session', 'nametag',
+  // meta pages
+  'about', 'privacy', 'terms', 'help', 'safety', 'blog', 'jobs', 'press',
+  // ig system paths that appear as /search, /activity, etc.
+  'search', 'activity', 'notifications', 'settings', 'web', 'null', 'undefined',
+  // developer / api
+  'developer', 'api', 'graphql',
 ]);
 
 export interface TopPostCreator {
@@ -219,15 +230,23 @@ export async function fetchTopPostCreators(
   keywords: string[],
   driver: SafariDriver,
   maxPostsPerKeyword = 6,
+  selfUsername?: string,
 ): Promise<{ posts: TopPost[]; creators: TopPostCreator[] }> {
   const allPosts: TopPost[] = [];
   const creatorEngagement: Record<string, { total: number; posts: number; keyword: string }> = {};
+  const selfLower = selfUsername?.toLowerCase();
+
+  console.log(`[top-posts] Starting: ${keywords.length} keywords, maxPostsPerKeyword=${maxPostsPerKeyword}`);
 
   for (const kw of keywords) {
     try {
       const tag = kw.replace(/^#/, '');
+      console.log(`[top-posts:${tag}] Navigating to hashtag explore page...`);
       const ok = await driver.navigateTo(`https://www.instagram.com/explore/tags/${encodeURIComponent(tag)}/`);
-      if (!ok) continue;
+      if (!ok) {
+        console.warn(`[top-posts:${tag}] Navigation failed — skipping`);
+        continue;
+      }
       await new Promise(r => setTimeout(r, 4_000));
 
       // Scroll twice to ensure top posts are rendered
@@ -236,35 +255,79 @@ export async function fetchTopPostCreators(
         await new Promise(r => setTimeout(r, 1_200));
       }
 
-      // Extract post shortcodes from /p/POSTID/ and /reel/POSTID/ links
+      // Extract post shortcodes — handles both /p/ID/ and /{user}/p/ID/ href formats
       const postPathsRaw = await driver.executeJS(`(function(){
         var seen = {};
         var paths = [];
         var links = document.querySelectorAll('a[href]');
         for (var i = 0; i < links.length; i++) {
           var href = links[i].getAttribute('href') || '';
+          // Match /p/ID/ or /reel/ID/ (short form)
           var m = href.match(/^\\/(p|reel)\\/([A-Za-z0-9_-]+)\\/?$/);
-          if (m && !seen[m[2]]) {
-            seen[m[2]] = 1;
-            paths.push('/' + m[1] + '/' + m[2] + '/');
-          }
+          if (m && !seen[m[2]]) { seen[m[2]] = 1; paths.push('/' + m[1] + '/' + m[2] + '/'); continue; }
+          // Match /{username}/p/ID/ or /{username}/reel/ID/ (long form — store with username prefix)
+          var m2 = href.match(/^\\/[a-zA-Z0-9_.]+\\/(p|reel)\\/([A-Za-z0-9_-]+)\\/?$/);
+          if (m2 && !seen[m2[2]]) { seen[m2[2]] = 1; paths.push(href.replace(/\\/$/, '') + '/'); }
         }
         return JSON.stringify(paths.slice(0, ${maxPostsPerKeyword}));
       })()`);
 
       const postPaths: string[] = JSON.parse(postPathsRaw || '[]');
+      console.log(`[top-posts:${tag}] Found ${postPaths.length} post links to visit`);
+
+      if (postPaths.length === 0) {
+        // Dump current URL to help debug navigation issues
+        try {
+          const url = await driver.executeJS('window.location.href') as string;
+          console.warn(`[top-posts:${tag}] No posts found. Current URL: ${url}`);
+        } catch { /* ignore */ }
+      }
 
       for (const postPath of postPaths) {
         try {
           const postOk = await driver.navigateTo(`https://www.instagram.com${postPath}`);
-          if (!postOk) continue;
+          if (!postOk) {
+            console.warn(`[top-posts:${tag}] Failed to navigate to ${postPath}`);
+            continue;
+          }
           await new Promise(r => setTimeout(r, 2_500));
 
-          // Author from URL redirect: instagram.com/{username}/p/{postid}/
-          const currentUrl = await driver.executeJS('window.location.href') as string;
-          const urlMatch = (currentUrl || '').match(/instagram\.com\/([a-zA-Z0-9_.]+)\/(p|reel)\//);
-          if (!urlMatch) continue;
-          const author = urlMatch[1];
+          // Extract author from page DOM — Instagram no longer redirects /p/{id}/ to /{user}/p/{id}/
+          const authorRaw = await driver.executeJS(`(function(){
+            var blocked = ${JSON.stringify([...IG_BLOCKED_PATHS])};
+            // Method 1: og:url meta tag (most reliable — includes username when present)
+            var ogUrl = document.querySelector('meta[property="og:url"]');
+            if (ogUrl) {
+              var ogu = ogUrl.getAttribute('content') || '';
+              var m = ogu.match(/instagram\\.com\\/([a-zA-Z0-9_.]+)\\/(p|reel)\\//);
+              if (m && blocked.indexOf(m[1].toLowerCase()) < 0) return m[1];
+            }
+            // Method 2: current URL if it has /{username}/p/ or /{username}/reel/ pattern
+            var url = window.location.href;
+            var m2 = url.match(/instagram\\.com\\/([a-zA-Z0-9_.]+)\\/(p|reel)\\//);
+            if (m2 && blocked.indexOf(m2[1].toLowerCase()) < 0) return m2[1];
+            // Method 3: author link in article header — first non-blocked username link
+            var links = document.querySelectorAll('article a[href], header a[href], [role="article"] a[href]');
+            for (var i = 0; i < links.length; i++) {
+              var href = (links[i].getAttribute('href') || '').replace(/\\/+$/, '');
+              var m3 = href.match(/^\\/([a-zA-Z0-9_.]{2,30})$/);
+              if (m3 && blocked.indexOf(m3[1].toLowerCase()) < 0) return m3[1];
+            }
+            return null;
+          })()`);
+
+          const author = authorRaw as string | null;
+          if (!author) {
+            const currentUrl = await driver.executeJS('window.location.href') as string;
+            console.warn(`[top-posts:${tag}] Could not extract author from page. URL: ${currentUrl}`);
+            continue;
+          }
+
+          // Skip our own account
+          if (selfLower && author.toLowerCase() === selfLower) {
+            console.log(`[top-posts:${tag}] Skipping own account @${author}`);
+            continue;
+          }
 
           // Try to extract engagement from page text
           const metricsRaw = await driver.executeJS(`(function(){
@@ -278,18 +341,20 @@ export async function fetchTopPostCreators(
           const metrics = JSON.parse(metricsRaw || '{"likes":0,"comments":0}') as { likes: number; comments: number };
           const engagementScore = metrics.likes + metrics.comments * 5;
 
+          console.log(`[top-posts:${tag}] Post ${postPath} → @${author} likes=${metrics.likes} comments=${metrics.comments} engagement=${engagementScore}`);
+
           allPosts.push({ postPath, author, keyword: kw, likes: metrics.likes, comments: metrics.comments, engagementScore });
 
           if (!creatorEngagement[author]) creatorEngagement[author] = { total: 0, posts: 0, keyword: kw };
           creatorEngagement[author].total += engagementScore;
           creatorEngagement[author].posts++;
-        } catch {
-          // skip failed post
+        } catch (err) {
+          console.warn(`[top-posts:${tag}] Error on ${postPath}: ${err}`);
         }
         await new Promise(r => setTimeout(r, 800));
       }
-    } catch {
-      // skip failed keyword
+    } catch (err) {
+      console.warn(`[top-posts:${kw}] Keyword failed: ${err}`);
     }
   }
 
@@ -299,6 +364,11 @@ export async function fetchTopPostCreators(
     .map(([username, data]) => ({ username, keyword: data.keyword, totalEngagement: data.total, postsFound: data.posts, rank: 0 }))
     .sort((a, b) => b.totalEngagement - a.totalEngagement)
     .map((c, i) => ({ ...c, rank: i + 1 }));
+
+  console.log(`[top-posts] Done: ${allPosts.length} posts, ${creators.length} unique creators`);
+  if (creators.length > 0) {
+    creators.slice(0, 5).forEach(c => console.log(`  #${c.rank} @${c.username} engagement=${c.totalEngagement} posts=${c.postsFound}`));
+  }
 
   return { posts: allPosts, creators };
 }
@@ -311,9 +381,10 @@ export async function fetchTopPostCreators(
 async function fetchHashtagCandidates(
   keywords: string[],
   driver?: SafariDriver,
+  selfUsername?: string,
 ): Promise<{ username: string; source: string; keyword: string }[]> {
   if (driver) {
-    return fetchHashtagCandidatesDirect(keywords, driver);
+    return fetchHashtagCandidatesDirect(keywords, driver, selfUsername);
   }
   return fetchHashtagCandidatesViaHttp(keywords);
 }
@@ -321,14 +392,22 @@ async function fetchHashtagCandidates(
 async function fetchHashtagCandidatesDirect(
   keywords: string[],
   driver: SafariDriver,
+  selfUsername?: string,
 ): Promise<{ username: string; source: string; keyword: string }[]> {
   const results: { username: string; source: string; keyword: string }[] = [];
+  const selfLower = selfUsername?.toLowerCase();
+
+  console.log(`[hashtag] Scraping ${keywords.length} hashtag pages`);
 
   for (const kw of keywords) {
     try {
       const tag = kw.replace(/^#/, '');
+      console.log(`[hashtag:#${tag}] Navigating to explore page...`);
       const ok = await driver.navigateTo(`https://www.instagram.com/explore/tags/${encodeURIComponent(tag)}/`);
-      if (!ok) continue;
+      if (!ok) {
+        console.warn(`[hashtag:#${tag}] Navigation failed — skipping`);
+        continue;
+      }
       await new Promise(r => setTimeout(r, 4_000));
 
       // Scroll 3 times to load more posts before extracting profiles
@@ -356,13 +435,22 @@ async function fetchHashtagCandidatesDirect(
       })()`);
 
       const parsed: string[] = JSON.parse(raw || '[]');
+      let added = 0;
       for (const u of parsed) {
+        if (selfLower && u.toLowerCase() === selfLower) {
+          console.log(`[hashtag:#${tag}] Skipping own account @${u}`);
+          continue;
+        }
         results.push({ username: u, source: 'hashtag', keyword: kw });
+        added++;
       }
-    } catch {
-      // skip failed keyword
+      console.log(`[hashtag:#${tag}] Extracted ${parsed.length} raw → ${added} usable usernames`);
+    } catch (err) {
+      console.warn(`[hashtag:${kw}] Error: ${err}`);
     }
   }
+
+  console.log(`[hashtag] Total collected: ${results.length} across all keywords`);
   return results;
 }
 
@@ -433,15 +521,23 @@ async function fetchTopAccountFollowers(
   accounts: string[],
   driver: SafariDriver,
   scrollCount = 20,
+  selfUsername?: string,
 ): Promise<{ username: string; source: string; keyword: string }[]> {
   const results: { username: string; source: string; keyword: string }[] = [];
   // Each scroll loads ~15-20 new followers. Cap at scrollCount × 25 to avoid memory issues.
   const maxExtract = scrollCount * 25;
+  const selfLower = selfUsername?.toLowerCase();
+
+  console.log(`[followers] Scraping followers of ${accounts.length} accounts (${scrollCount} scrolls each)`);
 
   for (const account of accounts) {
     try {
+      console.log(`[followers:@${account}] Navigating to profile...`);
       const ok = await driver.navigateTo(`https://www.instagram.com/${encodeURIComponent(account)}/`);
-      if (!ok) continue;
+      if (!ok) {
+        console.warn(`[followers:@${account}] Navigation failed — skipping`);
+        continue;
+      }
       await new Promise(r => setTimeout(r, 3_000));
 
       // Click the followers count link to open the followers modal
@@ -455,14 +551,14 @@ async function fetchTopAccountFollowers(
       })()`);
 
       if (clickResult === 'not_found') {
-        // Private or blocked account — skip
+        console.warn(`[followers:@${account}] Followers link not found — private or blocked account, skipping`);
         continue;
       }
+      console.log(`[followers:@${account}] Followers modal opened, scrolling ${scrollCount}×...`);
 
       await new Promise(r => setTimeout(r, 2_000));
 
       // Scroll the followers modal to load more entries.
-      // Each scroll reveals ~15-20 new followers. More scrolls = deeper into list = fresh results.
       for (let s = 0; s < scrollCount; s++) {
         await driver.executeJS(`(function(){
           var modal = document.querySelector('div[role="dialog"]');
@@ -497,16 +593,21 @@ async function fetchTopAccountFollowers(
 
       const parsed: string[] = JSON.parse(raw || '[]');
       const accountLower = account.toLowerCase();
+      let added = 0;
       for (const u of parsed) {
-        if (u.toLowerCase() !== accountLower) {
-          results.push({ username: u, source: 'top_accounts', keyword: account });
-        }
+        const uLower = u.toLowerCase();
+        if (uLower === accountLower) continue;         // skip the creator themselves
+        if (selfLower && uLower === selfLower) continue; // skip our own account
+        results.push({ username: u, source: 'top_accounts', keyword: account });
+        added++;
       }
-    } catch {
-      // skip failed account
+      console.log(`[followers:@${account}] Extracted ${parsed.length} raw → ${added} usable followers`);
+    } catch (err) {
+      console.warn(`[followers:@${account}] Error: ${err}`);
     }
   }
 
+  console.log(`[followers] Total raw followers collected: ${results.length}`);
   return results;
 }
 
@@ -695,32 +796,32 @@ export async function discoverProspects(
 
     if (round > 1 && roundKeywords.length === 0) break; // no more keywords to try
 
+    console.log(`[discover] Round ${round}/${maxRounds} — sources: [${sources.join(', ')}] keywords: [${roundKeywords.join(', ')}]`);
+
     // Gather raw candidates from all sources
     const raw: { username: string; source: string; keyword: string }[] = [];
-    if (sources.includes('hashtag') || sources.includes('search')) {
-      raw.push(...await fetchHashtagCandidates(roundKeywords, driver));
+    if (sources.includes('hashtag')) {
+      raw.push(...await fetchHashtagCandidates(roundKeywords, driver, params.selfUsername));
     }
     if (sources.includes('followers') && round === 1) {
-      // Only query followers once (activity feed is time-based, not keyword-based)
+      console.log('[discover] Fetching recent followers...');
       raw.push(...await fetchFollowerCandidates());
     }
     if (sources.includes('top_accounts') && params.topAccounts && params.topAccounts.length > 0 && driver && round === 1) {
-      // Only query top account followers once (same set each call)
-      raw.push(...await fetchTopAccountFollowers(params.topAccounts, driver, params.followerScrollCount ?? 20));
+      raw.push(...await fetchTopAccountFollowers(params.topAccounts, driver, params.followerScrollCount ?? 20, params.selfUsername));
     }
     if (sources.includes('top_post_authors') && params.topPostKeywords && params.topPostKeywords.length > 0 && driver && round === 1) {
-      // Find top post creators by engagement, then scrape their followers
       const maxCreators = params.maxTopCreators ?? 5;
-      const { creators } = await fetchTopPostCreators(params.topPostKeywords, driver, params.maxPostsPerKeyword ?? 6);
+      const { creators } = await fetchTopPostCreators(params.topPostKeywords, driver, params.maxPostsPerKeyword ?? 6, params.selfUsername);
       const topCreatorUsernames = creators.slice(0, maxCreators).map(c => c.username);
+      console.log(`[discover] top_post_authors: ${creators.length} creators found, using top ${topCreatorUsernames.length}: ${topCreatorUsernames.map(u => '@' + u).join(', ')}`);
       if (topCreatorUsernames.length > 0) {
-        const followerBatch = await fetchTopAccountFollowers(topCreatorUsernames, driver, params.followerScrollCount ?? 20);
-        // Tag with top_post_authors source so priority bonus is applied
+        const followerBatch = await fetchTopAccountFollowers(topCreatorUsernames, driver, params.followerScrollCount ?? 20, params.selfUsername);
         raw.push(...followerBatch.map(r => ({ ...r, source: 'top_post_authors' })));
       }
     }
     if (sources.includes('search') && params.selfUsername && driver && round === 1) {
-      // Commenters on your own posts — highest-intent signal (they already engaged with you)
+      console.log(`[discover] Fetching commenters from own posts (@${params.selfUsername})...`);
       raw.push(...await fetchSelfPostCommenters(
         params.selfUsername,
         driver,
@@ -729,6 +830,8 @@ export async function discoverProspects(
       ));
     }
 
+    console.log(`[discover] Round ${round}: ${raw.length} raw candidates before dedup`);
+
     // Deduplicate globally
     const newCandidates = raw.filter(c => {
       if (!c.username || allSeen.has(c.username.toLowerCase())) return false;
@@ -736,15 +839,16 @@ export async function discoverProspects(
       return true;
     });
     rawFound += newCandidates.length;
+    console.log(`[discover] Round ${round}: ${newCandidates.length} unique after dedup (${raw.length - newCandidates.length} dupes dropped)`);
 
     if (newCandidates.length === 0 && round > 1) {
-      // No new raw candidates from expansion round — try one more or stop
       if (expansionPool.length === 0) break;
       continue;
     }
 
     // Enrich and score new candidates
     const toEnrich = newCandidates.slice(0, maxToEnrich - enrichedCount);
+    console.log(`[discover] Enriching ${toEnrich.length} candidates (minScore=${minScore})...`);
     for (const raw of toEnrich) {
       if (candidates.length >= targetCount) break;
       try {
@@ -752,12 +856,15 @@ export async function discoverProspects(
         enrichedCount++;
         const { score, signals } = scoreICP(profile, raw.source);
         if (score < minScore) {
+          console.log(`[discover] @${raw.username} score=${score} — below minScore=${minScore}, skipped`);
           skippedLowScore++;
           continue;
         }
         const alreadyInCRM = checkCRM ? await isInCRM(raw.username) : false;
         const threadsUsername = await checkThreadsLink(raw.username);
         const sourceBonus = SOURCE_PRIORITY_BONUS[raw.source] ?? 10;
+        const priority = Math.min(score + sourceBonus, 140);
+        console.log(`[discover] ✔ @${raw.username} score=${score} priority=${priority} src=${raw.source} signals=[${signals.slice(0, 3).join(', ')}]`);
         candidates.push({
           username: raw.username,
           fullName: profile.fullName,
@@ -770,18 +877,18 @@ export async function discoverProspects(
           icpSignals: signals,
           alreadyInCRM,
           source: raw.source,
-          priority: Math.min(score + sourceBonus, 140), // 100 max ICP + 40 max bonus
+          priority,
           discoveryKeyword: raw.keyword,
           linkedAccounts: threadsUsername ? { threads: threadsUsername } : undefined,
         });
-      } catch {
-        // skip failed enrichments
+      } catch (err) {
+        console.warn(`[discover] @${raw.username} enrichment failed: ${err}`);
       }
     }
 
-    // If no candidates at all from round 1 and both sources tried, expand immediately
+    console.log(`[discover] Round ${round} complete: ${candidates.length}/${targetCount} candidates, ${skippedLowScore} below score`);
+
     if (round === 1 && candidates.length === 0 && enrichedCount === 0) {
-      // Sources returned no raw candidates — continue to expansion round
       continue;
     }
   }

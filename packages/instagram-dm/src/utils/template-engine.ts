@@ -557,13 +557,14 @@ export async function removeProspectSuggestion(
   platform = 'instagram',
 ): Promise<boolean> {
   if (!supabase) return false;
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('suggested_actions')
     .update({ status: 'skipped' })
     .eq('contact_id', username)
     .eq('platform', platform)
-    .eq('status', 'suggested');
-  return !error;
+    .eq('status', 'suggested')
+    .select('id');
+  return !error && (data?.length ?? 0) > 0;
 }
 
 export interface ProspectStats {
@@ -628,6 +629,124 @@ export async function getProspectStats(platform = 'instagram'): Promise<Prospect
     total,
     scoreDistribution,
     platform,
+  };
+}
+
+// ============================================================================
+// PROSPECT DM SCHEDULING — schedule DMs for discovered prospects
+// ============================================================================
+
+/**
+ * Generate a personalized message for a prospect.
+ * Tries the template engine first, falls back to simple greeting.
+ */
+export async function generatePersonalizedMessage(
+  prospect: { username: string; bio?: string; message?: string; priority?: number },
+  _templateName = 'cold_outreach_founder',
+): Promise<string> {
+  const context: ContactContext = {
+    username: prospect.username,
+    display_name: prospect.username,
+    platform: 'instagram',
+    relationship_score: prospect.priority ?? 50,
+    building: extractBuildingContext(prospect.bio || prospect.message || ''),
+    topic: extractTopic(prospect.bio || prospect.message || ''),
+  };
+
+  const result = await getNextBestAction(context);
+  if (result?.personalized_message) return result.personalized_message;
+
+  return `Hey @${prospect.username}! Your content caught my eye — would love to connect! 👋`;
+}
+
+function extractBuildingContext(bio: string): string | undefined {
+  const lower = bio.toLowerCase();
+  for (const m of ['saas', 'app', 'tool', 'startup', 'product', 'agency', 'ai', 'automation']) {
+    if (lower.includes(m)) return m;
+  }
+  return undefined;
+}
+
+function extractTopic(bio: string): string | undefined {
+  if (!bio) return undefined;
+  const first = bio.split('.')[0].trim();
+  return first.length > 10 && first.length < 80 ? first : undefined;
+}
+
+/**
+ * Insert a scheduled DM into crm_message_queue.
+ */
+export async function scheduleProspectDM(
+  username: string,
+  message: string,
+  scheduledFor: string,
+  platform = 'instagram',
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  if (!supabase) return { success: false, error: 'Template engine not initialized' };
+  const { data, error } = await supabase
+    .from('crm_message_queue')
+    .insert({
+      contact_id: username,
+      username,
+      platform,
+      message,
+      scheduled_for: scheduledFor,
+      status: 'queued',
+    })
+    .select('id')
+    .single();
+  if (error) return { success: false, error: error.message };
+  return { success: true, id: (data as Record<string, string>)?.id };
+}
+
+/**
+ * Mark a suggested prospect as 'queued' (DM has been scheduled).
+ */
+export async function markProspectQueued(username: string, platform = 'instagram'): Promise<boolean> {
+  if (!supabase) return false;
+  const { error } = await supabase
+    .from('suggested_actions')
+    .update({ status: 'queued', updated_at: new Date().toISOString() })
+    .eq('contact_id', username)
+    .eq('platform', platform)
+    .eq('status', 'suggested');
+  return !error;
+}
+
+/**
+ * Get pipeline status: status counts + last discovery timestamp.
+ */
+export async function getPipelineStatus(platform = 'instagram'): Promise<{
+  total_suggested: number;
+  total_dm_ready: number;
+  total_contacted: number;
+  last_discovery_at: string | null;
+  next_batch_at: string;
+}> {
+  const defaults = {
+    total_suggested: 0, total_dm_ready: 0, total_contacted: 0,
+    last_discovery_at: null, next_batch_at: new Date().toISOString(),
+  };
+  if (!supabase) return defaults;
+
+  const [suggestedRes, dmReadyRes, contactedRes, lastRes] = await Promise.all([
+    supabase.from('suggested_actions').select('*', { count: 'exact', head: true }).eq('platform', platform).eq('status', 'suggested'),
+    supabase.from('suggested_actions').select('*', { count: 'exact', head: true }).eq('platform', platform).eq('status', 'suggested').gte('priority', 40),
+    supabase.from('suggested_actions').select('*', { count: 'exact', head: true }).eq('platform', platform).eq('status', 'sent'),
+    supabase.from('suggested_actions').select('created_at').eq('platform', platform).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+  ]);
+
+  const lastDiscoveryAt = (lastRes.data as Record<string, string> | null)?.created_at ?? null;
+  const nextBatchAt = lastDiscoveryAt
+    ? new Date(new Date(lastDiscoveryAt).getTime() + 6 * 60 * 60 * 1000).toISOString()
+    : new Date().toISOString();
+
+  return {
+    total_suggested: suggestedRes.count ?? 0,
+    total_dm_ready: dmReadyRes.count ?? 0,
+    total_contacted: contactedRes.count ?? 0,
+    last_discovery_at: lastDiscoveryAt,
+    next_batch_at: nextBatchAt,
   };
 }
 

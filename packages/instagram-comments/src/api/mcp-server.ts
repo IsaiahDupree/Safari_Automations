@@ -5,6 +5,36 @@
  */
 
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
+
+// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+// Mirrors /tmp/safari-tab-claims.json so the MCP layer can detect cross-service
+// conflicts BEFORE issuing a navigation call that would hijack another tab.
+
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'instagram-comments';
+
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try {
+    const raw = await fs.readFile(CLAIMS_FILE, 'utf-8');
+    const all: TabClaim[] = JSON.parse(raw);
+    const now = Date.now();
+    return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
+  } catch {
+    return [];
+  }
+}
+
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'instagram-comments-mcp';
@@ -217,6 +247,21 @@ const TOOLS = [
     description: 'Get current comment rate limits (daily/hourly sent vs limit, reset time).',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'igc_session_ensure',
+    description: 'Ensure the instagram-comments service has an active Safari tab claim. Call this before any navigation tool to avoid hijacking the user\'s active browsing tab. Returns the current session window/tab info.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'igc_claim_status',
+    description: 'Read the current tab claims from /tmp/safari-tab-claims.json. Shows which services have claimed which Safari tabs and whether any conflicts exist.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'igc_release_session',
+    description: 'Release the instagram-comments tab claim so the Safari tab is freed for user browsing or other services.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 // ─── Tool Execution ───────────────────────────────────────────────────────────
@@ -239,6 +284,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const url = args.url as string | undefined;
       const username = args.username as string | undefined;
       if (!url && !username) throw { code: -32602, message: 'url or username is required' };
+      const navConflict = await checkNavigationConflict();
+      if (navConflict.conflict) {
+        throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${navConflict.blocker.service}' (port ${navConflict.blocker.port}). Call igc_session_ensure first to get a dedicated tab, or wait for the other service to release.`, blocker: navConflict.blocker };
+      }
       result = await api('POST', '/api/instagram/navigate', {
         ...(url ? { url } : {}),
         ...(username ? { username } : {}),
@@ -284,6 +333,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         result = { dryRun: true, wouldPost: { platform: 'instagram', text, postUrl: postUrl ?? '(current page)' } };
         break;
       }
+      const commentConflict = await checkNavigationConflict();
+      if (commentConflict.conflict) {
+        throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${commentConflict.blocker.service}' (port ${commentConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: commentConflict.blocker };
+      }
       result = await api('POST', '/api/instagram/comments/post', {
         text,
         ...(postUrl ? { postUrl } : {}),
@@ -323,6 +376,24 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
     case 'igc_get_rate_limits':
       result = await api('GET', '/api/instagram/comments/rate-limits');
+      break;
+
+    case 'igc_session_ensure':
+      result = await api('POST', '/api/session/ensure', {});
+      break;
+
+    case 'igc_claim_status': {
+      const claims = await readActiveClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE);
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 };
+      break;
+    }
+
+    case 'igc_release_session':
+      result = await api('POST', '/api/session/clear', {});
       break;
 
     default:

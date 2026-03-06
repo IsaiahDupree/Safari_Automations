@@ -6,6 +6,8 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { TwitterDriver, type TwitterConfig, type ComposeOptions, type SearchResult, type TweetDetail } from '../automation/twitter-driver.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
+import { SafariDriver } from '../automation/safari-driver.js';
 
 const app = express();
 app.use(cors());
@@ -18,6 +20,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 const PORT = parseInt(process.env.TWITTER_COMMENTS_PORT || '3007');
+
+// ─── Tab Coordination ────────────────────────────────────────────────
+const SERVICE_NAME = 'twitter-comments';
+const SERVICE_PORT = 3007;
+const SESSION_URL_PATTERN = 'x.com';
+const activeCoordinators = new Map<string, TabCoordinator>();
+let tabDriver: SafariDriver | null = null;
+function getTabDriver(): SafariDriver {
+  if (!tabDriver) tabDriver = new SafariDriver();
+  return tabDriver;
+}
 
 // ─── Authentication Middleware ──────────────────────────────
 const VALID_TOKEN = process.env.API_TOKEN || 'test-token-12345';
@@ -143,6 +156,49 @@ app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', ser
 
 // ─── Protected Routes (auth required) ───────────────────────
 app.use('/api', authMiddleware);
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://x.com';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `twitter-comments-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for twitter-comments',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://x.com, or POST /api/tabs/claim with { agentId, openUrl: "https://x.com" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 app.get('/api/twitter/status', async (req: Request, res: Response) => {
   try { const d = getDriver(); const s = await d.getStatus(); const r = d.getRateLimits(); res.json({ ...s, ...r }); }
@@ -542,6 +598,94 @@ app.get('/api/twitter/tweet/metrics', async (req: Request, res: Response) => {
 
 app.get('/api/twitter/config', (req: Request, res: Response) => res.json({ config: getDriver().getConfig() }));
 app.put('/api/twitter/config', (req: Request, res: Response) => { getDriver().setConfig(req.body); res.json({ config: getDriver().getConfig() }); });
+
+// ─── Tab Coordination Endpoints ──────────────────────────────────────
+
+app.get('/api/tabs/claims', async (_req, res) => {
+  const claims = await TabCoordinator.listClaims();
+  res.json({ claims, count: claims.length });
+});
+
+app.post('/api/tabs/claim', async (req, res) => {
+  const { agentId, windowIndex, tabIndex } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    res.json({ ok: true, claim });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post('/api/tabs/release', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+  res.json({ ok: true });
+});
+
+app.post('/api/tabs/heartbeat', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
+
+app.get('/api/session/status', (req, res) => {
+  const info = getTabDriver().getSessionInfo();
+  res.json({
+    tracked: !!(info?.windowIndex),
+    windowIndex: info?.windowIndex ?? null,
+    tabIndex: info?.tabIndex ?? null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.post('/api/session/ensure', async (req, res) => {
+  try {
+    const info = await getTabDriver().ensureActiveSession(SESSION_URL_PATTERN);
+    res.json({
+      ok: info.found,
+      windowIndex: info.windowIndex,
+      tabIndex: info.tabIndex,
+      url: info.url,
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (req, res) => {
+  getTabDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
+});
+
+app.post('/api/debug/eval', async (req, res) => {
+  try {
+    const { js } = req.body;
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await getTabDriver().executeJS(js);
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Global 30s heartbeat refresh
+setInterval(async () => {
+  for (const [id, coord] of activeCoordinators) {
+    try { await coord.heartbeat(); }
+    catch { activeCoordinators.delete(id); }
+  }
+}, 30_000);
 
 // ─── Error Handler (must be last) ──────────────────────────
 app.use(errorHandler);

@@ -22,6 +22,7 @@ import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js
 import { CommentLogger } from '../db/comment-logger.js';
 import { discoverProspects, scoreICP, ICP_KEYWORDS } from './prospect-discovery.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
+import { SafariDriver } from '../automation/safari-driver.js';
 
 const app = express();
 
@@ -38,6 +39,12 @@ const startedAt = new Date().toISOString();
 const SERVICE_NAME = 'threads-comments';
 const SERVICE_PORT = 3004;
 const SESSION_URL_PATTERN = 'threads.net';
+const activeCoordinators = new Map<string, TabCoordinator>();
+let tabDriver: SafariDriver | null = null;
+function getTabDriver(): SafariDriver {
+  if (!tabDriver) tabDriver = new SafariDriver();
+  return tabDriver;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Rate Limiter (per-IP sliding window)
@@ -249,6 +256,49 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
 }
 
 app.use(authMiddleware);
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://www.threads.net';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `threads-comments-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for threads-comments',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://www.threads.net, or POST /api/tabs/claim with { agentId, openUrl: "https://www.threads.net" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 // ═══════════════════════════════════════════════════════════════
 // Singletons
@@ -890,8 +940,7 @@ app.post('/api/threads/prospect/discover', wrapAsync(async (req, res) => {
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
   } catch (err) {
-    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
-    coord = null;
+    throw new Error(`Tab claim required but failed: ${err}`);
   }
   try {
     const result = await discoverProspects(params);
@@ -960,6 +1009,92 @@ app.get('/api/threads/posts', wrapAsync(async (req, res) => {
   const paged = posts.slice(page * limit, (page + 1) * limit);
   res.json({ posts: paged, count: paged.length, page, limit });
 }));
+
+// ═══════════════════════════════════════════════════════════════
+// TAB COORDINATION
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/tabs/claims', async (_req, res) => {
+  const claims = await TabCoordinator.listClaims();
+  res.json({ claims, count: claims.length });
+});
+
+app.post('/api/tabs/claim', async (req, res) => {
+  const { agentId, windowIndex, tabIndex } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json({ ok: true, claim });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post('/api/tabs/release', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+  res.json({ ok: true });
+});
+
+app.post('/api/tabs/heartbeat', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
+
+app.get('/api/session/status', (req, res) => {
+  const info = getTabDriver().getSessionInfo();
+  res.json({
+    tracked: !!(info?.windowIndex),
+    windowIndex: info?.windowIndex ?? null,
+    tabIndex: info?.tabIndex ?? null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.post('/api/session/ensure', async (req, res) => {
+  try {
+    const info = await getTabDriver().ensureActiveSession(SESSION_URL_PATTERN);
+    res.json({ ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (req, res) => {
+  getTabDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
+});
+
+app.post('/api/debug/eval', async (req, res) => {
+  try {
+    const { js } = req.body;
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await getTabDriver().executeJS(js);
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Global 30s heartbeat refresh
+setInterval(async () => {
+  for (const [id, coord] of activeCoordinators) {
+    try { await coord.heartbeat(); }
+    catch { activeCoordinators.delete(id); }
+  }
+}, 30_000);
 
 // ═══════════════════════════════════════════════════════════════
 // 404 / 405 catch-all

@@ -1,0 +1,16 @@
+{
+  "projectId": "ig-e2e-integration",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/instagram-dm",
+  "lastUpdated": "2026-03-05T23:48:09.771Z",
+  "sessionType": "CODING",
+  "status": "running",
+  "stats": {
+    "total": 10,
+    "passing": 0,
+    "pending": 10,
+    "percentComplete": "0.0"
+  },
+  "pid": 77407,
+  "currentSession": 1,
+  "model": "claude-sonnet-4-6"
+}

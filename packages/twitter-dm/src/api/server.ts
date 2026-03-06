@@ -128,6 +128,9 @@ const SESSION_URL_PATTERN = 'x.com';
 const SERVICE_NAME = 'twitter-dm';
 const SERVICE_PORT = 3003;
 
+// Active tab coordinators by agentId (in-process map; file is cross-process)
+const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
+
 function getDriver(): SafariDriver {
   if (!driver) {
     driver = new SafariDriver({
@@ -198,12 +201,122 @@ function recordMessageSent(): void {
 // === HEALTH ===
 
 app.get('/health', (req: Request, res: Response) => {
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://x.com/messages';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `twitter-dm-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for twitter-dm',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://x.com/messages, or POST /api/tabs/claim with { agentId, openUrl: "https://x.com/messages" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
   res.json({
     status: 'ok',
     service: 'twitter-dm',
     timestamp: new Date().toISOString()
   });
 });
+
+// ── Cross-agent tab claim registry ──────────────────────────────────────────
+// All Safari services share /tmp/safari-tab-claims.json.
+// These endpoints let any agent register/release its tab claim.
+
+// GET /api/tabs/claims — list all live tab claims across all services
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  try {
+    const claims = await TabCoordinator.listClaims();
+    res.json({ claims, count: claims.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/claim — claim a Safari tab for this service
+// Body: { agentId: string, windowIndex?: number, tabIndex?: number, openUrl?: string }
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, windowIndex, tabIndex, openUrl } = req.body as {
+    agentId: string;
+    windowIndex?: number;
+    tabIndex?: number;
+    openUrl?: string;
+  };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json({ ok: true, claim, message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'` });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+// POST /api/tabs/release — release tab claim
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+    res.json({ ok: true, message: `Claim released for '${agentId}'` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/heartbeat — keep claim alive
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (!coord?.activeClaim) { res.status(404).json({ error: `No active claim for '${agentId}'` }); return; }
+    await coord.heartbeat();
+    res.json({ ok: true, heartbeat: Date.now() });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+// ────────────────────────────────────────────────────────────────────────────
+
 
 // === SESSION MANAGEMENT ===
 
@@ -624,8 +737,7 @@ app.post('/api/twitter/prospect/discover', async (req: Request, res: Response) =
     await getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
   } catch (err) {
-    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
-    coord = null;
+    throw new Error(`Tab claim required but failed: ${err}`);
   }
   try {
     const result = await discoverProspects(params);
@@ -670,6 +782,18 @@ app.put('/api/twitter/config', (req: Request, res: Response) => {
   res.json({ config: d.getConfig() });
 });
 
+// POST /api/debug/eval — execute JS in the tracked Safari tab (debugging only)
+app.post('/api/debug/eval', async (req: Request, res: Response) => {
+  try {
+    const { js } = req.body as { js: string };
+    if (!js) { res.status(400).json({ error: 'js required' }); return; }
+    const result = await getDriver().executeJS(js);
+    res.json({ result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // Start server
 const PORT = parseInt(process.env.TWITTER_DM_PORT || process.env.PORT || '3003');
 
@@ -682,6 +806,17 @@ export function startServer(port: number = PORT): void {
     console.log(`   AI Generate: POST /api/twitter/ai/generate`);
     console.log(`   AI Enabled: ${!!OPENAI_API_KEY}`);
   });
+
+  // Refresh all active tab claim heartbeats every 30s
+  setInterval(async () => {
+    for (const [agentId, coord] of activeCoordinators) {
+      try {
+        await coord.heartbeat();
+      } catch {
+        activeCoordinators.delete(agentId);
+      }
+    }
+  }, 30_000);
 }
 
 // Auto-start if run directly

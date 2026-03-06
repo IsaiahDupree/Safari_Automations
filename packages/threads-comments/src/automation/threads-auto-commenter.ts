@@ -9,6 +9,7 @@
  */
 
 import { ThreadsDriver, JS_TEMPLATES, CommentResult } from './threads-driver.js';
+import { ThreadsAICommentGenerator } from './ai-comment-generator.js';
 
 export interface PostContext {
   mainPost: string;
@@ -212,10 +213,14 @@ export class ThreadsAutoCommenter {
   private driver: ThreadsDriver;
   private config: AutoCommenterConfig;
   private commentedUrls: Set<string> = new Set();
+  private aiGenerator: ThreadsAICommentGenerator;
 
   constructor(config: Partial<AutoCommenterConfig> = {}) {
     this.config = { ...DEFAULT_AUTO_CONFIG, ...config };
     this.driver = new ThreadsDriver();
+    this.aiGenerator = new ThreadsAICommentGenerator({
+      apiKey: config.openaiApiKey,
+    });
   }
 
   private wait(ms: number): Promise<void> {
@@ -275,26 +280,17 @@ export class ThreadsAutoCommenter {
       return `Great post! 🔥`;
     }
 
-    // Simple AI integration - can be expanded
-    const prompt = `Generate a brief, authentic comment for this Threads post:
-Post by @${context.username}: "${context.mainPost.substring(0, 200)}"
-${context.replies.length > 0 ? `Existing replies: ${context.replies.slice(0, 3).join(' | ')}` : ''}
+    const analysis = this.aiGenerator.analyzePost({
+      mainPost: context.mainPost,
+      username: context.username,
+      replies: context.replies,
+    });
 
-Requirements:
-- Be genuine and conversational
-- 1-2 sentences max
-- No hashtags
-- Match the tone of the post`;
+    if (analysis.isInappropriate) {
+      return `__SKIP__:${analysis.skipReason}`;
+    }
 
-    // For now return a placeholder - integrate OpenAI later
-    const templates = [
-      `This is so relatable! 🙌`,
-      `Love this perspective 💯`,
-      `Couldn't agree more! ✨`,
-      `This made my day 🔥`,
-      `Such a great point! 👏`,
-    ];
-    return templates[Math.floor(Math.random() * templates.length)];
+    return this.aiGenerator.generateComment(analysis);
   }
 
   async postComment(comment: string): Promise<CommentResult> {

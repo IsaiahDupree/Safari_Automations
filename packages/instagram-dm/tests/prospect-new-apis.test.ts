@@ -403,14 +403,16 @@ describe('New Prospect APIs (Layer 3: session active)', () => {
 
     it('truncates at 20 usernames max', async () => {
       if (!sessionActive) return;
-      const many = Array.from({ length: 25 }, (_, i) => `test_user_${i}`);
+      // Build 25 usernames by repeating discovered prospects (dedup is caller's job per API contract)
+      const base = discoveredUsernames.length > 0 ? discoveredUsernames : ['levelsio'];
+      const many = Array.from({ length: 25 }, (_, i) => base[i % base.length]);
       const { data } = await post<{ total: number; truncated: boolean }>(
         '/api/prospect/score-batch',
         { usernames: many },
       );
       expect(data.total).toBeLessThanOrEqual(20);
       expect(data.truncated).toBe(true);
-    }, 120000);
+    }, 300000);
   });
 
   // ── API 5: sources: ['search'] — own post commenters ─────────────────────

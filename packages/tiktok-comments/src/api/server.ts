@@ -3,14 +3,19 @@
  * Now with AI-powered comment generation!
  */
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { TikTokDriver, type TikTokConfig } from '../automation/tiktok-driver.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 const PORT = parseInt(process.env.TIKTOK_COMMENTS_PORT || '3006');
+const SERVICE_NAME = 'tiktok-comments';
+const SERVICE_PORT = PORT;
+const SESSION_URL_PATTERN = 'tiktok.com';
+const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
 // Rate limit headers middleware
 app.use((req, res, next) => {
@@ -52,6 +57,49 @@ function authMiddleware(req: Request, res: Response, next: any) {
 }
 
 app.use(authMiddleware);
+
+// ── Tab claim enforcement ─────────────────────────────────────────────────────
+// Every automation route MUST have an active tab claim before it runs.
+// On first request: auto-claims an existing tab OR opens a new one.
+// Subsequent requests: validates the claim is still alive.
+// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+const OPEN_URL = 'https://www.tiktok.com';
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    // Claim exists — pin driver to the claimed tab and proceed
+    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  // No claim — auto-claim now (open new tab if needed)
+  const autoId = `tiktok-comments-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for tiktok-comments',
+      detail: String(err),
+      fix: `Open Safari and navigate to https://www.tiktok.com, or POST /api/tabs/claim with { agentId, openUrl: "https://www.tiktok.com" }`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 // AI Client for comment generation
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -97,6 +145,73 @@ let driver: TikTokDriver | null = null;
 function getDriver(): TikTokDriver { if (!driver) driver = new TikTokDriver(); return driver; }
 
 app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', service: 'tiktok-comments', port: PORT, timestamp: new Date().toISOString() }));
+
+// ── Cross-agent tab claim registry ──────────────────────────────────────────
+// All Safari services share /tmp/safari-tab-claims.json.
+// These endpoints let any agent register/release its tab claim.
+
+// GET /api/tabs/claims — list all live tab claims across all services
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  try {
+    const claims = await TabCoordinator.listClaims();
+    res.json({ claims, count: claims.length });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/claim — claim a Safari tab for this service
+// Body: { agentId: string, windowIndex?: number, tabIndex?: number, openUrl?: string }
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, windowIndex, tabIndex, openUrl } = req.body as {
+    agentId: string;
+    windowIndex?: number;
+    tabIndex?: number;
+    openUrl?: string;
+  };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json({ ok: true, claim, message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'` });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+// POST /api/tabs/release — release tab claim
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+    res.json({ ok: true, message: `Claim released for '${agentId}'` });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// POST /api/tabs/heartbeat — keep claim alive
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const { agentId } = req.body as { agentId: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    const coord = activeCoordinators.get(agentId);
+    if (!coord?.activeClaim) { res.status(404).json({ error: `No active claim for '${agentId}'` }); return; }
+    await coord.heartbeat();
+    res.json({ ok: true, heartbeat: Date.now() });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+// ────────────────────────────────────────────────────────────────────────────
+
 
 app.get('/api/tiktok/status', async (req: Request, res: Response) => {
   try { const d = getDriver(); const s = await d.getStatus(); const r = d.getRateLimits(); res.json({ ...s, ...r }); }

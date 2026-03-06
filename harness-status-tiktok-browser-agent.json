@@ -1,0 +1,16 @@
+{
+  "projectId": "tiktok-browser-agent",
+  "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation",
+  "lastUpdated": "2026-03-05T23:48:09.771Z",
+  "sessionType": "CODING",
+  "status": "running",
+  "stats": {
+    "total": 14,
+    "passing": 0,
+    "pending": 14,
+    "percentComplete": "0.0"
+  },
+  "pid": 77408,
+  "currentSession": 1,
+  "model": "claude-sonnet-4-6"
+}
