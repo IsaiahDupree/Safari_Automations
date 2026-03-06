@@ -26,6 +26,7 @@ import * as http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { fetchAndScoreJobs, clearJobCache } from './job-scraper.js';
+import { generateClientAssets } from './asset-generator.js';
 import { generateAndStoreProposal } from './proposal-gen.js';
 import { sendProposalToTelegram, startPollingLoop, isTelegramConfigured } from './telegram-gate.js';
 import { getSupabaseClient, isSupabaseConfigured, applyMigration } from '../lib/supabase.js';
@@ -410,6 +411,33 @@ app.post('/api/scan', async (_req: Request, res: Response) => {
     console.error('[scan] Unexpected error:', err);
     res.status(500).json({ error: 'Scan failed', details: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ── Generate preliminary client assets for an approved proposal ───────────────
+app.post('/api/proposals/assets/:jobId', async (req: Request, res: Response) => {
+  if (!isSupabaseConfigured()) return res.status(503).json({ error: 'Supabase not configured' });
+  const supabase = getSupabaseClient();
+  const { jobId } = req.params;
+
+  const { data: proposal } = await supabase
+    .from('upwork_proposals')
+    .select('*')
+    .eq('job_id', jobId)
+    .single();
+
+  if (!proposal) return res.status(404).json({ error: 'Proposal not found: ' + jobId });
+
+  const result = await generateClientAssets({
+    jobId: proposal.job_id,
+    jobTitle: proposal.job_title,
+    jobUrl: proposal.job_url,
+    jobDescription: proposal.job_description || '',
+    budget: proposal.budget || '',
+    proposalText: proposal.proposal_text || '',
+    score: proposal.score || 0,
+  });
+
+  res.json(result);
 });
 
 // ─── Error Handler ─────────────────────────────────────────────────────────────

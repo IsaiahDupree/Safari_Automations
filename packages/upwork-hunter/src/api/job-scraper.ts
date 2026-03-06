@@ -85,6 +85,33 @@ function parseXmlValue(xml: string, tag: string): string {
   return '';
 }
 
+// ─── Hard budget/rate filters ─────────────────────────────────────────────────
+const MIN_FIXED_BUDGET = 500;  // $500 minimum fixed-price budget
+const MIN_HOURLY_RATE  = 29;   // $29/hr minimum hourly rate
+
+function parseHourlyRate(text: string): number | null {
+  const m = /\$?([\d.]+)\s*(?:[-\u2013]\s*\$?[\d.]+)?\s*\/?\s*(?:hr|hour|per\s+hour)/i.exec(text);
+  return m ? parseFloat(m[1]) : null;
+}
+
+function parseBudgetAmount(budgetStr: string): number {
+  const clean = (budgetStr || '').replace(/[$,]/g, '');
+  return parseInt(clean.split(/[-\u2013]/)[0], 10) || 0;
+}
+
+/**
+ * Hard-filter: returns false when job explicitly advertises rate/budget below minimums.
+ * If no rate/budget is visible, passes (Upwork often hides pricing until you click in).
+ */
+function passesMinimumBudget(job: { description: string; budget?: string }): boolean {
+  const combined = `${job.description} ${job.budget || ''}`;
+  const hourlyRate = parseHourlyRate(combined);
+  if (hourlyRate !== null) return hourlyRate >= MIN_HOURLY_RATE;
+  const budgetNum = parseBudgetAmount(job.budget || '');
+  if (budgetNum > 0) return budgetNum >= MIN_FIXED_BUDGET;
+  return true; // no explicit budget visible — don't exclude
+}
+
 function scoreJob(job: { title: string; description: string; budget?: string; pubDate?: string }): number {
   const text = `${job.title} ${job.description}`.toLowerCase();
 

@@ -2,6 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
 import type { UpworkProposal } from '../types/index.js';
+import { generateClientAssets } from './asset-generator.js';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
@@ -147,9 +148,25 @@ async function submitApprovedProposal(jobId: string): Promise<void> {
       .from('upwork_proposals')
       .update({ status: 'approved', updated_at: new Date().toISOString() })
       .eq('job_id', jobId);
+
+    // Still generate assets even if connects insufficient
+    const assetResult = await generateClientAssets({
+      jobId: proposal.job_id,
+      jobTitle: proposal.job_title,
+      jobUrl: proposal.job_url,
+      jobDescription: proposal.job_description || '',
+      budget: proposal.budget || '',
+      proposalText: proposal.proposal_text || '',
+      score: proposal.score || 0,
+    }).catch(() => ({ success: false, slug: '', passportPath: null, localPath: '', filesCreated: [] as string[], error: 'generation failed' }));
+
+    const assetLine = assetResult.success
+      ? `\n📁 Assets generated (${assetResult.filesCreated.length} files) → ${assetResult.passportPath ? 'Passport ✅' : 'local only'}`
+      : '';
+
     await telegramPost('sendMessage', {
       chat_id: CHAT_ID,
-      text: `⚠️ Approved but NOT submitted — only ${connects.available} connects (need ${connects.cost}).\nBuy more at: https://www.upwork.com/nx/find-work/my-connects`,
+      text: `⚠️ Approved but NOT submitted — only ${connects.available} connects (need ${connects.cost}).\nBuy more at: https://www.upwork.com/nx/find-work/my-connects${assetLine}`,
     });
     return;
   }
@@ -172,14 +189,30 @@ async function submitApprovedProposal(jobId: string): Promise<void> {
         .update({ status: 'submitted', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('job_id', jobId);
 
+      // Generate preliminary client assets on successful approval
+      const assetResult = await generateClientAssets({
+        jobId: proposal.job_id,
+        jobTitle: proposal.job_title,
+        jobUrl: proposal.job_url,
+        jobDescription: proposal.job_description || '',
+        budget: proposal.budget || '',
+        proposalText: proposal.proposal_text || '',
+        score: proposal.score || 0,
+      }).catch((e: Error) => ({ success: false, error: e.message, slug: '', passportPath: null, localPath: '', filesCreated: [] }));
+
+      const assetLine = assetResult.success
+        ? `📁 Assets: ${assetResult.filesCreated.length} files → ${assetResult.passportPath ? 'Passport ✅' : 'local only'}\n<code>${assetResult.passportPath || assetResult.localPath}</code>`
+        : `📁 Assets: generation failed (${assetResult.error?.slice(0, 60)})`;
+
       await telegramPost('sendMessage', {
         chat_id: CHAT_ID,
         text:
-          `✅ *Proposal submitted!*\n` +
-          `Job: "${proposal.job_title}"\n` +
+          `✅ <b>Proposal submitted!</b>\n` +
+          `Job: ${escHtml(proposal.job_title)}\n` +
           `${connects ? `Connects used: ~${connects.cost} (${connects.available - connects.cost} remaining)\n` : ''}` +
-          `${result.applicationUrl ? `Application: ${result.applicationUrl}` : ''}`,
-        parse_mode: 'Markdown',
+          `${result.applicationUrl ? `Application: ${escHtml(result.applicationUrl)}\n` : ''}` +
+          assetLine,
+        parse_mode: 'HTML',
       });
       console.log(`[telegram-gate] Proposal submitted job_id=${jobId}`);
     } else {
