@@ -22,10 +22,12 @@ const ICP_SEARCH_QUERIES = [
   'claude openai api integration',
 ];
 
-// WeWorkRemotely RSS categories that match our ICP
+// RSS feeds — WeWorkRemotely + Remotive (AI/automation categories)
 const WWR_RSS_FEEDS = [
   'https://weworkremotely.com/categories/remote-programming-jobs.rss',
   'https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss',
+  'https://remotive.com/remote-jobs/feed/software-dev',
+  'https://remotive.com/remote-jobs/feed/all',
 ];
 
 const EXCLUDED_KEYWORDS = [
@@ -129,46 +131,87 @@ function scoreJob(job: { title: string; description: string; budget?: string; pu
 
 // ─── Source 1: upwork-automation Safari scraper ───────────────────────────────
 
+function httpPost(url: string, body: unknown, timeoutMs = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const mod = url.startsWith('https') ? https : http;
+    const parsed = new URL(url);
+    const req = (mod as typeof http).request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: timeoutMs,
+    }, (res) => {
+      let raw = '';
+      res.on('data', (c) => (raw += c));
+      res.on('end', () => resolve(raw));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error(`Timeout: ${url}`)); });
+    req.write(data);
+    req.end();
+  });
+}
+
 async function fetchFromUpworkAutomation(): Promise<UpworkJob[]> {
   try {
-    // Check if upwork-automation is running
     const healthRaw = await httpGet(`${UPWORK_AUTOMATION_URL}/health`, 4000).catch(() => '');
-    if (!healthRaw.includes('ok')) {
+    if (!healthRaw.includes('ok') && !healthRaw.includes('running')) {
       console.log('[job-scraper] upwork-automation not running, skipping Safari source');
       return [];
     }
 
     const jobs: UpworkJob[] = [];
+
+    // 1. Fetch from Best Matches tab (Safari browser, requires Upwork login)
+    try {
+      const tabRaw = await httpPost(
+        `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/tab`,
+        { tab: 'best_matches' },
+        30000,
+      );
+      const data = JSON.parse(tabRaw) as {
+        jobs?: Array<{ title?: string; url?: string; id?: string; description?: string; budget?: { min?: number; max?: number; amount?: number }; postedAt?: string }>;
+        error?: string;
+      };
+      for (const j of data.jobs || []) {
+        if (!j.title || (!j.url && !j.id)) continue;
+        const url = j.url || `https://www.upwork.com/jobs/${j.id}`;
+        const budgetText = j.budget ? `${j.budget.min || 0}–${j.budget.max || j.budget.amount || 0}` : '';
+        const score = scoreJob({ title: j.title, description: j.description || '', budget: budgetText, pubDate: j.postedAt });
+        jobs.push({ job_id: jobId(url), title: j.title, url, description: j.description || '', budget: budgetText, pub_date: j.postedAt || '', score });
+      }
+      console.log(`[job-scraper] upwork-automation best_matches: ${jobs.length} jobs`);
+    } catch (err) {
+      console.log('[job-scraper] best_matches tab error:', err instanceof Error ? err.message : err);
+    }
+
+    // 2. Keyword searches for ICP queries
     for (const query of ICP_SEARCH_QUERIES) {
       try {
-        const raw = await httpGet(
+        const raw = await httpPost(
           `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/search`,
-          20000,
+          { query, sortBy: 'newest', postedWithin: '24h', paymentVerified: true },
+          25000,
         );
-        // upwork-automation returns JSON from a POST, we use GET tab endpoint instead
-        void raw; // unused — Safari search needs POST
-        break;
-      } catch {
-        break;
-      }
-    }
-
-    // Use the tab-based job fetch (Best Matches tab)
-    const tabRaw = await httpGet(`${UPWORK_AUTOMATION_URL}/api/upwork/jobs/tab?tab=best_matches`, 25000).catch(() => '');
-    if (tabRaw) {
-      try {
-        const data = JSON.parse(tabRaw) as { jobs?: Array<{ title?: string; url?: string; description?: string; budget?: string; pub_date?: string }> };
+        const data = JSON.parse(raw) as {
+          jobs?: Array<{ title?: string; url?: string; id?: string; description?: string; budget?: { min?: number; max?: number; amount?: number }; postedAt?: string }>;
+        };
         for (const j of data.jobs || []) {
-          if (!j.title || !j.url) continue;
-          const score = scoreJob({ title: j.title, description: j.description || '', budget: j.budget, pubDate: j.pub_date });
-          jobs.push({ job_id: jobId(j.url), title: j.title, url: j.url, description: j.description || '', budget: j.budget || '', pub_date: j.pub_date || '', score });
+          if (!j.title || (!j.url && !j.id)) continue;
+          const url = j.url || `https://www.upwork.com/jobs/${j.id}`;
+          const budgetText = j.budget ? `${j.budget.min || 0}–${j.budget.max || j.budget.amount || 0}` : '';
+          const score = scoreJob({ title: j.title, description: j.description || '', budget: budgetText, pubDate: j.postedAt });
+          jobs.push({ job_id: jobId(url), title: j.title, url, description: j.description || '', budget: budgetText, pub_date: j.postedAt || '', score });
         }
-        console.log(`[job-scraper] upwork-automation: ${jobs.length} jobs from Safari`);
       } catch {
-        // ignore parse errors
+        // ignore per-query errors
       }
     }
 
+    console.log(`[job-scraper] upwork-automation total: ${jobs.length} jobs from Safari`);
     return jobs;
   } catch (err) {
     console.log('[job-scraper] upwork-automation unavailable:', err instanceof Error ? err.message : err);
@@ -239,6 +282,11 @@ export async function fetchAndScoreJobs(): Promise<UpworkJob[]> {
 
 export function scoreUpworkJob(job: { title: string; description: string; budget: string; pubDate: string }): number {
   return scoreJob(job);
+}
+
+export function clearJobCache(): void {
+  _cache = null;
+  console.log('[job-scraper] Cache cleared');
 }
 
 export { jobId };

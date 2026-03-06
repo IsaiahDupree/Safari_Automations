@@ -22,13 +22,40 @@
  */
 
 import 'dotenv/config';
+import * as http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { fetchAndScoreJobs } from './job-scraper.js';
+import { fetchAndScoreJobs, clearJobCache } from './job-scraper.js';
 import { generateAndStoreProposal } from './proposal-gen.js';
 import { sendProposalToTelegram, startPollingLoop, isTelegramConfigured } from './telegram-gate.js';
 import { getSupabaseClient, isSupabaseConfigured, applyMigration } from '../lib/supabase.js';
 import type { UpworkJob, OfferType, ScanSummary } from '../types/index.js';
+
+const UPWORK_AUTOMATION_URL = process.env.UPWORK_AUTOMATION_URL || 'http://localhost:3104';
+
+function httpPost(url: string, body: unknown, timeoutMs = 60000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: timeoutMs,
+    };
+    const req = http.request(options, (res) => {
+      let raw = '';
+      res.on('data', (c) => (raw += c));
+      res.on('end', () => resolve(raw));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
 
 const PORT = parseInt(process.env.PORT || '3107', 10);
 // 30 = minimum for a relevant job with 1-2 strong ICP keyword hits
@@ -54,6 +81,11 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
+
+app.post('/api/jobs/clear-cache', (_req: Request, res: Response) => {
+  clearJobCache();
+  res.json({ cleared: true });
+});
 
 app.get('/api/jobs/search', async (_req: Request, res: Response) => {
   try {
@@ -208,6 +240,102 @@ app.post('/api/proposals/reject/:jobId', async (req: Request, res: Response) => 
   } catch (err) {
     console.error('[proposals/reject] Error:', err);
     res.status(500).json({ error: 'Failed to reject proposal', details: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Submit approved proposal to Upwork via upwork-automation (:3104)
+app.post('/api/proposals/submit/:jobId', async (req: Request, res: Response) => {
+  if (!isSupabaseConfigured()) {
+    return res.status(503).json({ error: 'Supabase not configured' });
+  }
+  try {
+    const supabase = getSupabaseClient();
+    const { data: proposal } = await supabase
+      .from('upwork_proposals')
+      .select('*')
+      .eq('job_id', req.params.jobId)
+      .single();
+
+    if (!proposal) return res.status(404).json({ error: 'Proposal not found' });
+    if (!proposal.proposal_text) return res.status(400).json({ error: 'No proposal text to submit' });
+
+    const dryRun = req.body.dryRun !== false; // default dry run from API calls
+    const raw = await httpPost(`${UPWORK_AUTOMATION_URL}/api/upwork/proposals/submit`, {
+      jobUrl: proposal.job_url,
+      coverLetter: proposal.proposal_text,
+      dryRun,
+    }, 60000);
+
+    const result = JSON.parse(raw) as { success?: boolean; error?: string; applicationUrl?: string };
+
+    if (result.success && !dryRun) {
+      await supabase
+        .from('upwork_proposals')
+        .update({ status: 'submitted', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('job_id', req.params.jobId);
+    }
+
+    res.json({ ...result, dryRun, jobId: req.params.jobId });
+  } catch (err) {
+    console.error('[proposals/submit] Error:', err);
+    res.status(500).json({ error: 'Submit failed', details: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Proxy connects balance from upwork-automation
+app.get('/api/connects', async (_req: Request, res: Response) => {
+  try {
+    const raw = await new Promise<string>((resolve, reject) => {
+      const req = http.get(`${UPWORK_AUTOMATION_URL}/api/upwork/connects`, { timeout: 5000 }, (r) => {
+        let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => resolve(d));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+    });
+    res.json(JSON.parse(raw));
+  } catch (err) {
+    res.status(503).json({ error: 'upwork-automation offline', details: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Search Upwork jobs with keyword + filter params (proxies to upwork-automation or job-scraper)
+app.post('/api/jobs/search-upwork', async (req: Request, res: Response) => {
+  try {
+    const { query, filters, tab = 'best_matches', useAutomation = true } = req.body as {
+      query?: string;
+      filters?: Record<string, unknown>;
+      tab?: string;
+      useAutomation?: boolean;
+    };
+
+    if (useAutomation) {
+      // Try upwork-automation first (Safari-based live search)
+      try {
+        const searchBody = query
+          ? { query, filters: filters || {}, maxJobs: 20 }
+          : null;
+
+        const endpoint = searchBody
+          ? `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/search`
+          : `${UPWORK_AUTOMATION_URL}/api/upwork/jobs/tab`;
+        const body = searchBody || { tab };
+
+        const raw = await httpPost(endpoint, body, 30000);
+        const data = JSON.parse(raw) as { jobs?: unknown[]; count?: number };
+        return res.json({ source: 'upwork-automation', ...data });
+      } catch {
+        console.log('[search-upwork] automation offline, falling back to scraper');
+      }
+    }
+
+    // Fallback: use job-scraper (WWR RSS + cached upwork tab data)
+    const jobs = await fetchAndScoreJobs();
+    const filtered = query
+      ? jobs.filter((j) => `${j.title} ${j.description}`.toLowerCase().includes(query.toLowerCase()))
+      : jobs;
+    res.json({ source: 'job-scraper', jobs: filtered.slice(0, 20), count: filtered.length });
+  } catch (err) {
+    res.status(500).json({ error: 'Search failed', details: err instanceof Error ? err.message : String(err) });
   }
 });
 
