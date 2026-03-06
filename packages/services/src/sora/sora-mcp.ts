@@ -117,9 +117,27 @@ interface VideoRecord {
   processedPath?: string;  // watermark-removed version
   aiAnalysis?: string;     // Claude frame analysis
   youtubeUrl?: string;     // after upload
+  youtubePostId?: string;  // Blotato postSubmissionId for status polling
   trilogyId?: string;      // if part of a trilogy
   trilogyPart?: number;
   generatedAt: string;
+  // Leaderboard metrics (populated by sora_refresh_metrics)
+  qualityScore?: number;   // 1-10 from Claude analysis
+  ytViews?: number;
+  ytLikes?: number;
+  ytComments?: number;
+  metricsUpdatedAt?: string;
+  // Derived
+  niche?: string;          // extracted topic/niche label
+}
+
+interface SoraNotification {
+  id: string;
+  type: 'video_generated' | 'youtube_uploaded' | 'reset_detected' | 'maximize_complete' | 'low_gens' | 'error' | 'leaderboard_update';
+  message: string;
+  data?: Record<string, unknown>;
+  createdAt: string;
+  read: boolean;
 }
 
 interface SoraState {
@@ -138,13 +156,14 @@ interface SoraState {
   maximizeSessionActive?: boolean;
   maximizeSessionStarted?: string;
   queue: Array<{ id: string; prompt: string; source: string; queuedAt: string; status: 'pending' | 'done' | 'failed' }>;
-  videos: VideoRecord[];   // all-time video registry
+  videos: VideoRecord[];
   trilogies: Array<{
     id: string; title: string; concept: string;
     parts: Array<{ part: number; videoId: string; prompt: string }>;
     stitchedPath?: string; youtubeUrl?: string; status: 'generating' | 'stitching' | 'done';
     createdAt: string;
   }>;
+  notifications: SoraNotification[];  // event log + unread alerts
 }
 
 function todayStr(): string {
@@ -173,8 +192,18 @@ function loadState(): SoraState {
     }
     return { videos: [], trilogies: [], ...s };
   } catch {
-    return { date: todayStr(), generatedToday: 0, failedToday: 0, maxPerDay: 10, queue: [], videos: [], trilogies: [] };
+    return { date: todayStr(), generatedToday: 0, failedToday: 0, maxPerDay: 10, queue: [], videos: [], trilogies: [], notifications: [] };
   }
+}
+
+function pushNotification(state: SoraState, type: SoraNotification['type'], message: string, data?: Record<string, unknown>): void {
+  if (!state.notifications) state.notifications = [];
+  state.notifications.push({
+    id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    type, message, data, createdAt: new Date().toISOString(), read: false,
+  });
+  // Keep last 200 notifications
+  if (state.notifications.length > 200) state.notifications = state.notifications.slice(-200);
 }
 
 // ─── Safari usage check runner ────────────────────────────────────────────────
@@ -539,6 +568,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'sora_leaderboard',
+    description: 'Ranked leaderboard of all tracked Sora videos by quality score, YouTube views, and generation recency. Shows top videos, best niches, and prompt patterns that score highest.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sort_by: { type: 'string', enum: ['quality', 'views', 'likes', 'recent'], description: 'Ranking metric (default: quality)' },
+        limit: { type: 'number', description: 'Top N videos to return (default 10)' },
+        niche: { type: 'string', description: 'Filter to a specific niche/topic' },
+      },
+    },
+  },
+  {
+    name: 'sora_notifications',
+    description: 'View and manage the Sora notification feed — video generated, YouTube uploaded, reset detected, maximize complete, low gens warnings. Mark as read or clear all.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        unread_only: { type: 'boolean', description: 'Only show unread notifications (default false)' },
+        type: { type: 'string', description: 'Filter by type: video_generated | youtube_uploaded | reset_detected | maximize_complete | low_gens | error' },
+        mark_read: { type: 'boolean', description: 'Mark all returned notifications as read (default false)' },
+        clear_all: { type: 'boolean', description: 'Delete all notifications (default false)' },
+        limit: { type: 'number', description: 'Max notifications to return (default 20)' },
+      },
+    },
+  },
+  {
     name: 'sora_check_usage',
     description: 'Open the Sora usage dialog in Safari and read current generation counts: gens left (free + paid), and the next reset date. Updates state so sora_status and sora_maximize know the real cap.',
     inputSchema: { type: 'object', properties: {} },
@@ -879,8 +934,26 @@ async function handleSoraGenerate(args: { prompt: string; skip_claim_check?: boo
       videoRecord.aiAnalysis = pipeline.analysis;
       videoRecord.youtubeUrl = pipeline.youtubeResult?.url;
 
+      // Extract quality score from Claude analysis (e.g. "8.5/10")
+      const qMatch = pipeline.analysis.match(/(\d+(?:\.\d+)?)\s*\/\s*10/);
+      if (qMatch) videoRecord.qualityScore = parseFloat(qMatch[1]);
+
       if (!state.videos) state.videos = [];
       state.videos.push(videoRecord);
+
+      // Notifications
+      if (!state.notifications) state.notifications = [];
+      pushNotification(state, 'video_generated', `Video generated: ${args.prompt.slice(0, 60)}`, {
+        videoId: internalId, soraVideoId, qualityScore: videoRecord.qualityScore,
+        remaining: Math.max(0, state.maxPerDay - state.generatedToday),
+      });
+      if (pipeline.youtubeResult?.success) {
+        pushNotification(state, 'youtube_uploaded', `YouTube upload succeeded`, { videoId: internalId, url: videoRecord.youtubeUrl });
+      }
+      const remaining = Math.max(0, state.maxPerDay - state.generatedToday);
+      if (remaining <= 3 && remaining > 0) {
+        pushNotification(state, 'low_gens', `Only ${remaining} gen${remaining === 1 ? '' : 's'} left today`, { remaining, maxPerDay: state.maxPerDay });
+      }
 
       // Telegram — send processed video if available
       if (sendTg) {
@@ -1132,6 +1205,138 @@ async function handleSoraListVideos(args: { limit?: number; trilogy_id?: string 
   });
 }
 
+function extractNiche(prompt: string): string {
+  const p = prompt.toLowerCase();
+  if (p.includes('mars') || p.includes('space') || p.includes('planet') || p.includes('astronaut')) return 'space';
+  if (p.includes('ai') || p.includes('robot') || p.includes('machine') || p.includes('tech')) return 'ai_tech';
+  if (p.includes('nature') || p.includes('forest') || p.includes('ocean') || p.includes('mountain')) return 'nature';
+  if (p.includes('city') || p.includes('urban') || p.includes('street') || p.includes('building')) return 'urban';
+  if (p.includes('person') || p.includes('woman') || p.includes('man') || p.includes('human')) return 'people';
+  if (p.includes('food') || p.includes('cook') || p.includes('eat') || p.includes('restaurant')) return 'food';
+  if (p.includes('sport') || p.includes('gym') || p.includes('run') || p.includes('fit')) return 'fitness';
+  if (p.includes('fantasy') || p.includes('magic') || p.includes('dragon') || p.includes('sword')) return 'fantasy';
+  return 'other';
+}
+
+async function handleSoraLeaderboard(args: { sort_by?: string; limit?: number; niche?: string }): Promise<string> {
+  const state = loadState();
+  const videos = state.videos || [];
+  const sortBy = args.sort_by || 'quality';
+  const limit = args.limit || 10;
+
+  // Enrich with niche if missing
+  const enriched = videos.map(v => ({
+    ...v,
+    niche: v.niche || extractNiche(v.prompt),
+  }));
+
+  // Filter
+  let filtered = args.niche
+    ? enriched.filter(v => (v.niche || extractNiche(v.prompt)) === args.niche)
+    : enriched;
+
+  // Sort
+  filtered.sort((a, b) => {
+    if (sortBy === 'views') return (b.ytViews ?? 0) - (a.ytViews ?? 0);
+    if (sortBy === 'likes') return (b.ytLikes ?? 0) - (a.ytLikes ?? 0);
+    if (sortBy === 'recent') return new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime();
+    return (b.qualityScore ?? 0) - (a.qualityScore ?? 0); // quality default
+  });
+
+  const top = filtered.slice(0, limit);
+
+  // Niche breakdown
+  const nicheMap: Record<string, { count: number; avgQuality: number; totalViews: number }> = {};
+  for (const v of enriched) {
+    const n = v.niche || extractNiche(v.prompt);
+    if (!nicheMap[n]) nicheMap[n] = { count: 0, avgQuality: 0, totalViews: 0 };
+    nicheMap[n].count++;
+    nicheMap[n].avgQuality += v.qualityScore ?? 0;
+    nicheMap[n].totalViews += v.ytViews ?? 0;
+  }
+  const niches = Object.entries(nicheMap)
+    .map(([niche, d]) => ({ niche, count: d.count, avg_quality: +(d.avgQuality / d.count).toFixed(1), total_views: d.totalViews }))
+    .sort((a, b) => b.avg_quality - a.avg_quality);
+
+  // Best prompt keywords (top scoring words)
+  const wordScores: Record<string, { score: number; count: number }> = {};
+  for (const v of enriched.filter(v => v.qualityScore)) {
+    for (const word of v.prompt.toLowerCase().split(/\s+/).filter(w => w.length > 4)) {
+      if (!wordScores[word]) wordScores[word] = { score: 0, count: 0 };
+      wordScores[word].score += v.qualityScore!;
+      wordScores[word].count++;
+    }
+  }
+  const topKeywords = Object.entries(wordScores)
+    .filter(([, d]) => d.count >= 2)
+    .map(([word, d]) => ({ word, avg_score: +(d.score / d.count).toFixed(1), appearances: d.count }))
+    .sort((a, b) => b.avg_score - a.avg_score)
+    .slice(0, 10);
+
+  return JSON.stringify({
+    total_videos: videos.length,
+    videos_with_quality_score: enriched.filter(v => v.qualityScore).length,
+    videos_on_youtube: enriched.filter(v => v.youtubeUrl).length,
+    sort_by: sortBy,
+    leaderboard: top.map((v, i) => ({
+      rank: i + 1,
+      id: v.id,
+      prompt: v.prompt.slice(0, 80),
+      niche: v.niche || extractNiche(v.prompt),
+      quality_score: v.qualityScore,
+      yt_views: v.ytViews,
+      yt_likes: v.ytLikes,
+      youtube_url: v.youtubeUrl,
+      generated_at: v.generatedAt,
+      has_clean: !!v.processedPath,
+    })),
+    niche_breakdown: niches,
+    top_prompt_keywords: topKeywords,
+  });
+}
+
+async function handleSoraNotifications(args: {
+  unread_only?: boolean; type?: string; mark_read?: boolean; clear_all?: boolean; limit?: number;
+}): Promise<string> {
+  const state = loadState();
+  if (!state.notifications) state.notifications = [];
+
+  if (args.clear_all) {
+    state.notifications = [];
+    saveState(state);
+    return JSON.stringify({ cleared: true, message: 'All notifications deleted' });
+  }
+
+  let notifs = [...state.notifications];
+
+  // Filter
+  if (args.unread_only) notifs = notifs.filter(n => !n.read);
+  if (args.type) notifs = notifs.filter(n => n.type === args.type);
+
+  // Newest first
+  notifs = notifs.reverse().slice(0, args.limit || 20);
+
+  // Mark as read
+  if (args.mark_read) {
+    const ids = new Set(notifs.map(n => n.id));
+    for (const n of state.notifications) { if (ids.has(n.id)) n.read = true; }
+    saveState(state);
+  }
+
+  const unreadCount = state.notifications.filter(n => !n.read).length;
+
+  return JSON.stringify({
+    total: state.notifications.length,
+    unread: unreadCount,
+    showing: notifs.length,
+    notifications: notifs.map(n => ({
+      id: n.id, type: n.type, message: n.message,
+      created_at: n.createdAt, read: n.read,
+      data: n.data,
+    })),
+  });
+}
+
 async function handleSoraCheckUsage(): Promise<string> {
   const claim = await acquireSoraClaim();
   if (!claim) {
@@ -1280,17 +1485,23 @@ async function handleSoraMaximize(args: {
     const finalUsage = await runSoraGetUsage();
     const finalState = loadState();
     finalState.maximizeSessionActive = false;
+    if (!finalState.notifications) finalState.notifications = [];
     if (finalUsage.success) {
       finalState.gensLeft = finalUsage.gensLeft ?? undefined;
       finalState.nextResetDate = finalUsage.nextAvailableDate ?? undefined;
-      // Detect reset: if gensLeft went UP compared to before, a reset happened
       if ((finalUsage.gensLeft ?? 0) > (usage.gensLeft ?? 0)) {
         finalState.resetDetectedAt = new Date().toISOString();
+        pushNotification(finalState, 'reset_detected', `Sora gens reset! Now ${finalUsage.gensLeft} gens available`, {
+          gensLeft: finalUsage.gensLeft, nextReset: finalUsage.nextAvailableDate,
+        });
       }
     }
+    const succeeded = results.filter(r => r.success).length;
+    pushNotification(finalState, 'maximize_complete',
+      `Maximize session done: ${succeeded}/${gensUsed} generated. Reset: ${finalUsage.nextAvailableDate ?? 'unknown'}`,
+      { generated: gensUsed, succeeded, failed: gensUsed - succeeded, gensRemaining: finalUsage.gensLeft, nextReset: finalUsage.nextAvailableDate });
     saveState(finalState);
 
-    const succeeded = results.filter(r => r.success).length;
     return JSON.stringify({
       success: true,
       session_start: sessionStart,
@@ -1537,6 +1748,8 @@ async function handleRequest(req: { id?: unknown; method: string; params?: { nam
       else if (name === 'sora_process_video') content = await handleSoraProcessVideo(args as { video_id?: string; file_path?: string; skip_youtube?: boolean; youtube_title?: string });
       else if (name === 'sora_list_videos') content = await handleSoraListVideos(args as { limit?: number; trilogy_id?: string });
       else if (name === 'sora_batch_clean') content = await handleSoraBatchClean(args as { input_dir?: string; output_dir?: string; limit?: number; skip_passport?: boolean });
+      else if (name === 'sora_leaderboard') content = await handleSoraLeaderboard(args as { sort_by?: string; limit?: number; niche?: string });
+      else if (name === 'sora_notifications') content = await handleSoraNotifications(args as { unread_only?: boolean; type?: string; mark_read?: boolean; clear_all?: boolean; limit?: number });
       else if (name === 'sora_check_usage') content = await handleSoraCheckUsage();
       else if (name === 'sora_maximize') content = await handleSoraMaximize(args as { extra_prompts?: string[]; skip_youtube?: boolean; trend_platform?: string });
       else throw new Error(`Unknown tool: ${name}`);
