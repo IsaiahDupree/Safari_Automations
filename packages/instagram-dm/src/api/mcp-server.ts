@@ -6,6 +6,23 @@
  */
 
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
+
+// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'instagram-dm';
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+}
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'instagram-safari-automation';
@@ -91,14 +108,17 @@ const TOOLS = [
   { name: 'instagram_scale_discover', description: 'Accumulate prospects in the DB across multiple calls. Each call runs one discovery batch and persists new candidates to suggested_actions (status=suggested). Call repeatedly until done=true or looping=true. When looping=true, add topAccounts or topPostKeywords to break out. topPostKeywords automatically finds top post creators then scrapes their followers.', inputSchema: { type: 'object', properties: { targetTotal: { type: 'number', description: 'Total prospect count to reach across all calls', default: 500 }, keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords (uses defaults if omitted)' }, topAccounts: { type: 'array', items: { type: 'string' }, description: 'Instagram accounts whose followers to scrape. e.g. ["levelsio", "marc_louvion"]' }, topPostKeywords: { type: 'array', items: { type: 'string' }, description: 'Keywords to find top posts from, then scrape followers of those post creators. Highest quality source.' }, minScore: { type: 'number', description: 'Min ICP score to store', default: 30 }, maxRounds: { type: 'number', description: 'Discovery rounds per call (default 2)', default: 2 }, dryRun: { type: 'boolean', default: false } } } },
   { name: 'instagram_dm_top_n', description: 'Promote the top N highest-ICP-score prospects from suggested_actions to the outreach queue (status=pending). Applies a message template. Call AFTER scale_discover has accumulated enough prospects. Always use dryRun=true first to preview.', inputSchema: { type: 'object', properties: { n: { type: 'number', description: 'Number of prospects to promote to DM queue', default: 100 }, messageTemplate: { type: 'string', description: 'Message template, use {username} as placeholder', default: 'Hey {username}! Your work caught my eye — would love to connect about AI automation.' }, dryRun: { type: 'boolean', description: 'Preview without queueing', default: true } }, required: [] } },
   { name: 'instagram_send_queued', description: 'Send pending prospect DMs from the outreach queue. Navigates to each profile, clicks Message, sends the queued message. Use batchSize≤5 and sendDelay≥45000ms (45s) to stay safe. Always dryRun:true first to preview. Returns {sent, failed, remaining, rateLimits}.', inputSchema: { type: 'object', properties: { batchSize: { type: 'number', description: 'Max DMs to send per call (max 10, default 5)', default: 5 }, sendDelay: { type: 'number', description: 'Ms to wait between DMs (default 45000 = 45s)', default: 45000 }, dryRun: { type: 'boolean', description: 'Preview queue without sending', default: true } } } },
+  { name: 'instagram_claim_status', description: 'Read current Safari tab claims from /tmp/safari-tab-claims.json. Shows which services own which tabs and any conflicts with instagram-dm\'s tab.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {
   let result: unknown;
   switch (name) {
-    case 'instagram_send_dm':
+    case 'instagram_send_dm': {
       if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'instagram', to: args.username, text: args.text } }; break; }
+      const _igDmConflict = await checkNavigationConflict(); if (_igDmConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_igDmConflict.blocker.service}' (:${_igDmConflict.blocker.port}). Call instagram_session_ensure first.`, blocker: _igDmConflict.blocker };
       result = await api(DM_BASE, 'POST', '/api/messages/send-to', { username: args.username, text: args.text }); break;
+    }
     case 'instagram_get_conversations': {
       const cursor = args.cursor ? `?cursor=${encodeURIComponent(args.cursor as string)}` : '';
       const data = await api(DM_BASE, 'GET', `/api/conversations${cursor}`) as any;
@@ -114,9 +134,11 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       result = await api(DM_BASE, 'POST', `/api/requests/${args.username}/accept`); break;
     case 'instagram_decline_request': result = await api(DM_BASE, 'POST', `/api/requests/${args.username}/decline`); break;
     case 'instagram_get_profile':    result = await api(DM_BASE, 'GET', `/api/profile/${args.username}`); break;
-    case 'instagram_post_comment':
+    case 'instagram_post_comment': {
       if (args.dryRun) { result = { dryRun: true, wouldPost: { platform: 'instagram', postUrl: args.postUrl, text: args.text } }; break; }
+      const _igPostConflict = await checkNavigationConflict(); if (_igPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_igPostConflict.blocker.service}' (:${_igPostConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: _igPostConflict.blocker };
       result = await api(COMMENTS_BASE, 'POST', '/api/instagram/comments/post', { postUrl: args.postUrl, text: args.text }); break;
+    }
     case 'instagram_get_comments': {
       if (args.postUrl) await api(COMMENTS_BASE, 'POST', '/api/instagram/comments/navigate', { url: args.postUrl }).catch(() => {});
       result = await api(COMMENTS_BASE, 'GET', `/api/instagram/comments${args.limit ? `?limit=${args.limit}` : ''}`);
@@ -210,6 +232,14 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         dryRun: args.dryRun,
       });
       break;
+    case 'instagram_claim_status': {
+      const claims = await readActiveClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE);
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }; break;
+    }
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };

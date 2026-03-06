@@ -7,6 +7,23 @@
  */
 
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
+
+// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'twitter-comments';
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+}
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
 
 const TWITTER_BASE = 'http://localhost:3007';
 const TWITTER_AUTH = process.env.TWITTER_AUTH_TOKEN || process.env.API_TOKEN || 'test-token-12345';
@@ -178,6 +195,9 @@ const TOOLS = [
       required: ['tweetUrl'],
     },
   },
+  { name: 'twitter_comments_session_ensure', description: 'Ensure the twitter-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'twitter_comments_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with twitter-comments.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'twitter_comments_release_session', description: 'Release the twitter-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -203,6 +223,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       if (dryRun) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, dryRun: true, url, text, charCount: text.length, message: 'Dry-run: reply not actually posted' }) }] };
       }
+      const _twcReplyConflict = await checkNavigationConflict();
+      if (_twcReplyConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_twcReplyConflict.blocker.service}' (:${_twcReplyConflict.blocker.port}). Call twitter_comments_session_ensure first.`, blocker: _twcReplyConflict.blocker };
       const result = await api('POST', '/api/twitter/tweet/reply', { url, text });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -228,6 +250,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       if (dryRun) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, dryRun: true, text, charCount: text.length, message: 'Dry-run: tweet not actually posted' }) }] };
       }
+      const _twcComposeConflict = await checkNavigationConflict();
+      if (_twcComposeConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_twcComposeConflict.blocker.service}' (:${_twcComposeConflict.blocker.port}). Cannot compose while another service owns the tab.`, blocker: _twcComposeConflict.blocker };
       const result = await api('POST', '/api/twitter/tweet', { text });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -263,6 +287,21 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const result = await api('GET', `/api/twitter/tweet/metrics?tweetUrl=${encodeURIComponent(tweetUrl)}`);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
+
+    case 'twitter_comments_session_ensure':
+      return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/ensure', {})) }] };
+
+    case 'twitter_comments_claim_status': {
+      const claims = await readActiveClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE);
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+      return { content: [{ type: 'text', text: JSON.stringify({ my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }) }] };
+    }
+
+    case 'twitter_comments_release_session':
+      return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
 
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };

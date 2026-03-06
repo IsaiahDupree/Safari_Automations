@@ -5,6 +5,26 @@
  * Reads JSON-RPC messages from stdin, writes responses to stdout.
  */
 
+import * as fs from 'fs/promises';
+
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'linkedin-automation';
+
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+}
+
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
+
 import {
   getDefaultDriver,
   searchPeople,
@@ -78,6 +98,7 @@ function formatMcpError(e: unknown, platform = 'linkedin'): string {
 // ═══════════════════════════════════════════════════════════════
 
 const TOOLS = [
+  { name: 'linkedin_claim_status', description: 'Read /tmp/safari-tab-claims.json — shows all active Safari tab claims and any conflicts with the LinkedIn-automation tab.', inputSchema: { type: 'object', properties: {} } },
   {
     name: 'linkedin_search_people',
     description: 'Search LinkedIn for people matching criteria',
@@ -411,6 +432,13 @@ async function executeTool(
 
   const execute = async () => {
     switch (name) {
+      case 'linkedin_claim_status': {
+        const claims = await readActiveClaims();
+        const myClaim = claims.find(c => c.service === MY_SERVICE);
+        const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+        return { content: [{ type: 'text', text: JSON.stringify({ myClaim: myClaim || null, otherClaims, totalActive: claims.length }) }] };
+      }
+
       case 'linkedin_search_people': {
         const query = args.query as string;
         const config: Partial<PeopleSearchConfig> = {
@@ -432,6 +460,8 @@ async function executeTool(
       }
 
       case 'linkedin_send_connection': {
+        const connConflict = await checkNavigationConflict();
+        if (connConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${connConflict.blocker.service}' (port ${connConflict.blocker.port}). Cannot send connection request while another service owns the tab.`, blocker: connConflict.blocker };
         const profileUrl = args.profileUrl as string;
         const message = args.message as string | undefined;
         const request: ConnectionRequest = {
@@ -445,6 +475,8 @@ async function executeTool(
       }
 
       case 'linkedin_send_message': {
+        const msgConflict = await checkNavigationConflict();
+        if (msgConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${msgConflict.blocker.service}' (port ${msgConflict.blocker.port}). Cannot send message while another service owns the tab.`, blocker: msgConflict.blocker };
         const profileUrl = args.profileUrl as string;
         const text = args.text as string;
         const result = await sendMessageToProfile(profileUrl, text, driver);
@@ -474,6 +506,8 @@ async function executeTool(
       }
 
       case 'linkedin_navigate': {
+        const navConflict = await checkNavigationConflict();
+        if (navConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${navConflict.blocker.service}' (port ${navConflict.blocker.port}). Cannot navigate while another service owns the tab.`, blocker: navConflict.blocker };
         const url = args.url as string;
         await navigateToProfile(url, driver);
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, url }) }] };

@@ -8,6 +8,23 @@
 import { ThreadsDriver } from '../automation/threads-driver.js';
 import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js';
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
+
+// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'threads-comments';
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+}
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
 
 const THREADS_BASE = 'http://localhost:3004';
 const THREADS_AUTH = process.env.THREADS_AUTH_TOKEN || 'threads-local-dev-token';
@@ -122,6 +139,9 @@ const TOOLS = [
   { name: 'threads_score_prospect', description: 'Enrich and score a single Threads creator against the ICP. Returns profile + icpScore (0-100) + icpSignals. Threads profiles include engagement_rate and avg_likes which boost the score.', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Threads handle without @' } }, required: ['handle'] } },
   { name: 'threads_queue_engagement', description: 'Queue a Threads creator for comment engagement (warm-up outreach). Finds their recent posts and schedules comments via safari_command_queue. No DM is sent — Threads has no DM. For direct outreach, use instagram_send_dm (same account).', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Threads handle without @' }, keyword: { type: 'string', description: 'Topic/keyword to use for finding their posts to engage on' }, dryRun: { type: 'boolean', description: 'Preview without queuing', default: false } }, required: ['handle'] } },
   { name: 'threads_is_ready', description: 'Check if Threads service (:3004) is reachable before attempting any action.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'threads_session_ensure', description: 'Ensure the threads-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'threads_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with threads-comments.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'threads_release_session', description: 'Release the threads-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -149,12 +169,16 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   switch (name) {
     case 'threads_navigate': {
       const url = args.url as string;
+      const _thNavConflict = await checkNavigationConflict();
+      if (_thNavConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_thNavConflict.blocker.service}' (:${_thNavConflict.blocker.port}). Call threads_session_ensure first.`, blocker: _thNavConflict.blocker };
       const success = await d.navigateToPost(url);
       return { content: [{ type: 'text', text: JSON.stringify({ success, url }) }] };
     }
     case 'threads_post_comment': {
       const text = args.text as string;
       const postUrl = args.postUrl as string | undefined;
+      const _thPostConflict = await checkNavigationConflict();
+      if (_thPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_thPostConflict.blocker.service}' (:${_thPostConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: _thPostConflict.blocker };
       if (postUrl) {
         await d.navigateToPost(postUrl);
         await new Promise(r => setTimeout(r, 3000));
@@ -229,6 +253,21 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         return { content: [{ type: 'text', text: JSON.stringify({ ready: false, url: THREADS_BASE, error: 'Service not reachable' }) }] };
       }
     }
+    case 'threads_session_ensure':
+      return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/ensure', {})) }] };
+
+    case 'threads_claim_status': {
+      const claims = await readActiveClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE);
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+      return { content: [{ type: 'text', text: JSON.stringify({ my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }) }] };
+    }
+
+    case 'threads_release_session':
+      return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
+
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };
   }

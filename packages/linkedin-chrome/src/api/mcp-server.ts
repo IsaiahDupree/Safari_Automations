@@ -7,6 +7,7 @@
  */
 
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
 import {
   extractProfile, searchPeople, sendConnectionRequest, sendMessage,
   listConversations, scoreProfile, getFeed, getPostComments, likePost,
@@ -15,6 +16,73 @@ import {
 } from '../automation/linkedin.js';
 import { navigateTo, getPage, waitFor, evalJS, clickAtXY, currentUrl } from '../automation/browser.js';
 import { logInfo, logWarn, logError } from '../automation/logger.js';
+
+// ─── Chrome Tab Claim Framework ────────────────────────────────────────────
+// Mirrors /tmp/safari-tab-claims.json but for the Chrome/Puppeteer browser.
+// linkedin-chrome is the sole Chrome driver, so this signals "Chrome is busy"
+// to the broader system and prevents future Chrome services from conflicting.
+
+const CHROME_CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
+const CHROME_CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'linkedin-chrome';
+const MY_PORT = 3105;
+
+interface ChromeClaim {
+  agentId: string;
+  service: string;
+  port: number;
+  browser: 'chrome';
+  urlPattern: string;
+  currentUrl: string;
+  heartbeat: number;
+}
+
+async function readActiveChromeClaims(): Promise<ChromeClaim[]> {
+  try {
+    const raw = await fs.readFile(CHROME_CLAIMS_FILE, 'utf-8');
+    const all: ChromeClaim[] = JSON.parse(raw);
+    return all.filter(c => (Date.now() - c.heartbeat) < CHROME_CLAIM_TTL_MS);
+  } catch { return []; }
+}
+
+async function writeChromeClaim(currentTabUrl: string): Promise<void> {
+  const active = await readActiveChromeClaims();
+  const others = active.filter(c => c.service !== MY_SERVICE);
+  const mine: ChromeClaim = {
+    agentId: `${MY_SERVICE}-${process.pid}`,
+    service: MY_SERVICE,
+    port: MY_PORT,
+    browser: 'chrome',
+    urlPattern: 'linkedin.com',
+    currentUrl: currentTabUrl,
+    heartbeat: Date.now(),
+  };
+  await fs.writeFile(CHROME_CLAIMS_FILE, JSON.stringify([...others, mine]));
+}
+
+async function releaseChromeClaim(): Promise<void> {
+  try {
+    const active = await readActiveChromeClaims();
+    const others = active.filter(c => c.service !== MY_SERVICE);
+    await fs.writeFile(CHROME_CLAIMS_FILE, JSON.stringify(others));
+  } catch { /* ignore */ }
+}
+
+async function isChromeBusy(): Promise<{ busy: false } | { busy: true; blocker: ChromeClaim }> {
+  const active = await readActiveChromeClaims();
+  const blocker = active.find(c => c.service !== MY_SERVICE);
+  return blocker ? { busy: true, blocker } : { busy: false };
+}
+
+/** Wrap a Chrome navigation operation: write claim → execute → release claim */
+async function withChromeClaim<T>(tabUrl: string, fn: () => Promise<T>): Promise<T> {
+  await writeChromeClaim(tabUrl);
+  try {
+    return await fn();
+  } finally {
+    await releaseChromeClaim();
+  }
+}
 
 const MOD = 'mcp-server';
 
@@ -42,6 +110,10 @@ function formatError(err: unknown): string {
 // ─── Tool Definitions ──────────────────────────────────────────────────────
 
 const TOOLS = [
+  // ── Chrome Claim Framework ──
+  { name: 'linkedin_claim_status', description: 'Read /tmp/chrome-tab-claims.json — shows all active Chrome browser claims. Use to check if Chrome is busy with another service or if linkedin-chrome has an active claim.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'linkedin_release_session', description: 'Release the linkedin-chrome claim on Chrome. Call this if you get TAB_BUSY errors or after completing a long task to free Chrome for other services.', inputSchema: { type: 'object', properties: {} } },
+
   // ── Shared with Safari version ──
   { name: 'linkedin_search_people', description: 'Search LinkedIn for people matching a query. Supports title, company, and location filters. Returns name, headline, location, profileUrl, connectionDegree.', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, title: { type: 'string' }, company: { type: 'string' }, location: { type: 'string' }, maxResults: { type: 'number', default: 10 } }, required: ['query'] } },
   { name: 'linkedin_get_profile', description: 'Extract full profile info from a LinkedIn profile URL — name, headline, location, about, experience, education, skills, connections.', inputSchema: { type: 'object', properties: { profileUrl: { type: 'string', description: 'LinkedIn profile URL' } }, required: ['profileUrl'] } },
@@ -77,23 +149,52 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   let result: unknown;
 
   switch (name) {
-    case 'linkedin_search_people': {
-      const results = await searchPeople(args.query as string, { title: args.title as string, company: args.company as string, location: args.location as string });
-      result = { profiles: results.slice(0, (args.maxResults as number) || 10), count: results.length };
+    // ── Chrome Claim Tools ──
+    case 'linkedin_claim_status': {
+      const claims = await readActiveChromeClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE) || null;
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      result = { browser: 'chrome', claimsFile: CHROME_CLAIMS_FILE, myClaim, otherClaims, totalActive: claims.length };
       break;
     }
-    case 'linkedin_get_profile':
-      result = await extractProfile(args.profileUrl as string);
+    case 'linkedin_release_session': {
+      await releaseChromeClaim();
+      result = { released: true, service: MY_SERVICE };
       break;
+    }
+
+    case 'linkedin_search_people': {
+      const busy1 = await isChromeBusy();
+      if (busy1.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy1.blocker.service}'. Cannot search while Chrome is busy.`, blocker: busy1.blocker };
+      result = await withChromeClaim('https://www.linkedin.com/search/results/people/', async () => {
+        const results = await searchPeople(args.query as string, { title: args.title as string, company: args.company as string, location: args.location as string });
+        return { profiles: results.slice(0, (args.maxResults as number) || 10), count: results.length };
+      });
+      break;
+    }
+    case 'linkedin_get_profile': {
+      const busy2 = await isChromeBusy();
+      if (busy2.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy2.blocker.service}'. Cannot extract profile while Chrome is busy.`, blocker: busy2.blocker };
+      result = await withChromeClaim(args.profileUrl as string, () => extractProfile(args.profileUrl as string));
+      break;
+    }
 
     case 'linkedin_send_connection':
       if (args.dryRun) { result = { dryRun: true, wouldSend: { profileUrl: args.profileUrl, note: args.note } }; break; }
-      result = await sendConnectionRequest({ profileUrl: args.profileUrl as string, note: args.note as string | undefined });
+      {
+        const busy3 = await isChromeBusy();
+        if (busy3.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy3.blocker.service}'. Cannot send connection while Chrome is busy.`, blocker: busy3.blocker };
+        result = await withChromeClaim(args.profileUrl as string, () => sendConnectionRequest({ profileUrl: args.profileUrl as string, note: args.note as string | undefined }));
+      }
       break;
 
     case 'linkedin_send_message':
       if (args.dryRun) { result = { dryRun: true, wouldSend: { profileUrl: args.profileUrl, text: args.text } }; break; }
-      result = await sendMessage(args.profileUrl as string, args.text as string);
+      {
+        const busy4 = await isChromeBusy();
+        if (busy4.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy4.blocker.service}'. Cannot send message while Chrome is busy.`, blocker: busy4.blocker };
+        result = await withChromeClaim(`https://www.linkedin.com/messaging/compose/`, () => sendMessage(args.profileUrl as string, args.text as string));
+      }
       break;
 
     case 'linkedin_list_conversations':
@@ -107,31 +208,40 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       break;
     }
 
-    case 'linkedin_navigate':
-      await navigateTo(args.url as string, 'domcontentloaded');
-      result = { success: true, url: args.url };
+    case 'linkedin_navigate': {
+      const busyNav = await isChromeBusy();
+      if (busyNav.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyNav.blocker.service}'. Cannot navigate while Chrome is busy.`, blocker: busyNav.blocker };
+      result = await withChromeClaim(args.url as string, async () => {
+        await navigateTo(args.url as string, 'domcontentloaded');
+        return { success: true, url: args.url };
+      });
       break;
+    }
 
     case 'linkedin_run_pipeline': {
-      const query = args.searchQuery as string;
-      const minScore = (args.minScore as number) || 50;
-      const maxProspects = (args.maxProspects as number) || 10;
-      const dryRun = !!(args.dryRun ?? true);
-      const profiles = await searchPeople(query);
-      const icp = args.niche ? { targetTitle: args.niche as string } : {};
-      const scored = profiles
-        .map(p => ({ ...p, score: scoreProfile(p, icp) }))
-        .filter(p => p.score.totalScore >= minScore)
-        .slice(0, maxProspects);
-      const connects: unknown[] = [];
-      if (args.autoConnect && !dryRun) {
-        for (const p of scored) {
-          const r = await sendConnectionRequest({ profileUrl: p.profileUrl, note: args.connectNote as string });
-          connects.push({ profileUrl: p.profileUrl, result: r });
-          await sleep(2_000);
+      const busyPipeline = await isChromeBusy();
+      if (busyPipeline.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyPipeline.blocker.service}'. Cannot run pipeline while Chrome is busy.`, blocker: busyPipeline.blocker };
+      result = await withChromeClaim('https://www.linkedin.com/search/results/people/', async () => {
+        const query = args.searchQuery as string;
+        const minScore = (args.minScore as number) || 50;
+        const maxProspects = (args.maxProspects as number) || 10;
+        const dryRun = !!(args.dryRun ?? true);
+        const profiles = await searchPeople(query);
+        const icp = args.niche ? { targetTitle: args.niche as string } : {};
+        const scored = profiles
+          .map(p => ({ ...p, score: scoreProfile(p, icp) }))
+          .filter(p => p.score.totalScore >= minScore)
+          .slice(0, maxProspects);
+        const connects: unknown[] = [];
+        if (args.autoConnect && !dryRun) {
+          for (const p of scored) {
+            const r = await sendConnectionRequest({ profileUrl: p.profileUrl, note: args.connectNote as string });
+            connects.push({ profileUrl: p.profileUrl, result: r });
+            await sleep(2_000);
+          }
         }
-      }
-      result = { searched: profiles.length, qualified: scored.length, minScore, dryRun, prospects: scored, connects };
+        return { searched: profiles.length, qualified: scored.length, minScore, dryRun, prospects: scored, connects };
+      });
       break;
     }
 
@@ -185,12 +295,20 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
     case 'linkedin_like_post':
       if (args.dryRun) { result = { dryRun: true, wouldLike: args.postUrl }; break; }
-      result = await likePost(args.postUrl as string);
+      {
+        const busyLike = await isChromeBusy();
+        if (busyLike.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyLike.blocker.service}'. Cannot like post while Chrome is busy.`, blocker: busyLike.blocker };
+        result = await withChromeClaim(args.postUrl as string, () => likePost(args.postUrl as string));
+      }
       break;
 
     case 'linkedin_comment_post':
       if (args.dryRun) { result = { dryRun: true, wouldComment: { postUrl: args.postUrl, text: args.text } }; break; }
-      result = await commentOnPost(args.postUrl as string, args.text as string);
+      {
+        const busyComment = await isChromeBusy();
+        if (busyComment.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyComment.blocker.service}'. Cannot comment while Chrome is busy.`, blocker: busyComment.blocker };
+        result = await withChromeClaim(args.postUrl as string, () => commentOnPost(args.postUrl as string, args.text as string));
+      }
       break;
 
     case 'linkedin_get_post_comments':

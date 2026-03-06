@@ -5,6 +5,34 @@
  */
 
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
+
+// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+const MY_SERVICE = 'upwork-automation';
+
+interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
+
+async function readActiveClaims(): Promise<TabClaim[]> {
+  try {
+    const raw = await fs.readFile(CLAIMS_FILE, 'utf-8');
+    const all: TabClaim[] = JSON.parse(raw);
+    const now = Date.now();
+    return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
+  } catch {
+    return [];
+  }
+}
+
+async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
+  const claims = await readActiveClaims();
+  const myClaim = claims.find(c => c.service === MY_SERVICE);
+  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+  return blocker ? { conflict: true, blocker } : { conflict: false };
+}
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'upwork-safari-automation';
@@ -63,6 +91,9 @@ const TOOLS = [
   { name: 'upwork_get_analytics', description: 'Get analytics summary (total applications, view rate, response rate, top keywords).', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_get_rate_status', description: 'Detect if Upwork is showing rate limit warnings or CAPTCHA challenges.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_improve_proposal', description: 'Use AI to improve an existing proposal cover letter (makes it more concise, professional, and compelling).', inputSchema: { type: 'object', properties: { existingProposal: { type: 'string', description: 'Current proposal text to improve' }, jobDescription: { type: 'string', description: 'Job description for context' }, feedback: { type: 'string', description: 'Optional specific feedback or improvement instructions' } }, required: ['existingProposal'] } },
+  { name: 'upwork_session_ensure', description: 'Ensure the upwork-automation service has an active Safari tab claim before navigating. Call this at the start of any session to get a dedicated Upwork tab instead of hijacking the active one.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_claim_status', description: 'Read /tmp/safari-tab-claims.json — shows all active Safari tab claims across services and any conflicts with the Upwork tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_release_session', description: 'Release the upwork-automation tab claim so the Safari tab is freed for user browsing or other services.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -73,16 +104,28 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'upwork_get_job_detail':    result = await api('GET',  `/api/upwork/jobs/detail?url=${encodeURIComponent(args.url as string)}`); break;
     case 'upwork_score_jobs':        result = await api('POST', '/api/upwork/jobs/score-batch', { jobs: args.jobs, preferredSkills: args.preferredSkills, minBudget: args.minBudget, availableConnects: args.availableConnects }); break;
     case 'upwork_generate_proposal': result = await api('POST', '/api/upwork/proposals/generate', { job: args.job, customInstructions: args.customInstructions, highlightSkills: args.highlightSkills }); break;
-    case 'upwork_submit_proposal':   result = await api('POST', '/api/upwork/proposals/submit', { jobUrl: args.jobUrl, coverLetter: args.coverLetter, hourlyRate: args.hourlyRate, fixedBid: args.fixedBid, dryRun: args.dryRun ?? false }); break;
+    case 'upwork_submit_proposal': {
+      if (!(args.dryRun ?? false)) {
+        const submitConflict = await checkNavigationConflict();
+        if (submitConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${submitConflict.blocker.service}' (port ${submitConflict.blocker.port}). Cannot submit proposal while another service owns the tab.`, blocker: submitConflict.blocker };
+      }
+      result = await api('POST', '/api/upwork/proposals/submit', { jobUrl: args.jobUrl, coverLetter: args.coverLetter, hourlyRate: args.hourlyRate, fixedBid: args.fixedBid, dryRun: args.dryRun ?? false }); break;
+    }
     case 'upwork_get_conversations': result = await api('GET',  '/api/upwork/conversations'); break;
     case 'upwork_get_messages':      result = await api('GET',  `/api/upwork/messages?limit=${args.limit ?? 20}`); break;
     case 'upwork_open_message':      result = await api('POST', '/api/upwork/messages/open', { clientName: args.clientName }); break;
-    case 'upwork_send_message':      result = await api('POST', '/api/upwork/messages/send', { text: args.text }); break;
+    case 'upwork_send_message': {
+      const msgConflict = await checkNavigationConflict();
+      if (msgConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${msgConflict.blocker.service}' (port ${msgConflict.blocker.port}). Cannot send message while another service owns the tab.`, blocker: msgConflict.blocker };
+      result = await api('POST', '/api/upwork/messages/send', { text: args.text }); break;
+    }
     case 'upwork_get_applications':  result = await api('GET',  '/api/upwork/applications'); break;
     case 'upwork_monitor_scan':      result = await api('POST', '/api/upwork/monitor/scan'); break;
     case 'upwork_list_watches':      result = await api('GET',  '/api/upwork/monitor/watches'); break;
     case 'upwork_get_rate_limits':   result = await api('GET',  '/api/upwork/rate-limits'); break;
     case 'upwork_navigate': {
+      const navConflict = await checkNavigationConflict();
+      if (navConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${navConflict.blocker.service}' (port ${navConflict.blocker.port}). Call upwork_session_ensure first to get a dedicated tab.`, blocker: navConflict.blocker };
       const sectionMap: Record<string, string> = { 'find-work': '/api/upwork/navigate/find-work', 'my-jobs': '/api/upwork/navigate/my-jobs', 'messages': '/api/upwork/navigate/messages' };
       result = await api('POST', sectionMap[args.section as string] || '/api/upwork/navigate/find-work');
       break;
@@ -104,6 +147,19 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'upwork_get_analytics':     result = await api('GET', '/api/upwork/analytics'); break;
     case 'upwork_get_rate_status':   result = await api('GET', '/api/upwork/rate-status'); break;
     case 'upwork_improve_proposal':  result = await api('POST', '/api/upwork/proposals/improve', { existingProposal: args.existingProposal, jobDescription: args.jobDescription, feedback: args.feedback }); break;
+    case 'upwork_session_ensure':
+      result = await api('POST', '/api/session/ensure', {});
+      break;
+    case 'upwork_claim_status': {
+      const claims = await readActiveClaims();
+      const myClaim = claims.find(c => c.service === MY_SERVICE);
+      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
+      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
+      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
+      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 };
+      break;
+    }
+    case 'upwork_release_session':   result = await api('POST', '/api/session/clear', {}); break;
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };

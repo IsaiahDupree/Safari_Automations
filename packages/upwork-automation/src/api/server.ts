@@ -54,9 +54,19 @@ import {
   deleteTemplate,
 } from '../automation/template-manager.js';
 import { getAnalyticsSummary } from '../automation/analytics-tracker.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
+import type { NextFunction } from 'express';
 
 const PORT = process.env.UPWORK_PORT || 3104;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+const SERVICE_NAME = 'upwork-automation';
+const SERVICE_PORT = Number(PORT);
+const SESSION_URL_PATTERN = 'upwork.com';
+const OPEN_URL = 'https://www.upwork.com/nx/find-work/';
+const CLAIM_EXEMPT = /^\/(health|api\/tabs\/.*|api\/upwork\/status|api\/upwork\/rate-limits)$/;
+
+const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
 const app = express();
 app.use(cors());
@@ -64,6 +74,45 @@ app.use(express.json());
 
 // Enable verbose logging for debugging
 getDefaultDriver().setConfig({ verbose: true });
+
+async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) {
+    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
+  const autoId = `upwork-auto-${Date.now()}`;
+  try {
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
+    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    next();
+  } catch (err) {
+    res.status(503).json({
+      error: 'No Safari tab available for upwork-automation',
+      detail: String(err),
+      fix: `Open Safari and navigate to ${OPEN_URL}`,
+    });
+  }
+}
+
+app.use(requireTabClaim);
+
+// Global 30s heartbeat refresh
+setInterval(async () => {
+  for (const [id, coord] of activeCoordinators) {
+    try { await coord.heartbeat(); }
+    catch { activeCoordinators.delete(id); }
+  }
+}, 30_000);
 
 // Rate limiting state
 let actionCount = 0;
@@ -80,6 +129,75 @@ function checkRateLimit(): boolean {
   actionCount++;
   return true;
 }
+
+// ─── Session & Tab Claim Management ─────────────────────────
+
+app.post('/api/session/ensure', async (_req: Request, res: Response) => {
+  try {
+    const info = await getDefaultDriver().ensureActiveSession(SESSION_URL_PATTERN);
+    res.json({ ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url });
+  } catch (error: any) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/session/clear', (_req: Request, res: Response) => {
+  getDefaultDriver().clearTrackedSession();
+  res.json({ ok: true, message: 'Tracked session cleared' });
+});
+
+app.get('/api/session/status', (_req: Request, res: Response) => {
+  const info = getDefaultDriver().getSessionInfo();
+  res.json({
+    tracked: !!(info?.windowIndex),
+    windowIndex: info?.windowIndex ?? null,
+    tabIndex: info?.tabIndex ?? null,
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
+});
+
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  try {
+    const claims = await TabCoordinator.listClaims();
+    res.json({ claims, count: claims.length });
+  } catch (error: any) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, openUrl } = req.body;
+  if (!agentId) return res.status(400).json({ error: 'agentId required' });
+  try {
+    let coord = activeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
+      activeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim();
+    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json(claim);
+  } catch (error: any) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const { agentId } = req.body;
+  if (!agentId) return res.status(400).json({ error: 'agentId required' });
+  const coord = activeCoordinators.get(agentId);
+  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
+  res.json({ ok: true });
+});
+
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const { agentId } = req.body;
+  if (!agentId) return res.status(400).json({ error: 'agentId required' });
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) return res.status(404).json({ error: 'No claim for agentId' });
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
 
 // ─── Health ──────────────────────────────────────────────────
 
@@ -756,6 +874,16 @@ app.delete('/api/upwork/templates/:id', (req: Request, res: Response) => {
 });
 
 // ─── Start Server ────────────────────────────────────────────
+
+TabCoordinator.listClaims().then(claims => {
+  const stale = claims.filter(c => c.service === SERVICE_NAME);
+  if (stale.length > 0) {
+    console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+    import('fs/promises').then(fsp => {
+      fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+    });
+  }
+}).catch(() => {});
 
 app.listen(PORT, () => {
   console.log(`\n🏢 Upwork Automation API running on http://localhost:${PORT}`);
