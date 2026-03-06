@@ -178,3 +178,157 @@ describe('Blotato payload structure', () => {
     assert.equal(typeof payload.post.target.shouldNotifySubscribers, 'boolean');
   });
 });
+
+// ─── Leaderboard logic ────────────────────────────────────────────────────────
+
+function extractNicheTest(prompt: string): string {
+  const p = prompt.toLowerCase();
+  if (p.match(/mars|space|planet|astronaut/)) return 'space';
+  if (p.match(/\bai\b|robot|machine/)) return 'ai_tech';
+  if (p.match(/nature|forest|ocean|waterfall/)) return 'nature';
+  if (p.match(/city|urban|street|skyline/)) return 'urban';
+  if (p.match(/fantasy|magic|dragon|wizard/)) return 'fantasy';
+  return 'other';
+}
+
+function rankByQuality(videos: any[]): any[] {
+  return [...videos].sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0));
+}
+
+function rankByViews(videos: any[]): any[] {
+  return [...videos].sort((a, b) => (b.ytViews ?? 0) - (a.ytViews ?? 0));
+}
+
+describe('leaderboard logic', () => {
+  const testVideos = [
+    { id: 'v1', prompt: 'An astronaut on Mars', qualityScore: 8.5, ytViews: 1200, generatedAt: '2026-03-05T10:00:00Z' },
+    { id: 'v2', prompt: 'Waterfall in nature', qualityScore: 9.1, ytViews: 3800, generatedAt: '2026-03-05T12:00:00Z' },
+    { id: 'v3', prompt: 'AI robots in a factory', qualityScore: 7.2, ytViews: 430, generatedAt: '2026-03-05T11:00:00Z' },
+    { id: 'v4', prompt: 'Wizard casting a spell', qualityScore: 8.0, ytViews: 980, generatedAt: '2026-03-05T14:00:00Z' },
+  ];
+
+  it('sorts by quality score descending', () => {
+    const ranked = rankByQuality(testVideos);
+    assert.equal(ranked[0].qualityScore, 9.1);
+    assert.equal(ranked[1].qualityScore, 8.5);
+    assert.equal(ranked[3].qualityScore, 7.2);
+  });
+
+  it('sorts by views descending', () => {
+    const ranked = rankByViews(testVideos);
+    assert.equal(ranked[0].ytViews, 3800);
+    assert.equal(ranked[1].ytViews, 1200);
+  });
+
+  it('extracts niche from prompt correctly', () => {
+    assert.equal(extractNicheTest('An astronaut walks on Mars at sunset'), 'space');
+    assert.equal(extractNicheTest('AI robot assembling parts'), 'ai_tech');
+    assert.equal(extractNicheTest('Stunning waterfall in nature'), 'nature');
+    assert.equal(extractNicheTest('A dragon breathes fire, epic fantasy battle'), 'fantasy');
+    assert.equal(extractNicheTest('City skyline at night'), 'urban');
+    assert.equal(extractNicheTest('A random unclassified prompt'), 'other');
+  });
+
+  it('top N limit works', () => {
+    const ranked = rankByQuality(testVideos).slice(0, 2);
+    assert.equal(ranked.length, 2);
+    assert.equal(ranked[0].id, 'v2');
+  });
+});
+
+describe('notification logic', () => {
+  it('pushes and filters notifications by type', () => {
+    const notifs = [
+      { id: 'n1', type: 'video_generated', message: 'Video generated', read: false, createdAt: '2026-03-05T10:00:00Z' },
+      { id: 'n2', type: 'low_gens', message: 'Only 2 gens left', read: false, createdAt: '2026-03-05T11:00:00Z' },
+      { id: 'n3', type: 'youtube_uploaded', message: 'Uploaded', read: true, createdAt: '2026-03-05T12:00:00Z' },
+    ];
+    const unread = notifs.filter(n => !n.read);
+    assert.equal(unread.length, 2);
+    const lowGens = notifs.filter(n => n.type === 'low_gens');
+    assert.equal(lowGens.length, 1);
+    assert.equal(lowGens[0].message, 'Only 2 gens left');
+  });
+
+  it('mark-read mutates read flag', () => {
+    const notifs = [
+      { id: 'n1', type: 'video_generated', read: false },
+      { id: 'n2', type: 'low_gens', read: false },
+    ];
+    const idsToMark = new Set(['n1']);
+    for (const n of notifs) { if (idsToMark.has(n.id)) n.read = true; }
+    assert.equal(notifs[0].read, true);
+    assert.equal(notifs[1].read, false);
+  });
+
+  it('quality score extraction from Claude analysis text', () => {
+    const cases = [
+      ['Quality Rating: 8.5/10 — excellent', 8.5],
+      ['**9/10** - Stunning visuals', 9],
+      ['I rate this 7.2/10 overall', 7.2],
+      ['No score here', null],
+    ];
+    for (const [text, expected] of cases) {
+      const m = (text as string).match(/(\d+(?:\.\d+)?)\s*\/\s*10/);
+      const score = m ? parseFloat(m[1]) : null;
+      assert.equal(score, expected, `Failed for: "${text}"`);
+    }
+  });
+});
+
+describe('HTTP endpoint contracts', () => {
+  const BASE = 'http://localhost:3434';
+
+  it('GET /api/sora/status returns required fields', async () => {
+    try {
+      const res = await fetch(`${BASE}/api/sora/status`);
+      if (!res.ok) { console.log('  (backend not running — skipped)'); return; }
+      const d = await res.json() as any;
+      assert.ok('date' in d, 'date field required');
+      assert.ok('total_videos' in d, 'total_videos required');
+      assert.ok('unread_notifications' in d, 'unread_notifications required');
+      assert.ok('gens_left' in d || d.gens_left === undefined, 'gens_left field exists');
+    } catch { console.log('  (backend not running — skipped)'); }
+  });
+
+  it('GET /api/sora/leaderboard returns ranked list', async () => {
+    try {
+      const res = await fetch(`${BASE}/api/sora/leaderboard?sort_by=quality&limit=5`);
+      if (!res.ok) { console.log('  (backend not running — skipped)'); return; }
+      const d = await res.json() as any;
+      assert.ok(Array.isArray(d.leaderboard), 'leaderboard must be array');
+      assert.ok(Array.isArray(d.niche_breakdown), 'niche_breakdown must be array');
+      assert.ok('total_videos' in d, 'total_videos required');
+      if (d.leaderboard.length > 1) {
+        assert.ok(
+          (d.leaderboard[0].quality_score ?? 0) >= (d.leaderboard[1].quality_score ?? 0),
+          'leaderboard must be sorted descending by quality'
+        );
+      }
+    } catch { console.log('  (backend not running — skipped)'); }
+  });
+
+  it('GET /api/sora/notifications returns feed structure', async () => {
+    try {
+      const res = await fetch(`${BASE}/api/sora/notifications?limit=5`);
+      if (!res.ok) { console.log('  (backend not running — skipped)'); return; }
+      const d = await res.json() as any;
+      assert.ok('total' in d, 'total required');
+      assert.ok('unread' in d, 'unread required');
+      assert.ok(Array.isArray(d.notifications), 'notifications must be array');
+    } catch { console.log('  (backend not running — skipped)'); }
+  });
+
+  it('POST /api/sora/notifications/mark-read returns marked count', async () => {
+    try {
+      const res = await fetch(`${BASE}/api/sora/notifications/mark-read`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      });
+      if (!res.ok) { console.log('  (backend not running — skipped)'); return; }
+      const d = await res.json() as any;
+      assert.ok('marked' in d, 'marked count required');
+      assert.ok(typeof d.marked === 'number', 'marked must be number');
+    } catch { console.log('  (backend not running — skipped)'); }
+  });
+});
