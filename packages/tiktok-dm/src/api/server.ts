@@ -229,33 +229,29 @@ async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number
   return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
 }
 
-// Health check
-app.get('/health', (_req: Request, res: Response) => {
-
 // ── Tab claim enforcement ─────────────────────────────────────────────────────
 // Every automation route MUST have an active tab claim before it runs.
-// On first request: auto-claims an existing tab OR opens a new one.
+// On first request: auto-claims an existing tiktok.com tab OR opens one.
 // Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+// Routes exempt: /health, /api/tabs/*, /api/session/*, /api/*/status, /api/*/rate-limits
 const OPEN_URL = 'https://www.tiktok.com/messages';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^/]+\/status$|^\/api\/[^/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
-
-  if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
-    driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    next();
-    return;
-  }
-
-  // No claim — auto-claim now (open new tab if needed)
-  const autoId = `tiktok-dm-auto-${Date.now()}`;
   try {
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+    if (myClaim) {
+      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+      next();
+      return;
+    }
+
+    // No claim — auto-claim now (finds existing tiktok.com tab or opens one)
+    const autoId = `tiktok-dm-auto-${Date.now()}`;
     const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
@@ -264,9 +260,10 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
     next();
   } catch (err) {
     res.status(503).json({
+      ok: false,
       error: 'No Safari tab available for tiktok-dm',
       detail: String(err),
-      fix: `Open Safari and navigate to https://www.tiktok.com/messages, or POST /api/tabs/claim with { agentId, openUrl: "https://www.tiktok.com/messages" }`,
+      fix: 'Open Safari and navigate to https://www.tiktok.com/messages',
     });
   }
 }
@@ -274,6 +271,8 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
 app.use(requireTabClaim);
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Health check (exempt from tab claim)
+app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', service: 'tiktok-dm', platform: 'tiktok', port: PORT });
 });
 
@@ -304,7 +303,13 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
         : 'TikTok tab not found — open Safari and navigate to tiktok.com',
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    // No TikTok tab found — return ok:false rather than a 500 so callers can handle gracefully
+    const msg = String(error);
+    if (msg.includes('No') && msg.includes('tab found')) {
+      res.json({ ok: false, message: 'TikTok tab not found — open Safari and navigate to tiktok.com' });
+    } else {
+      res.status(500).json({ ok: false, error: msg });
+    }
   }
 });
 
@@ -406,31 +411,44 @@ app.get('/api/tiktok/conversations', async (_req: Request, res: Response) => {
   }
 });
 
-// List unread conversations
+// List unread conversations — navigates to inbox first, then reads DOM
 app.get('/api/tiktok/conversations/unread', async (_req: Request, res: Response) => {
   try {
+    // Ensure we're on the inbox page before reading
+    const navResult = await navigateToInbox(driver);
+    if (!navResult.success) {
+      res.status(503).json({ error: `Failed to navigate to inbox: ${navResult.error}` });
+      return;
+    }
+    // Small wait for conversation list to render
+    await driver.wait(1500);
+
     const result = await driver.executeJS(`
       (function() {
         var unreadConvos = [];
-        var items = document.querySelectorAll('[data-e2e="message-item"], [data-e2e="chat-list-item"]');
+        var items = document.querySelectorAll('[data-e2e="message-item"], [data-e2e="chat-list-item"], [class*="ConversationItem"], [class*="conversation-item"]');
 
         items.forEach(function(item) {
-          // Check for unread indicators: badge or unread class
-          var hasUnread = !!item.querySelector('[class*="unread"], [class*="badge"], [class*="Unread"], [class*="Badge"]');
-
+          var hasUnread = !!item.querySelector('[class*="unread"], [class*="badge"], [class*="Unread"], [class*="Badge"], [class*="dot"]');
           if (hasUnread) {
-            var text = item.innerText.trim().split("\\n");
+            var text = item.innerText.trim().split("\\n").filter(function(l) { return l.trim(); });
             var username = text[0] || 'Unknown';
             var preview = text[1] ? text[1].substring(0, 100) : '';
             unreadConvos.push({ username: username, preview: preview });
           }
         });
 
-        return JSON.stringify({ count: unreadConvos.length, conversations: unreadConvos });
+        var allItems = document.querySelectorAll('[data-e2e="message-item"], [data-e2e="chat-list-item"], [class*="ConversationItem"], [class*="conversation-item"]');
+        return JSON.stringify({ count: unreadConvos.length, total: allItems.length, conversations: unreadConvos });
       })()
     `);
 
-    const parsed = JSON.parse(result);
+    let parsed: { count: number; total: number; conversations: { username: string; preview: string }[] };
+    try {
+      parsed = JSON.parse(result);
+    } catch {
+      parsed = { count: 0, total: 0, conversations: [] };
+    }
     res.json(parsed);
   } catch (error) {
     res.status(500).json({ error: String(error) });
@@ -1017,6 +1035,7 @@ app.get('/api/search', async (req: Request, res: Response) => {
 });
 
 // POST /api/messages/send-to — with dryRun support
+// Note: tab claim already enforced by requireTabClaim middleware
 app.post('/api/messages/send-to', async (req: Request, res: Response) => {
   const { username, text, message, dryRun } = req.body as { username: string; text?: string; message?: string; dryRun?: boolean };
   const msg = text || message;
@@ -1029,17 +1048,6 @@ app.post('/api/messages/send-to', async (req: Request, res: Response) => {
     console.log(`[send-to] DryRun: would send to @${username}: "${msg.substring(0, 50)}..."`);
     res.json({ success: true, dryRun: true, username, message: msg });
     return;
-  }
-
-  const agentId = `tiktok-dm-send-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[send-to] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
-  } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
   }
 
   try {
@@ -1058,7 +1066,6 @@ app.post('/api/messages/send-to', async (req: Request, res: Response) => {
       recordMessage();
       logDM({ platform: 'tiktok', username, messageText: msg, isOutbound: true });
       logDMToSupabase(username, msg);
-      // CRMLite sync (fire-and-forget)
       syncToCRMLite(username, msg);
       res.json({
         success: true, username: result.username, verified: result.verified,
@@ -1070,8 +1077,6 @@ app.post('/api/messages/send-to', async (req: Request, res: Response) => {
     }
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
   }
 });
 
@@ -1154,17 +1159,8 @@ app.get('/api/prospect/score/:username', async (req: Request, res: Response) => 
 });
 
 // POST /api/prospect/discover
+// Note: tab claim already enforced by requireTabClaim middleware
 app.post('/api/prospect/discover', async (req: Request, res: Response) => {
-  const agentId = `tiktok-dm-discover-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
-  } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
-  }
 
   try {
     const {
@@ -1241,8 +1237,6 @@ app.post('/api/prospect/discover', async (req: Request, res: Response) => {
     res.json({ candidates, total: candidates.length, hashtags });
   } catch (error) {
     res.status(500).json({ error: String(error) });
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
   }
 });
 
@@ -1324,6 +1318,21 @@ function syncToCRMLite(username: string, message: string): void {
 
 // Start server
 export function startServer(port: number = PORT): void {
+  // On startup: evict any stale claims left by a previous process for this service.
+  // This prevents the new process from inheriting a dead window/tab reference.
+  TabCoordinator.listClaims().then(claims => {
+    const myStale = claims.filter(c => c.service === SERVICE_NAME);
+    if (myStale.length > 0) {
+      console.log(`[startup] Clearing ${myStale.length} stale tiktok-dm claim(s) from previous process`);
+      // Write back claims without our service's entries
+      import('fs/promises').then(fsp => {
+        const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+        const remaining = claims.filter(c => c.service !== SERVICE_NAME);
+        fsp.writeFile(CLAIMS_FILE, JSON.stringify(remaining, null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+
   app.listen(port, () => {
     console.log(`🎵 TikTok DM API server running on http://localhost:${port}`);
     console.log(`   Health: GET /health`);

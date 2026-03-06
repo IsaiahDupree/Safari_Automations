@@ -41,12 +41,14 @@ import {
 } from '../automation/outreach-engine.js';
 import type { ProspectStage } from '../automation/outreach-engine.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
+import { ChromeTabCoordinator } from '../automation/chrome-tab-coordinator.js';
 
 const PORT = process.env.LINKEDIN_PORT || 3105;
 const SERVICE_NAME_TAB = 'linkedin-automation';
 const SERVICE_PORT_TAB = 3105;
 const SESSION_URL_PATTERN = 'linkedin.com';
 const activeCoordinators = new Map<string, TabCoordinator>();
+const chromeCoordinators = new Map<string, ChromeTabCoordinator>();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AUTH_TOKEN = process.env.LINKEDIN_AUTH_TOKEN || 'test-token-12345';
 const REPLY_POLL_INTERVAL_MS = parseInt(process.env.REPLY_POLL_INTERVAL_MS || '300000', 10); // 5 min default
@@ -1802,6 +1804,46 @@ app.post('/api/tabs/heartbeat', async (req, res) => {
   res.json({ ok: true, heartbeat: Date.now() });
 });
 
+// ─── Chrome Tab Coordination Endpoints ──────────────────────────────────────
+
+app.get('/api/chrome/tabs/claims', async (_req, res) => {
+  const claims = await ChromeTabCoordinator.listClaims();
+  res.json({ claims, count: claims.length });
+});
+
+app.post('/api/chrome/tabs/claim', async (req, res) => {
+  const { agentId, windowIndex, tabIndex, openUrl } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  try {
+    let coord = chromeCoordinators.get(agentId);
+    if (!coord) {
+      coord = new ChromeTabCoordinator(agentId, 'linkedin-chrome', SERVICE_PORT_TAB, SESSION_URL_PATTERN, openUrl);
+      chromeCoordinators.set(agentId, coord);
+    }
+    const claim = await coord.claim(windowIndex, tabIndex);
+    res.json({ ok: true, claim });
+  } catch (error) {
+    res.status(409).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post('/api/chrome/tabs/release', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = chromeCoordinators.get(agentId);
+  if (coord) { await coord.release(); chromeCoordinators.delete(agentId); }
+  res.json({ ok: true });
+});
+
+app.post('/api/chrome/tabs/heartbeat', async (req, res) => {
+  const { agentId } = req.body;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const coord = chromeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No Chrome claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
+});
+
 app.get('/api/session/status', (req, res) => {
   const info = getDefaultDriver().getSessionInfo();
   res.json({
@@ -1842,11 +1884,19 @@ app.post('/api/debug/eval', async (req, res) => {
   }
 });
 
-// Global 30s heartbeat refresh
+// Global 30s heartbeat refresh — Safari
 setInterval(async () => {
   for (const [id, coord] of activeCoordinators) {
     try { await coord.heartbeat(); }
     catch { activeCoordinators.delete(id); }
+  }
+}, 30_000);
+
+// Global 30s heartbeat refresh — Chrome
+setInterval(async () => {
+  for (const [id, coord] of chromeCoordinators) {
+    try { await coord.heartbeat(); }
+    catch { chromeCoordinators.delete(id); }
   }
 }, 30_000);
 

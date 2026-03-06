@@ -1723,6 +1723,16 @@ app.post('/api/debug/eval', requireActiveSession, async (req, res) => {
 const PORT = parseInt(process.env.PORT || '3100');
 
 export function startServer(port: number = PORT): void {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+
   app.listen(port, () => {
     console.log(`\n🚀 Instagram DM API Server running on http://localhost:${port}`);
     console.log(`\nEndpoints:`);

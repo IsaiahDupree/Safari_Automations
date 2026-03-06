@@ -35,7 +35,12 @@ function getTabDriver(): SafariDriver {
 // ─── Authentication Middleware ──────────────────────────────
 const VALID_TOKEN = process.env.API_TOKEN || 'test-token-12345';
 
+const AUTH_EXEMPT_PATHS = /^\/health$|^\/api\/session\/|^\/api\/tabs\/|^\/api\/[^/]+\/status$/;
+
 function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  // Skip auth for internal tab coordination endpoints
+  if (req.method === 'OPTIONS' || AUTH_EXEMPT_PATHS.test(req.path)) { next(); return; }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader) {
@@ -163,7 +168,7 @@ app.use('/api', authMiddleware);
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
 const OPEN_URL = 'https://x.com';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
@@ -513,6 +518,184 @@ app.post('/api/twitter/search-and-reply', async (req: Request, res: Response) =>
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// === COMMENT SWEEP ============================================================
+// POST /api/twitter/comment-sweep
+// Structured niche-aware comment campaign. Takes a list of niches (each with
+// keywords + per-niche cap), a per-feed cap, and a total cap for the run.
+// Returns per-niche results + a deduplicated URL log so callers can persist state.
+//
+// Body:
+//   niches       NicheConfig[]  — [{ name, keywords, maxComments }]
+//   feedSources  string[]       — ["search","foryou","following"] (default ["search"])
+//   maxPerNiche  number         — override per-niche cap (default 5)
+//   maxPerFeed   number         — max comments from home feed sources (default 3)
+//   maxTotal     number         — hard cap for the whole run (default 20)
+//   style        string         — reply tone (default "insightful, concise, authentic")
+//   dryRun       boolean        — generate but do NOT post (default false)
+//   seenUrls     string[]       — tweet URLs already replied to (dedup from caller state)
+
+interface NicheConfig {
+  name: string;
+  keywords: string[];
+  maxComments?: number;
+}
+
+interface SweepNicheResult {
+  niche: string;
+  keywords: string[];
+  tweetsFound: number;
+  commented: { tweetUrl: string; author: string; reply: string; dryRun: boolean }[];
+  skipped: { tweetUrl: string; reason: string }[];
+  errors: string[];
+}
+
+app.post('/api/twitter/comment-sweep', async (req: Request, res: Response) => {
+  try {
+    const {
+      niches = [] as NicheConfig[],
+      feedSources = ['search'] as string[],
+      maxPerNiche = 5,
+      maxPerFeed = 3,
+      maxTotal = 20,
+      style = 'insightful, concise, authentic — like a practitioner adding real value',
+      dryRun = false,
+      seenUrls = [] as string[],
+    } = req.body;
+
+    if (!niches.length) {
+      res.status(400).json({ error: 'niches array required' });
+      return;
+    }
+
+    const d = getDriver();
+    const alreadySeen = new Set<string>(seenUrls);
+    const newlyCommented: string[] = [];
+    const nicheResults: SweepNicheResult[] = [];
+    let totalCommented = 0;
+
+    // ── Feed source sweep (home feed) ────────────────────────────────────────
+    const feedResults: { tweetUrl: string; author: string; reply: string; dryRun: boolean }[] = [];
+    const feedErrors: string[] = [];
+
+    for (const feedTab of feedSources.filter(s => s === 'foryou' || s === 'following')) {
+      if (totalCommented >= maxTotal) break;
+      let feedCount = 0;
+      try {
+        const feedData = await d.getHomeFeed(feedTab, maxPerFeed + 5);
+        const tweets = (feedData as any)?.tweets || (feedData as any)?.data?.tweets || [];
+
+        for (const tweet of tweets) {
+          if (feedCount >= maxPerFeed || totalCommented >= maxTotal) break;
+          const url = tweet.tweetUrl || tweet.url || '';
+          if (!url || alreadySeen.has(url)) continue;
+          if (!tweet.text || tweet.text.length < 10) continue;
+
+          const ctx = `Replying to @${tweet.handle || tweet.author}: "${(tweet.text || '').substring(0, 120)}"`;
+          const reply = await generateAITweet('AI automation & SaaS growth', style, ctx);
+          if (!reply) continue;
+
+          if (!dryRun) {
+            const result = await d.replyToTweet(url, reply);
+            if (result?.success) {
+              alreadySeen.add(url);
+              newlyCommented.push(url);
+              feedResults.push({ tweetUrl: url, author: tweet.handle || '', reply, dryRun: false });
+              totalCommented++;
+              feedCount++;
+              await new Promise(r => setTimeout(r, 4000 + Math.random() * 3000));
+            }
+          } else {
+            alreadySeen.add(url);
+            newlyCommented.push(url);
+            feedResults.push({ tweetUrl: url, author: tweet.handle || '', reply, dryRun: true });
+            totalCommented++;
+            feedCount++;
+          }
+        }
+      } catch (e) {
+        feedErrors.push(`${feedTab}: ${String(e)}`);
+      }
+    }
+
+    // ── Per-niche keyword sweep ──────────────────────────────────────────────
+    for (const niche of niches) {
+      if (totalCommented >= maxTotal) break;
+
+      const cap = niche.maxComments ?? maxPerNiche;
+      const result: SweepNicheResult = {
+        niche: niche.name,
+        keywords: niche.keywords,
+        tweetsFound: 0,
+        commented: [],
+        skipped: [],
+        errors: [],
+      };
+
+      for (const keyword of niche.keywords) {
+        if (result.commented.length >= cap || totalCommented >= maxTotal) break;
+
+        try {
+          const searchData = await d.searchTweets(keyword, { maxResults: cap * 3 });
+          const tweets = (searchData as any)?.tweets || [];
+          result.tweetsFound += tweets.length;
+
+          for (const tweet of tweets) {
+            if (result.commented.length >= cap || totalCommented >= maxTotal) break;
+
+            const url = tweet.tweetUrl || tweet.url || '';
+            if (!url) { result.skipped.push({ tweetUrl: '', reason: 'no url' }); continue; }
+            if (alreadySeen.has(url)) { result.skipped.push({ tweetUrl: url, reason: 'already seen' }); continue; }
+            if (!tweet.text || tweet.text.length < 15) { result.skipped.push({ tweetUrl: url, reason: 'tweet too short' }); continue; }
+
+            // Generate niche-specific contextual reply
+            const tweetSnippet = (tweet.text || '').substring(0, 150);
+            const ctx = `You are replying to a tweet about ${niche.name}. Tweet by @${tweet.handle || 'user'}: "${tweetSnippet}". Add genuine value — share a specific insight, ask a smart question, or build on their point.`;
+            const reply = await generateAIComment(tweetSnippet, tweet.handle || '');
+            if (!reply) { result.skipped.push({ tweetUrl: url, reason: 'no reply generated' }); continue; }
+
+            if (!dryRun) {
+              const postResult = await d.replyToTweet(url, reply);
+              if (postResult?.success) {
+                alreadySeen.add(url);
+                newlyCommented.push(url);
+                result.commented.push({ tweetUrl: url, author: tweet.handle || '', reply, dryRun: false });
+                totalCommented++;
+                // Human-like delay: 8–20s between comments
+                await new Promise(r => setTimeout(r, 8000 + Math.random() * 12000));
+              } else {
+                result.errors.push(`Post failed for ${url}: ${JSON.stringify(postResult)}`);
+              }
+            } else {
+              alreadySeen.add(url);
+              newlyCommented.push(url);
+              result.commented.push({ tweetUrl: url, author: tweet.handle || '', reply, dryRun: true });
+              totalCommented++;
+            }
+          }
+        } catch (e) {
+          result.errors.push(`keyword "${keyword}": ${String(e)}`);
+        }
+      }
+
+      nicheResults.push(result);
+    }
+
+    res.json({
+      success: true,
+      dryRun,
+      totalCommented,
+      maxTotal,
+      feedResults,
+      feedErrors,
+      nicheResults,
+      newlyCommentedUrls: newlyCommented,
+      summary: `${totalCommented} comments posted across ${nicheResults.length} niches` + (dryRun ? ' (DRY RUN)' : ''),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // === NOTIFICATIONS SCRAPING ===
 app.get('/api/twitter/notifications', async (req: Request, res: Response) => {
   try {
@@ -659,7 +842,12 @@ app.post('/api/session/ensure', async (req, res) => {
       url: info.url,
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const msg = String(error);
+    if (msg.includes('No tab found') || msg.includes("No 'x.com'") || msg.includes('x.com')) {
+      res.json({ ok: false, error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
   }
 });
 
@@ -690,6 +878,17 @@ setInterval(async () => {
 // ─── Error Handler (must be last) ──────────────────────────
 app.use(errorHandler);
 
-export function startServer(port = PORT) { app.listen(port, () => console.log(`🐦 Twitter Comments API running on http://localhost:${port}`)); }
+export function startServer(port = PORT) {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+  app.listen(port, () => console.log(`🐦 Twitter Comments API running on http://localhost:${port}`));
+}
 if (process.argv[1]?.includes('server')) startServer();
 export { app };

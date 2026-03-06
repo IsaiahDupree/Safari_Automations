@@ -217,9 +217,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // Auth middleware (skip for health, OPTIONS)
+const AUTH_EXEMPT_PATHS = /^\/health$|^\/api\/session\/|^\/api\/tabs\/|^\/api\/[^/]+\/status$/;
+
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Skip auth for health and OPTIONS
-  if (req.path === '/health' || req.method === 'OPTIONS') {
+  // Skip auth for health, OPTIONS, and internal tab coordination endpoints
+  if (req.method === 'OPTIONS' || AUTH_EXEMPT_PATHS.test(req.path)) {
     next();
     return;
   }
@@ -1068,7 +1070,12 @@ app.post('/api/session/ensure', async (req, res) => {
     const info = await getTabDriver().ensureActiveSession(SESSION_URL_PATTERN);
     res.json({ ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const msg = String(error);
+    if (msg.includes('No tab found') || msg.includes('No \'threads') || msg.includes('threads.net')) {
+      res.json({ ok: false, error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
   }
 });
 
@@ -1095,6 +1102,169 @@ setInterval(async () => {
     catch { activeCoordinators.delete(id); }
   }
 }, 30_000);
+
+// ═══════════════════════════════════════════════════════════════
+// COMMENT SWEEP — niche + feed batch (called by threads-comment-sweep.js daemon)
+// ═══════════════════════════════════════════════════════════════
+
+interface SweepNicheConfig {
+  name: string;
+  keywords: string[];
+  maxComments?: number;
+}
+
+app.post('/api/threads/comment-sweep', wrapAsync(async (req, res) => {
+  const {
+    niches = [] as SweepNicheConfig[],
+    feedSources = ['foryou'] as string[],
+    maxPerNiche = 5,
+    maxPerFeed = 3,
+    maxTotal = 20,
+    style = 'insightful, practitioner-level, concise — adds genuine value to the conversation',
+    dryRun = false,
+    seenUrls = [] as string[],
+  } = req.body;
+
+  if (!Array.isArray(niches) || niches.length === 0) {
+    res.status(400).json({ error: 'Bad Request', message: 'niches array is required and must not be empty' });
+    return;
+  }
+
+  const d = getDriver();
+  const ai = getAIGenerator();
+  const seenSet = new Set<string>(seenUrls);
+  const newlyCommentedUrls: string[] = [];
+  let totalCommented = 0;
+
+  const humanDelay = (minMs: number, maxMs: number) =>
+    new Promise(r => setTimeout(r, minMs + Math.random() * (maxMs - minMs)));
+
+  const generateComment = async (postText: string, author: string): Promise<string | null> => {
+    try {
+      const result = await ai.generateFromContext({
+        platform: 'threads',
+        username: author || 'user',
+        postContent: `${postText}\n\n[Style: ${style}]`,
+        existingComments: [],
+      });
+      const text = result.text || '';
+      if (!text || text.length < 10) return null;
+      return text.length > PLATFORM_CHAR_LIMIT ? text.substring(0, PLATFORM_CHAR_LIMIT) : text;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── Feed sweep ────────────────────────────────────────────────
+  const feedResults: Array<{ postUrl: string; author: string; reply: string; dryRun: boolean }> = [];
+
+  for (const feedSource of feedSources) {
+    if (totalCommented >= maxTotal) break;
+    const feedMax = Math.min(maxPerFeed, maxTotal - totalCommented);
+
+    try {
+      // Navigate to home or for-you feed
+      const feedUrl = feedSource === 'following'
+        ? 'https://www.threads.net/?feed=following'
+        : 'https://www.threads.net/';
+      await d.navigateToPost(feedUrl);
+      await humanDelay(3000, 5000);
+
+      const feedPosts = await d.findPosts(feedMax * 4);
+      let feedCount = 0;
+
+      for (const post of feedPosts) {
+        if (feedCount >= feedMax || totalCommented >= maxTotal) break;
+        if (!post.url || post.text.length < 30) continue;
+        if (seenSet.has(post.url)) continue;
+
+        const reply = await generateComment(post.text, post.author || '');
+        if (!reply) continue;
+
+        if (!dryRun) {
+          await d.navigateToPost(post.url);
+          await humanDelay(3000, 5000);
+          const result = await d.postComment(reply);
+          if (!result.success) continue;
+          await humanDelay(4000, 7000);
+        }
+
+        seenSet.add(post.url);
+        newlyCommentedUrls.push(post.url);
+        feedResults.push({ postUrl: post.url, author: post.author || '', reply, dryRun });
+        feedCount++;
+        totalCommented++;
+      }
+    } catch (err) {
+      console.error(`[comment-sweep] Feed sweep error (${feedSource}):`, err);
+    }
+  }
+
+  // ── Per-niche keyword sweep ───────────────────────────────────
+  interface NicheResult {
+    niche: string;
+    commented: Array<{ url: string; author: string; reply: string }>;
+    skipped: string[];
+    errors: string[];
+  }
+  const nicheResults: NicheResult[] = [];
+
+  for (const niche of niches) {
+    if (totalCommented >= maxTotal) break;
+    const nicheMax = Math.min(niche.maxComments ?? maxPerNiche, maxTotal - totalCommented);
+    const result: NicheResult = { niche: niche.name, commented: [], skipped: [], errors: [] };
+
+    for (const keyword of niche.keywords) {
+      if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+
+      try {
+        const searchResult = await d.searchPosts(keyword, {
+          maxResults: nicheMax * 3,
+          scrolls: 2,
+        });
+
+        for (const post of searchResult.posts) {
+          if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+          if (!post.url || post.text.length < 30) { result.skipped.push(post.url || 'no-url'); continue; }
+          if (seenSet.has(post.url)) { result.skipped.push(post.url); continue; }
+
+          const reply = await generateComment(post.text, post.author || '');
+          if (!reply) { result.skipped.push(post.url); continue; }
+
+          if (!dryRun) {
+            await d.navigateToPost(post.url);
+            await humanDelay(3000, 5000);
+            const postResult = await d.postComment(reply);
+            if (!postResult.success) { result.errors.push(`${post.url}: ${postResult.error}`); continue; }
+            await humanDelay(8000, 20000); // human-like pace between comments
+          }
+
+          seenSet.add(post.url);
+          newlyCommentedUrls.push(post.url);
+          result.commented.push({ url: post.url, author: post.author || '', reply });
+          totalCommented++;
+        }
+      } catch (err) {
+        result.errors.push(`keyword "${keyword}": ${String(err)}`);
+      }
+    }
+
+    nicheResults.push(result);
+  }
+
+  const nicheBreakdown = Object.fromEntries(nicheResults.map(n => [n.niche, n.commented.length]));
+  const summary = `${totalCommented} comment${totalCommented !== 1 ? 's' : ''} posted${dryRun ? ' (dry-run)' : ''} — feed: ${feedResults.length}, niches: ${JSON.stringify(nicheBreakdown)}`;
+
+  res.json({
+    success: true,
+    dryRun,
+    totalCommented,
+    feedResults,
+    nicheResults,
+    newlyCommentedUrls,
+    summary,
+  });
+}));
 
 // ═══════════════════════════════════════════════════════════════
 // 404 / 405 catch-all
@@ -1132,6 +1302,16 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ═══════════════════════════════════════════════════════════════
 
 export function startServer(port: number = PORT): void {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+
   app.listen(port, () => {
     console.log(`🧵 Threads Comments API running on http://localhost:${port}`);
     console.log(`   Version: ${SERVICE_VERSION}`);

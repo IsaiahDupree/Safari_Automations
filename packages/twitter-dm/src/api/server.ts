@@ -198,17 +198,13 @@ function recordMessageSent(): void {
   messagesSentToday++;
 }
 
-// === HEALTH ===
-
-app.get('/health', (req: Request, res: Response) => {
-
 // ── Tab claim enforcement ─────────────────────────────────────────────────────
 // Every automation route MUST have an active tab claim before it runs.
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
 const OPEN_URL = 'https://x.com/messages';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
@@ -244,6 +240,9 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
 app.use(requireTabClaim);
 // ─────────────────────────────────────────────────────────────────────────────
 
+// === HEALTH ===
+
+app.get('/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     service: 'twitter-dm',
@@ -345,7 +344,12 @@ app.post('/api/session/ensure', async (req: Request, res: Response) => {
         : 'Twitter tab not found — open Safari and navigate to twitter.com',
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const msg = String(error);
+    if (msg.includes('No tab found') || msg.includes("No 'x.com'") || msg.includes('x.com')) {
+      res.json({ ok: false, error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
   }
 });
 
@@ -798,6 +802,16 @@ app.post('/api/debug/eval', async (req: Request, res: Response) => {
 const PORT = parseInt(process.env.TWITTER_DM_PORT || process.env.PORT || '3003');
 
 export function startServer(port: number = PORT): void {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+
   app.listen(port, () => {
     console.log(`🐦 Twitter DM API server running on http://localhost:${port}`);
     console.log(`   Health: GET /health`);

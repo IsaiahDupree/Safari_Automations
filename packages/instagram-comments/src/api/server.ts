@@ -17,6 +17,11 @@ import { SafariDriver } from '../automation/safari-driver.js';
 
 const app = express();
 
+// ─── Async Route Wrapper ──────────────────────────────────────────────
+function wrapAsync(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
+  return (req: Request, res: Response, next: NextFunction) => fn(req, res, next).catch(next);
+}
+
 // ─── Service Metadata ────────────────────────────────────────────────
 const SERVICE_VERSION = '2.0.0';
 const SERVICE_NAME = 'instagram-comments';
@@ -60,9 +65,12 @@ const PORT = parseInt(process.env.INSTAGRAM_COMMENTS_PORT || process.env.PORT ||
 const API_TOKEN = process.env.INSTAGRAM_API_TOKEN || 'test-token';
 
 // ─── Authentication Middleware ────────────────────────────────────────
+// Paths that are always public (no auth required) — internal coordination endpoints
+const AUTH_EXEMPT_PATHS = /^\/health$|^\/api\/session\/|^\/api\/tabs\/|^\/api\/[^/]+\/status$/;
+
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Skip auth for health check and OPTIONS preflight
-  if (req.path === '/health' || req.method === 'OPTIONS') {
+  // Skip auth for health check, OPTIONS preflight, and internal tab coordination endpoints
+  if (req.method === 'OPTIONS' || AUTH_EXEMPT_PATHS.test(req.path)) {
     next();
     return;
   }
@@ -1316,6 +1324,171 @@ app.get('/api/instagram/activity/followers', async (_req: Request, res: Response
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+//   COMMENT SWEEP — niche + feed batch (called by instagram-comment-sweep.js daemon)
+// ═══════════════════════════════════════════════════════════════════════
+
+interface IgSweepNicheConfig {
+  name: string;
+  keywords: string[];
+  maxComments?: number;
+}
+
+app.post('/api/instagram/comment-sweep', wrapAsync(async (req, res) => {
+  const {
+    niches = [] as IgSweepNicheConfig[],
+    feedSources = ['home'] as string[],
+    maxPerNiche = 5,
+    maxPerFeed = 3,
+    maxTotal = 15,
+    style = 'insightful, practitioner-level, concise — adds genuine value to the conversation',
+    dryRun = false,
+    seenUrls = [] as string[],
+  } = req.body;
+
+  if (!Array.isArray(niches) || niches.length === 0) {
+    res.status(400).json({ error: 'Bad Request', message: 'niches array is required and must not be empty' });
+    return;
+  }
+
+  const d = getDriver();
+  const ai = getAIGenerator();
+  const seenSet = new Set<string>(seenUrls);
+  const newlyCommentedUrls: string[] = [];
+  let totalCommented = 0;
+
+  const humanDelay = (minMs: number, maxMs: number) =>
+    new Promise(r => setTimeout(r, minMs + Math.random() * (maxMs - minMs)));
+
+  const generateComment = async (caption: string, username: string): Promise<string | null> => {
+    try {
+      const result = await ai.generateFromContext?.({
+        platform: 'instagram',
+        username: username || 'user',
+        postContent: `${caption}\n\n[Style: ${style}]`,
+        existingComments: [],
+      });
+      const text = result?.text || '';
+      if (!text || text.length < 10) return null;
+      return text.length > 2200 ? text.substring(0, 2200) : text;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── Feed sweep ────────────────────────────────────────────────
+  const feedResults: Array<{ postUrl: string; author: string; reply: string; dryRun: boolean }> = [];
+
+  for (const feedSource of feedSources) {
+    if (totalCommented >= maxTotal) break;
+    const feedMax = Math.min(maxPerFeed, maxTotal - totalCommented);
+
+    try {
+      // Navigate to home feed
+      await d.navigateToPost('https://www.instagram.com/');
+      await humanDelay(3000, 5000);
+
+      const feedPosts = await d.findPosts(feedMax * 4);
+      let feedCount = 0;
+
+      for (const post of feedPosts) {
+        if (feedCount >= feedMax || totalCommented >= maxTotal) break;
+        if (!post.url) continue;
+        if (seenSet.has(post.url)) continue;
+
+        await d.navigateToPost(post.url);
+        await humanDelay(2000, 3500);
+
+        const metrics = await d.getPostMetrics();
+        if (!metrics.caption || metrics.caption.length < 20) continue;
+
+        const reply = await generateComment(metrics.caption, metrics.username || post.username || '');
+        if (!reply) continue;
+
+        if (!dryRun) {
+          const result = await d.postComment(reply);
+          if (!result.success) continue;
+          await humanDelay(4000, 8000);
+        }
+
+        seenSet.add(post.url);
+        newlyCommentedUrls.push(post.url);
+        feedResults.push({ postUrl: post.url, author: metrics.username || post.username || '', reply, dryRun });
+        feedCount++;
+        totalCommented++;
+      }
+    } catch (err) {
+      console.error(`[comment-sweep] Feed sweep error (${feedSource}):`, err);
+    }
+  }
+
+  // ── Per-niche keyword/hashtag sweep ──────────────────────────
+  interface IgNicheResult {
+    niche: string;
+    commented: Array<{ url: string; author: string; reply: string }>;
+    skipped: string[];
+    errors: string[];
+  }
+  const nicheResults: IgNicheResult[] = [];
+
+  for (const niche of niches) {
+    if (totalCommented >= maxTotal) break;
+    const nicheMax = Math.min(niche.maxComments ?? maxPerNiche, maxTotal - totalCommented);
+    const result: IgNicheResult = { niche: niche.name, commented: [], skipped: [], errors: [] };
+
+    for (const keyword of niche.keywords) {
+      if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+
+      try {
+        const searchPosts = await d.searchByKeyword(keyword);
+
+        for (const post of searchPosts) {
+          if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+          if (!post.url) { result.skipped.push('no-url'); continue; }
+          if (seenSet.has(post.url)) { result.skipped.push(post.url); continue; }
+
+          await d.navigateToPost(post.url);
+          await humanDelay(2000, 3500);
+
+          const metrics = await d.getPostMetrics();
+          if (!metrics.caption || metrics.caption.length < 20) { result.skipped.push(post.url); continue; }
+
+          const reply = await generateComment(metrics.caption, metrics.username || post.username || '');
+          if (!reply) { result.skipped.push(post.url); continue; }
+
+          if (!dryRun) {
+            const postResult = await d.postComment(reply);
+            if (!postResult.success) { result.errors.push(`${post.url}: ${postResult.error}`); continue; }
+            await humanDelay(10000, 25000); // conservative IG pace
+          }
+
+          seenSet.add(post.url);
+          newlyCommentedUrls.push(post.url);
+          result.commented.push({ url: post.url, author: metrics.username || post.username || '', reply });
+          totalCommented++;
+        }
+      } catch (err) {
+        result.errors.push(`keyword "${keyword}": ${String(err)}`);
+      }
+    }
+
+    nicheResults.push(result);
+  }
+
+  const nicheBreakdown = Object.fromEntries(nicheResults.map(n => [n.niche, n.commented.length]));
+  const summary = `${totalCommented} comment${totalCommented !== 1 ? 's' : ''} posted${dryRun ? ' (dry-run)' : ''} — feed: ${feedResults.length}, niches: ${JSON.stringify(nicheBreakdown)}`;
+
+  res.json({
+    success: true,
+    dryRun,
+    totalCommented,
+    feedResults,
+    nicheResults,
+    newlyCommentedUrls,
+    summary,
+  });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════
 //   CATCH-ALL: 404 for undefined routes, 405 for wrong methods
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1387,7 +1560,12 @@ app.post('/api/session/ensure', async (req, res) => {
       url: info.url,
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const msg = String(error);
+    if (msg.includes('No tab found') || msg.includes('instagram.com')) {
+      res.json({ ok: false, error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
   }
 });
 
@@ -1465,6 +1643,16 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ═══════════════════════════════════════════════════════════════════════
 
 export function startServer(port: number = PORT): void {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+
   app.listen(port, () => {
     console.log(`Instagram API v${SERVICE_VERSION} running on http://localhost:${port}`);
     console.log(`   Health:     GET  /health`);

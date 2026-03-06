@@ -212,6 +212,36 @@ app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
 });
 // ────────────────────────────────────────────────────────────────────────────
 
+// POST /api/session/ensure — find + activate the tiktok.com tab (used by browser-session-daemon)
+app.post('/api/session/ensure', async (_req: Request, res: Response) => {
+  try {
+    const d = getDriver();
+    const info = await (d as any).ensureActiveSession ? (d as any).ensureActiveSession(SESSION_URL_PATTERN) : null;
+    if (info) {
+      res.json({ ok: info.found ?? true, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url });
+    } else {
+      // Fallback: check if current page is tiktok.com
+      const claims = await TabCoordinator.listClaims();
+      const myClaim = claims.find(c => c.service === SERVICE_NAME);
+      res.json({ ok: !!myClaim, windowIndex: myClaim?.windowIndex ?? null, tabIndex: myClaim?.tabIndex ?? null });
+    }
+  } catch (error) {
+    const msg = String(error);
+    if (msg.includes('No') && msg.includes('tab found')) {
+      res.json({ ok: false, message: 'TikTok tab not found — open Safari and navigate to tiktok.com' });
+    } else {
+      res.status(500).json({ ok: false, error: msg });
+    }
+  }
+});
+
+// GET /api/session/status — current tracked tab info
+app.get('/api/session/status', async (_req: Request, res: Response) => {
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  res.json({ tracked: !!myClaim, windowIndex: myClaim?.windowIndex ?? null, tabIndex: myClaim?.tabIndex ?? null, sessionUrlPattern: SESSION_URL_PATTERN });
+});
+
 
 app.get('/api/tiktok/status', async (req: Request, res: Response) => {
   try { const d = getDriver(); const s = await d.getStatus(); const r = d.getRateLimits(); res.json({ ...s, ...r }); }
@@ -692,6 +722,179 @@ app.post('/api/tiktok/comments/:id/like', async (req: Request, res: Response) =>
   }
 });
 
-export function startServer(port = PORT) { app.listen(port, () => console.log(`🎵 TikTok Comments API running on http://localhost:${port}`)); }
+// ── Comment Sweep — niche + feed batch (called by tiktok-comment-sweep.js daemon) ──
+
+interface TkSweepNicheConfig {
+  name: string;
+  keywords: string[];
+  maxComments?: number;
+}
+
+app.post('/api/tiktok/comment-sweep', async (req: Request, res: Response) => {
+  try {
+    const {
+      niches = [] as TkSweepNicheConfig[],
+      feedSources = ['foryou'] as string[],
+      maxPerNiche = 2,
+      maxPerFeed = 2,
+      maxTotal = 8,
+      style = 'insightful, practitioner-level, concise — adds genuine value to the conversation',
+      dryRun = false,
+      seenUrls = [] as string[],
+    } = req.body;
+
+    if (!Array.isArray(niches) || niches.length === 0) {
+      res.status(400).json({ error: 'Bad Request', message: 'niches array is required' });
+      return;
+    }
+
+    const d = getDriver();
+    const seenSet = new Set<string>(seenUrls);
+    const newlyCommentedUrls: string[] = [];
+    let totalCommented = 0;
+
+    const humanDelay = (minMs: number, maxMs: number) =>
+      new Promise(r => setTimeout(r, minMs + Math.random() * (maxMs - minMs)));
+
+    const generateComment = async (description: string, author: string): Promise<string | null> => {
+      const prompt = description ? `${description}\n\n[Style: ${style}]` : `TikTok video by @${author}`;
+      const text = await generateAIComment(prompt, author);
+      if (!text || text.length < 5) return null;
+      return text.length > 150 ? text.substring(0, 150) : text;
+    };
+
+    // ── For-You feed sweep ────────────────────────────────────────────────────
+    const feedResults: Array<{ postUrl: string; author: string; reply: string; dryRun: boolean }> = [];
+
+    for (const _feedSource of feedSources) {
+      if (totalCommented >= maxTotal) break;
+      const feedMax = Math.min(maxPerFeed, maxTotal - totalCommented);
+
+      try {
+        await d.navigateToPost('https://www.tiktok.com/foryou');
+        await humanDelay(4000, 6000);
+
+        const raw = await (d as any).executeJS(`
+          (function() {
+            var cards = document.querySelectorAll('[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"]');
+            var results = []; var seen = {};
+            for (var i = 0; i < Math.min(cards.length, ${feedMax * 4}); i++) {
+              var card = cards[i];
+              var link = card.querySelector('a[href*="/video/"]');
+              if (!link) continue;
+              var href = link.getAttribute('href') || '';
+              var idMatch = href.match(/\\/video\\/(\\d+)/);
+              if (!idMatch) continue;
+              var id = idMatch[1];
+              if (seen[id]) continue; seen[id] = true;
+              var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href;
+              var userMatch = href.match(/@([^\\/]+)\\/video/);
+              var author = userMatch ? userMatch[1] : '';
+              var descEl = card.querySelector('[data-e2e="video-desc"], [class*="DivVideoDescription"]');
+              var description = descEl ? descEl.textContent.trim().substring(0, 200) : '';
+              results.push({ id, url, author, description });
+            }
+            return JSON.stringify(results);
+          })()`);
+
+        const feedVideos: Array<{ id: string; url: string; author: string; description: string }> = JSON.parse(raw || '[]');
+        let feedCount = 0;
+
+        for (const video of feedVideos) {
+          if (feedCount >= feedMax || totalCommented >= maxTotal) break;
+          if (!video.url || seenSet.has(video.url)) continue;
+
+          const reply = await generateComment(video.description, video.author);
+          if (!reply) continue;
+
+          if (!dryRun) {
+            await d.navigateToPost(video.url);
+            await humanDelay(3000, 5000);
+            const result = await d.postComment(reply);
+            if (!result.success) continue;
+            await humanDelay(5000, 10000);
+          }
+
+          seenSet.add(video.url);
+          newlyCommentedUrls.push(video.url);
+          feedResults.push({ postUrl: video.url, author: video.author, reply, dryRun });
+          feedCount++;
+          totalCommented++;
+        }
+      } catch (err) {
+        console.error(`[comment-sweep] Feed error:`, err);
+      }
+    }
+
+    // ── Per-niche keyword sweep ───────────────────────────────────────────────
+    interface TkNicheResult {
+      niche: string;
+      commented: Array<{ url: string; author: string; reply: string }>;
+      skipped: string[];
+      errors: string[];
+    }
+    const nicheResults: TkNicheResult[] = [];
+
+    for (const niche of niches) {
+      if (totalCommented >= maxTotal) break;
+      const nicheMax = Math.min(niche.maxComments ?? maxPerNiche, maxTotal - totalCommented);
+      const result: TkNicheResult = { niche: niche.name, commented: [], skipped: [], errors: [] };
+
+      for (const keyword of niche.keywords) {
+        if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+
+        try {
+          const videos = await d.searchVideos(keyword, nicheMax * 3);
+
+          for (const video of videos) {
+            if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
+            if (!video.url || video.description.length < 10) { result.skipped.push(video.url || 'no-url'); continue; }
+            if (seenSet.has(video.url)) { result.skipped.push(video.url); continue; }
+
+            const reply = await generateComment(video.description, video.author);
+            if (!reply) { result.skipped.push(video.url); continue; }
+
+            if (!dryRun) {
+              await d.navigateToPost(video.url);
+              await humanDelay(3000, 5000);
+              const postResult = await d.postComment(reply);
+              if (!postResult.success) { result.errors.push(`${video.url}: ${postResult.error}`); continue; }
+              await humanDelay(12000, 25000); // conservative TikTok pace
+            }
+
+            seenSet.add(video.url);
+            newlyCommentedUrls.push(video.url);
+            result.commented.push({ url: video.url, author: video.author, reply });
+            totalCommented++;
+          }
+        } catch (err) {
+          result.errors.push(`keyword "${keyword}": ${String(err)}`);
+        }
+      }
+
+      nicheResults.push(result);
+    }
+
+    const nicheBreakdown = Object.fromEntries(nicheResults.map(n => [n.niche, n.commented.length]));
+    const summary = `${totalCommented} comment${totalCommented !== 1 ? 's' : ''} posted${dryRun ? ' (dry-run)' : ''} — feed: ${feedResults.length}, niches: ${JSON.stringify(nicheBreakdown)}`;
+
+    res.json({ success: true, dryRun, totalCommented, feedResults, nicheResults, newlyCommentedUrls, summary });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+export function startServer(port = PORT) {
+  TabCoordinator.listClaims().then(claims => {
+    const stale = claims.filter(c => c.service === SERVICE_NAME);
+    if (stale.length > 0) {
+      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+      import('fs/promises').then(fsp => {
+        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
+      });
+    }
+  }).catch(() => {});
+  app.listen(port, () => console.log(`🎵 TikTok Comments API running on http://localhost:${port}`));
+}
 if (process.argv[1]?.includes('server')) startServer();
 export { app };
