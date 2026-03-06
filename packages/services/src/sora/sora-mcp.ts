@@ -127,6 +127,16 @@ interface SoraState {
   generatedToday: number;
   failedToday: number;
   maxPerDay: number;
+  // Live usage from Sora's usage dialog
+  gensLeft?: number;          // video gens remaining (from getUsage())
+  gensLeftFree?: number;      // free gens remaining
+  gensLeftPaid?: number;      // paid gens remaining
+  nextResetDate?: string;     // "Feb 1" or ISO — when gens reset
+  resetDetectedAt?: string;   // ISO timestamp when we detected the reset
+  usageCheckedAt?: string;    // ISO timestamp of last usage check
+  // Persistent session tracking
+  maximizeSessionActive?: boolean;
+  maximizeSessionStarted?: string;
   queue: Array<{ id: string; prompt: string; source: string; queuedAt: string; status: 'pending' | 'done' | 'failed' }>;
   videos: VideoRecord[];   // all-time video registry
   trilogies: Array<{
@@ -146,12 +156,58 @@ function loadState(): SoraState {
     const raw = fs.readFileSync(STATE_FILE, 'utf-8');
     const s: SoraState = JSON.parse(raw);
     if (s.date !== todayStr()) {
-      // New day — reset counters, keep queue
-      return { date: todayStr(), generatedToday: 0, failedToday: 0, maxPerDay: s.maxPerDay || 10, queue: s.queue || [] };
+      // New day — reset counters, keep queue + historical data + reset detection
+      const prevReset = s.nextResetDate;
+      const nowStr = new Date().toISOString();
+      return {
+        date: todayStr(), generatedToday: 0, failedToday: 0,
+        maxPerDay: s.maxPerDay || 10,
+        queue: s.queue || [],
+        videos: s.videos || [],
+        trilogies: s.trilogies || [],
+        // Record that a reset was detected at midnight rollover
+        resetDetectedAt: prevReset ? nowStr : undefined,
+        nextResetDate: undefined, // cleared — will be re-read from Sora
+        gensLeft: undefined, usageCheckedAt: undefined,
+      };
     }
-    return s;
+    return { videos: [], trilogies: [], ...s };
   } catch {
     return { date: todayStr(), generatedToday: 0, failedToday: 0, maxPerDay: 10, queue: [], videos: [], trilogies: [] };
+  }
+}
+
+// ─── Safari usage check runner ────────────────────────────────────────────────
+async function runSoraGetUsage(): Promise<{
+  success: boolean; gensLeft: number | null; freeCount: number | null;
+  paidCount: number | null; nextAvailableDate: string | null; error?: string;
+}> {
+  const scriptPath = path.join(__dirname, 'run-sora-generate.ts');
+  // Reuse same runner but call getUsage instead of fullRun
+  const runnerPath = path.join(__dirname, 'run-sora-usage.ts');
+  if (!fs.existsSync(runnerPath)) {
+    fs.writeFileSync(runnerPath, `
+import { SoraFullAutomation } from './sora-full-automation.js';
+const sora = new SoraFullAutomation();
+sora.getUsage().then(r => { console.log(JSON.stringify(r)); }).catch(e => { console.error(JSON.stringify({ error: e.message })); process.exit(1); });
+`);
+  }
+  try {
+    const { stdout } = await execAsync(
+      `npx tsx "${runnerPath}"`,
+      { cwd: path.resolve(__dirname, '../../../../../'), timeout: 60_000 }
+    );
+    const r = JSON.parse(stdout.trim().split('\n').pop() || '{}');
+    return {
+      success: r.success ?? false,
+      gensLeft: r.videoGensLeft ?? null,
+      freeCount: r.freeCount ?? null,
+      paidCount: r.paidCount ?? null,
+      nextAvailableDate: r.nextAvailableDate ?? null,
+      error: r.error,
+    };
+  } catch (e) {
+    return { success: false, gensLeft: null, freeCount: null, paidCount: null, nextAvailableDate: null, error: String(e) };
   }
 }
 
@@ -479,6 +535,23 @@ const TOOLS = [
       properties: {
         limit: { type: 'number', description: 'Max videos to return (default 20)' },
         trilogy_id: { type: 'string', description: 'Filter by trilogy ID' },
+      },
+    },
+  },
+  {
+    name: 'sora_check_usage',
+    description: 'Open the Sora usage dialog in Safari and read current generation counts: gens left (free + paid), and the next reset date. Updates state so sora_status and sora_maximize know the real cap.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'sora_maximize',
+    description: 'Persistent maximize session: acquires Safari tab claim, runs sora_check_usage to read the real daily cap, then generates videos continuously (draining queue + auto-filling with trend prompts) until all gens are used. Holds the tab claim with a heartbeat throughout. Reports reset date when done.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        extra_prompts: { type: 'array', items: { type: 'string' }, description: 'Extra prompts to queue before starting (optional — will also pull from trends)' },
+        skip_youtube: { type: 'boolean', description: 'Skip YouTube upload for speed (default false)' },
+        trend_platform: { type: 'string', description: 'Platform to pull trend prompts from if queue runs dry (default: tiktok)' },
       },
     },
   },
@@ -1059,6 +1132,187 @@ async function handleSoraListVideos(args: { limit?: number; trilogy_id?: string 
   });
 }
 
+async function handleSoraCheckUsage(): Promise<string> {
+  const claim = await acquireSoraClaim();
+  if (!claim) {
+    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first' });
+  }
+  try {
+    const usage = await runSoraGetUsage();
+    if (usage.success && usage.gensLeft !== null) {
+      const state = loadState();
+      state.gensLeft = usage.gensLeft;
+      state.gensLeftFree = usage.freeCount ?? undefined;
+      state.gensLeftPaid = usage.paidCount ?? undefined;
+      state.nextResetDate = usage.nextAvailableDate ?? undefined;
+      state.usageCheckedAt = new Date().toISOString();
+      // If maxPerDay is lower than gensLeft, auto-update it
+      const totalAvail = (usage.freeCount ?? 0) + (usage.paidCount ?? 0);
+      if (totalAvail > state.maxPerDay) state.maxPerDay = totalAvail;
+      saveState(state);
+      return JSON.stringify({
+        success: true,
+        gens_left: usage.gensLeft,
+        free: usage.freeCount,
+        paid: usage.paidCount,
+        next_reset: usage.nextAvailableDate,
+        max_per_day_updated_to: state.maxPerDay,
+        checked_at: state.usageCheckedAt,
+      });
+    }
+    return JSON.stringify({ success: false, error: usage.error || 'Could not read usage dialog' });
+  } finally {
+    await releaseSoraClaim();
+  }
+}
+
+async function handleSoraMaximize(args: {
+  extra_prompts?: string[]; skip_youtube?: boolean; trend_platform?: string;
+}): Promise<string> {
+  const skipYt = args.skip_youtube ?? false;
+  const trendPlatform = args.trend_platform || 'tiktok';
+
+  // 1. Acquire tab claim — hold it for the entire session
+  const claim = await acquireSoraClaim();
+  if (!claim) {
+    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first' });
+  }
+
+  const sessionStart = new Date().toISOString();
+  const results: Array<{ prompt: string; success: boolean; videoId?: string; error?: string }> = [];
+
+  // Heartbeat: keep claim alive every 30s
+  const heartbeatInterval = setInterval(async () => {
+    const claims = await readActiveClaims();
+    const idx = claims.findIndex(c => c.service === MY_SERVICE);
+    if (idx !== -1) { claims[idx].heartbeat = Date.now(); await writeClaims(claims); }
+  }, 30_000);
+
+  try {
+    // 2. Check real Sora usage to know actual cap
+    const usage = await runSoraGetUsage();
+    let gensAvailable = 0;
+    const state = loadState();
+
+    if (usage.success && usage.gensLeft !== null) {
+      gensAvailable = usage.gensLeft;
+      state.gensLeft = gensAvailable;
+      state.gensLeftFree = usage.freeCount ?? undefined;
+      state.gensLeftPaid = usage.paidCount ?? undefined;
+      state.nextResetDate = usage.nextAvailableDate ?? undefined;
+      state.usageCheckedAt = new Date().toISOString();
+      // Auto-raise maxPerDay to match real available
+      const totalAvail = (usage.freeCount ?? 0) + (usage.paidCount ?? 0);
+      if (totalAvail > state.maxPerDay) state.maxPerDay = totalAvail;
+    } else {
+      // Fallback: remaining = maxPerDay - generatedToday
+      gensAvailable = Math.max(0, state.maxPerDay - state.generatedToday);
+    }
+
+    state.maximizeSessionActive = true;
+    state.maximizeSessionStarted = sessionStart;
+    saveState(state);
+
+    if (gensAvailable <= 0) {
+      return JSON.stringify({
+        success: false,
+        error: `No gens available. Reset on: ${usage.nextAvailableDate || 'unknown'}`,
+        next_reset: usage.nextAvailableDate,
+        generated_today: state.generatedToday,
+      });
+    }
+
+    // 3. Seed queue with extra_prompts
+    if (args.extra_prompts?.length) {
+      const freshState = loadState();
+      for (const p of args.extra_prompts) {
+        freshState.queue.push({ id: `q-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, prompt: p, source: 'maximize_args', queuedAt: new Date().toISOString(), status: 'pending' });
+      }
+      saveState(freshState);
+    }
+
+    // 4. Main generation loop — generate until gensAvailable exhausted
+    let gensUsed = 0;
+    while (gensUsed < gensAvailable) {
+      const currentState = loadState();
+      let prompt: string | null = null;
+
+      // Pull from queue first
+      const nextQueued = currentState.queue.find(q => q.status === 'pending');
+      if (nextQueued) {
+        prompt = nextQueued.prompt;
+      } else {
+        // Auto-fill from trends
+        const trends = await handleSoraGetTrends({ count: 5, platform: trendPlatform, auto_queue: true });
+        const parsed = JSON.parse(trends);
+        const afterFill = loadState();
+        const nextFromTrend = afterFill.queue.find(q => q.status === 'pending');
+        if (nextFromTrend) {
+          prompt = nextFromTrend.prompt;
+        } else {
+          // No trends either — stop
+          break;
+        }
+      }
+
+      if (!prompt) break;
+
+      // Generate (skip_claim_check since we already hold the claim)
+      const genResult = JSON.parse(await handleSoraGenerate({ prompt, skip_claim_check: true, send_telegram: true, skip_youtube: skipYt }));
+      gensUsed++;
+
+      results.push({ prompt: prompt.slice(0, 80), success: genResult.success, videoId: genResult.video_id, error: genResult.error });
+
+      // Update gen count in state tracking
+      const afterGen = loadState();
+      if (genResult.success && afterGen.gensLeft !== undefined) {
+        afterGen.gensLeft = Math.max(0, (afterGen.gensLeft ?? gensAvailable) - 1);
+        saveState(afterGen);
+      }
+
+      // Brief pause between generations
+      if (gensUsed < gensAvailable) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    // 5. Final usage check to get updated reset date
+    const finalUsage = await runSoraGetUsage();
+    const finalState = loadState();
+    finalState.maximizeSessionActive = false;
+    if (finalUsage.success) {
+      finalState.gensLeft = finalUsage.gensLeft ?? undefined;
+      finalState.nextResetDate = finalUsage.nextAvailableDate ?? undefined;
+      // Detect reset: if gensLeft went UP compared to before, a reset happened
+      if ((finalUsage.gensLeft ?? 0) > (usage.gensLeft ?? 0)) {
+        finalState.resetDetectedAt = new Date().toISOString();
+      }
+    }
+    saveState(finalState);
+
+    const succeeded = results.filter(r => r.success).length;
+    return JSON.stringify({
+      success: true,
+      session_start: sessionStart,
+      gens_available_at_start: gensAvailable,
+      generated: gensUsed,
+      succeeded,
+      failed: gensUsed - succeeded,
+      gens_remaining: finalUsage.gensLeft ?? 'unknown',
+      next_reset: finalUsage.nextAvailableDate ?? finalState.nextResetDate ?? 'unknown',
+      reset_detected_at: finalState.resetDetectedAt,
+      results,
+    });
+
+  } finally {
+    clearInterval(heartbeatInterval);
+    await releaseSoraClaim();
+    const s = loadState();
+    s.maximizeSessionActive = false;
+    saveState(s);
+  }
+}
+
 async function handleSoraBatchClean(args: {
   input_dir?: string; output_dir?: string; limit?: number; skip_passport?: boolean;
 }): Promise<string> {
@@ -1181,6 +1435,15 @@ async function handleSoraStatus(): Promise<string> {
     failed_today: state.failedToday,
     max_per_day: state.maxPerDay,
     remaining_today: Math.max(0, state.maxPerDay - state.generatedToday),
+    // Live Sora usage (populated by sora_check_usage or sora_maximize)
+    gens_left: state.gensLeft ?? 'unknown — run sora_check_usage',
+    gens_left_free: state.gensLeftFree,
+    gens_left_paid: state.gensLeftPaid,
+    next_reset: state.nextResetDate ?? 'unknown',
+    reset_detected_at: state.resetDetectedAt,
+    usage_checked_at: state.usageCheckedAt,
+    maximize_session_active: state.maximizeSessionActive ?? false,
+    maximize_session_started: state.maximizeSessionStarted,
     queue: {
       pending: state.queue.filter(q => q.status === 'pending').length,
       done: state.queue.filter(q => q.status === 'done').length,
@@ -1189,6 +1452,7 @@ async function handleSoraStatus(): Promise<string> {
     },
     recent_outputs: outputs.slice(0, 5),
     active_claims: await readActiveClaims(),
+    hint: state.gensLeft === undefined ? 'Run sora_check_usage to read real gens from Sora, then sora_maximize to use them all.' : undefined,
   });
 }
 
@@ -1273,6 +1537,8 @@ async function handleRequest(req: { id?: unknown; method: string; params?: { nam
       else if (name === 'sora_process_video') content = await handleSoraProcessVideo(args as { video_id?: string; file_path?: string; skip_youtube?: boolean; youtube_title?: string });
       else if (name === 'sora_list_videos') content = await handleSoraListVideos(args as { limit?: number; trilogy_id?: string });
       else if (name === 'sora_batch_clean') content = await handleSoraBatchClean(args as { input_dir?: string; output_dir?: string; limit?: number; skip_passport?: boolean });
+      else if (name === 'sora_check_usage') content = await handleSoraCheckUsage();
+      else if (name === 'sora_maximize') content = await handleSoraMaximize(args as { extra_prompts?: string[]; skip_youtube?: boolean; trend_platform?: string });
       else throw new Error(`Unknown tool: ${name}`);
     } catch (e) {
       content = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
