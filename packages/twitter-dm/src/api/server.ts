@@ -741,7 +741,7 @@ app.post('/api/twitter/prospect/discover', async (req: Request, res: Response) =
     await getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
   } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
+    res.status(503).json({ success: false, error: 'Tab claim required but failed', detail: String(err) }); return;
   }
   try {
     const result = await discoverProspects(params);
