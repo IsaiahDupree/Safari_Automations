@@ -598,6 +598,297 @@ export class SoraFullAutomation {
     }
   }
 
+  // ==========================================================================
+  // LIBRARY SCRAPE: get all user videos directly from Sora /drafts
+  // ==========================================================================
+
+  async getLibrary(limit = 50): Promise<{
+    success: boolean;
+    videos: Array<{ id: string; prompt: string; videoUrl?: string; thumbnailUrl?: string; createdAt?: string; status: string }>;
+    total: number;
+    error?: string;
+  }> {
+    console.log('[SORA] Scraping library from /drafts...');
+    try {
+      await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);
+      await this.wait(3000);
+
+      const result = await this.safari.executeJS(`
+        (function() {
+          var videos = [];
+          // Video cards on drafts/library page — try multiple selectors
+          var cards = Array.from(document.querySelectorAll('[data-testid="video-card"], [class*="VideoCard"], [class*="video-card"], article, [class*="DraftItem"], [class*="draft-item"]'));
+          if (!cards.length) {
+            // Fallback: any card with a video or thumbnail
+            cards = Array.from(document.querySelectorAll('[class*="card"], [class*="item"], [class*="grid"] > *')).filter(function(el) {
+              return el.querySelector('video, img[src*="sora"], [class*="thumb"]');
+            });
+          }
+          // Also try to get from the page's __NEXT_DATA__ or window state
+          var nextData = null;
+          try {
+            var nd = document.getElementById('__NEXT_DATA__');
+            if (nd) nextData = JSON.parse(nd.textContent);
+          } catch(e) {}
+
+          // Extract card data
+          for (var i = 0; i < Math.min(cards.length, ${limit}); i++) {
+            var card = cards[i];
+            var vid = card.querySelector('video');
+            var img = card.querySelector('img');
+            var link = card.querySelector('a[href*="/g/"]') || card.closest('a[href*="/g/"]');
+            var href = link ? link.getAttribute('href') : '';
+            var soraId = (href.match(/\\/g\\/([^/?#]+)/) || [])[1] || '';
+            var promptEl = card.querySelector('[class*="prompt"], [class*="caption"], p, span');
+            var prompt = promptEl ? promptEl.textContent.trim().slice(0, 200) : '';
+            videos.push({
+              id: soraId || ('draft-' + i),
+              prompt: prompt,
+              videoUrl: vid ? (vid.src || vid.getAttribute('src')) : undefined,
+              thumbnailUrl: img ? (img.src || img.getAttribute('src')) : undefined,
+              href: href,
+              status: 'library'
+            });
+          }
+          return JSON.stringify({ videos: videos, cardCount: cards.length, hasNextData: !!nextData, url: window.location.href });
+        })();
+      `);
+
+      const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+      console.log('[SORA] Library: found', parsed.cardCount, 'cards, extracted', parsed.videos?.length, 'videos');
+      return { success: true, videos: parsed.videos || [], total: parsed.cardCount || 0 };
+    } catch (e) {
+      return { success: false, videos: [], total: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  // ==========================================================================
+  // EXPLORE SCRAPE: get trending/featured community videos from Sora
+  // ==========================================================================
+
+  async getExplore(limit = 30): Promise<{
+    success: boolean;
+    videos: Array<{ id: string; prompt: string; author?: string; videoUrl?: string; thumbnailUrl?: string; views?: number; likes?: number }>;
+    total: number;
+    pageUrl: string;
+    error?: string;
+  }> {
+    console.log('[SORA] Scraping explore/featured page...');
+    // Try /explore first, fall back to base URL featured section
+    const explorePaths = ['/explore', '/featured', '/trending', '/?tab=explore', '/'];
+    let lastError = '';
+
+    for (const explorePath of explorePaths) {
+      const url = this.config.baseUrl + explorePath;
+      try {
+        await this.safari.navigateWithVerification(url, 'sora.chatgpt.com', 3);
+        await this.wait(3000);
+
+        const result = await this.safari.executeJS(`
+          (function() {
+            var pageUrl = window.location.href;
+            var videos = [];
+            // Look for community/explore video cards
+            var cards = Array.from(document.querySelectorAll('[class*="feed"] [class*="card"], [class*="explore"] [class*="card"], [class*="featured"] [class*="card"], [class*="community"] [class*="card"]'));
+            if (!cards.length) {
+              // Broader fallback
+              cards = Array.from(document.querySelectorAll('[class*="card"], [class*="item"], [class*="grid"] > *')).filter(function(el) {
+                return el.querySelector('video, img') && (el.querySelector('a[href*="/g/"], [class*="prompt"], p'));
+              });
+            }
+            for (var i = 0; i < Math.min(cards.length, ${limit}); i++) {
+              var card = cards[i];
+              var vid = card.querySelector('video');
+              var img = card.querySelector('img');
+              var link = card.querySelector('a[href*="/g/"]') || card.closest('a[href*="/g/"]');
+              var href = link ? link.getAttribute('href') : '';
+              var soraId = (href.match(/\\/g\\/([^/?#]+)/) || [])[1] || '';
+              var promptEl = card.querySelector('[class*="prompt"], p, span, figcaption');
+              var authorEl = card.querySelector('[class*="author"], [class*="user"], [class*="creator"]');
+              var statEls = Array.from(card.querySelectorAll('[class*="stat"], [class*="count"], [class*="metric"]'));
+              videos.push({
+                id: soraId || ('explore-' + i),
+                prompt: promptEl ? promptEl.textContent.trim().slice(0, 200) : '',
+                author: authorEl ? authorEl.textContent.trim().slice(0, 50) : undefined,
+                videoUrl: vid ? (vid.src || vid.getAttribute('src')) : undefined,
+                thumbnailUrl: img ? (img.src || img.getAttribute('src')) : undefined,
+                href: href,
+                rawStats: statEls.map(function(s) { return s.textContent.trim(); }),
+              });
+            }
+            return JSON.stringify({ videos: videos, cardCount: cards.length, pageUrl: pageUrl });
+          })();
+        `);
+
+        const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+        console.log('[SORA] Explore @', parsed.pageUrl, ': found', parsed.cardCount, 'cards');
+        if (parsed.videos && parsed.videos.length > 0) {
+          return { success: true, videos: parsed.videos, total: parsed.cardCount || 0, pageUrl: parsed.pageUrl };
+        }
+        lastError = `No videos found on ${url} (${parsed.cardCount} cards)`;
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+      }
+    }
+
+    return { success: false, videos: [], total: 0, pageUrl: '', error: 'No explore data found. Tried: ' + explorePaths.join(', ') + '. Last error: ' + lastError };
+  }
+
+  // ==========================================================================
+  // GET SORA PLATFORM LEADERBOARD (live scrape from sora.chatgpt.com)
+  // ==========================================================================
+
+  async getPlatformLeaderboard(): Promise<{
+    success: boolean;
+    sections: Array<{ section: string; entries: Array<{ rank: number; username: string; views: number | null; likes: number | null; comments: number | null; post_href: string }> }>;
+    raw_text: string;
+    error?: string;
+  }> {
+    console.log('\n[SORA] Scraping platform leaderboard from /explore...');
+    try {
+      await this.safari.navigateWithVerification(this.config.baseUrl + '/explore', 'sora.chatgpt.com', 3);
+      await this.wait(3000);
+
+      const result = await this.safari.executeJS(`
+        (function() {
+          var allText = document.body.innerText;
+          var postHrefs = Array.from(document.querySelectorAll('a[href*="/p/s_"]'))
+            .map(function(a) { return a.getAttribute('href'); })
+            .filter(function(h, i, arr) { return arr.indexOf(h) === i; }); // deduplicate
+
+          // Parse the visible text: pattern is username followed by 3 numbers (views likes comments)
+          // Text looks like: "\\nmemexpert\\n\\n916\\n\\n291\\n\\n125\\n\\n"
+          var lines = allText.split('\\n').map(function(l) { return l.trim(); }).filter(Boolean);
+          var NAV = ['Activity','Home','Explore','Search','Drafts','Profile','Settings','Attach media','Storyboard','Create video','For you'];
+          var entries = [];
+          var i = 0;
+          while (i < lines.length && entries.length < 30) {
+            var line = lines[i];
+            // Skip nav items and empty-ish lines
+            if (NAV.indexOf(line) !== -1 || line.length > 60) { i++; continue; }
+            // A username line: non-numeric, reasonable length
+            if (!line.match(/^[\\d,.K]+$/) && line.length >= 2 && line.length <= 40) {
+              // Collect next up to 3 numeric values
+              var nums = [];
+              var j = i + 1;
+              while (j < lines.length && nums.length < 3) {
+                var n = lines[j].replace(/,/g, '').replace(/K$/i, '000');
+                if (/^[\\d.]+$/.test(n)) { nums.push(parseFloat(n)); j++; }
+                else if (lines[j].match(/^[\\d,.K]+$/)) { nums.push(parseFloat(lines[j].replace(/,/g,'').replace(/K$/i,'000'))); j++; }
+                else break;
+              }
+              if (nums.length >= 1) {
+                entries.push({
+                  rank: entries.length + 1,
+                  username: line,
+                  views: nums[0] ?? null,
+                  likes: nums[1] ?? null,
+                  comments: nums[2] ?? null,
+                  post_href: postHrefs[entries.length] || ''
+                });
+                i = j;
+                continue;
+              }
+            }
+            i++;
+          }
+
+          return JSON.stringify({
+            entries: entries,
+            post_hrefs_count: postHrefs.length,
+            raw_text: allText.slice(0, 4000),
+            page_url: location.href
+          });
+        })();
+      `);
+
+      const raw = typeof result === 'string' ? result : (result as any).result || '{}';
+      const parsed = JSON.parse(raw);
+      console.log(`[SORA] Platform leaderboard: ${parsed.entries?.length ?? 0} creators from explore feed`);
+
+      // Wrap as single "Trending" section to match existing schema
+      const sections = parsed.entries?.length ? [{ section: 'Trending', entries: parsed.entries }] : [];
+      return { success: true, sections, raw_text: parsed.raw_text || '' };
+    } catch (error) {
+      return { success: false, sections: [], raw_text: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ==========================================================================
+  // GET MY VIDEO STATS (live scrape from sora.chatgpt.com/drafts)
+  // ==========================================================================
+
+  async getMyVideoStats(limit = 20): Promise<{
+    success: boolean;
+    videos: Array<{ id: string; title: string; views: number | null; likes: number | null; status: string; href: string; createdAt?: string }>;
+    total_found: number;
+    page_url: string;
+    error?: string;
+  }> {
+    console.log('\n[SORA] Scraping my video stats from drafts...');
+    try {
+      await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);
+      await this.wait(3000);
+
+      const result = await this.safari.executeJS(`
+        (function() {
+          var videos = [];
+          // Drafts page uses /d/gen_XXXX hrefs; public posts use /p/s_XXXX or /g/XXXX
+          var allLinks = Array.from(document.querySelectorAll('a[href]')).filter(function(a) {
+            var h = a.getAttribute('href') || '';
+            return h.match(/\\/(d\\/gen_|g\\/|gen\\/|p\\/s_)/);
+          });
+          var seen = new Set();
+          var cards = allLinks.filter(function(a) {
+            var h = a.getAttribute('href');
+            if (seen.has(h)) return false;
+            seen.add(h);
+            return true;
+          });
+
+          // Also parse page text to get prompts — they appear as sibling text to each card
+          var allText = document.body.innerText;
+
+          for (var i = 0; i < Math.min(cards.length, ${limit}); i++) {
+            var card = cards[i];
+            var href = card.getAttribute('href') || '';
+
+            // Extract ID: handle /d/gen_XXXX, /g/XXXX, /gen/XXXX, /p/s_XXXX
+            var id = href.replace(/^.*\\/(?:d\\/|p\\/)?/, '').split('?')[0] || ('v' + i);
+
+            // Walk up to find a container with meaningful text (the prompt)
+            var scope = card;
+            var title = '';
+            for (var depth = 0; depth < 6 && !title; depth++) {
+              scope = scope.parentElement;
+              if (!scope) break;
+              var txt = scope.innerText || '';
+              // Look for @-prefixed prompt text
+              var promptMatch = txt.match(/@[a-zA-Z0-9_]+\\s+([^\\n]{10,})/);
+              if (promptMatch) { title = promptMatch[0].trim().slice(0, 200); break; }
+              // Or any substantial text paragraph
+              var lines = txt.split('\\n').map(function(l){return l.trim();}).filter(function(l){ return l.length > 15 && !l.match(/^(NEW|Edit|Select|Attach|Storyboard|Settings|Create)$/); });
+              if (lines.length) { title = lines[0].slice(0, 200); break; }
+            }
+
+            // Sora drafts don't show public view/like stats — note as null
+            videos.push({ id: id, title: title, views: null, likes: null, status: 'draft', href: href, createdAt: undefined });
+          }
+
+          return JSON.stringify({ videos: videos, total_found: allLinks.length, page_url: location.href });
+        })();
+      `);
+
+      const raw = typeof result === 'string' ? result : (result as any).result || '{}';
+      const parsed = JSON.parse(raw);
+      console.log(`[SORA] My stats: ${parsed.total_found} links, scraped ${parsed.videos?.length ?? 0}`);
+
+      return { success: true, videos: parsed.videos || [], total_found: parsed.total_found || 0, page_url: parsed.page_url || '' };
+    } catch (error) {
+      return { success: false, videos: [], total_found: 0, page_url: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   getConfig(): SoraFullConfig {
     return { ...this.config };
   }

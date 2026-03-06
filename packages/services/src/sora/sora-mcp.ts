@@ -16,6 +16,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import { SoraFullAutomation } from './sora-full-automation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -623,6 +624,52 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'sora_scrape_library',
+    description: 'Scrape your Sora video library directly from sora.chatgpt.com/drafts. Returns all videos with their Sora IDs, prompts, and thumbnail URLs — including videos generated outside the MCP. Compares with local state to find untracked videos.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max videos to scrape (default 50)' },
+        sync_state: { type: 'boolean', description: 'Add untracked Sora videos to local state (default true)' },
+      },
+    },
+  },
+  {
+    name: 'sora_scrape_explore',
+    description: 'Scrape Sora\'s explore/featured/trending page for community videos. Returns prompts, authors, and video data from the public Sora feed. Useful for discovering high-performing prompt patterns.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max community videos to return (default 30)' },
+      },
+    },
+  },
+  {
+    name: 'sora_fetch_yt_stats',
+    description: 'Fetch real YouTube stats (views, likes, comments) for all uploaded Sora videos. Calls Blotato post status API to get the actual YouTube video URL, then queries YouTube Data API for performance metrics. Updates state with ytViews, ytLikes, ytComments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        video_id: { type: 'string', description: 'Fetch stats for a single video ID only (default: all videos with youtubeUrl)' },
+      },
+    },
+  },
+  {
+    name: 'sora_platform_leaderboard',
+    description: 'Scrape Sora\'s live platform leaderboard directly from sora.chatgpt.com — New & Notable, Characters, Remixed, Trending sections. Returns ranked users/creators with their display names and action buttons. Completely new data sourced live from Sora.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'sora_my_stats',
+    description: 'Scrape live view counts, like counts, and status for YOUR videos directly from Sora\'s drafts page. Returns per-video stats as shown in the Sora UI — completely different from YouTube stats, showing Sora-native engagement metrics.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max videos to scrape (default 20)' },
+      },
+    },
+  },
 ];
 
 // ─── Video Pipeline: Passport copy, watermark removal, AI analysis, YouTube ───
@@ -808,8 +855,8 @@ async function uploadToYouTube(filePath: string, title: string, description: str
     if (postResp.statusCode >= 400 || postResp.error) {
       return { success: false, error: `Blotato error: ${JSON.stringify(postResp).slice(0, 200)}` };
     }
-    const postId = postResp.id || postResp.post_id;
-    return { success: true, url: `https://blotato.com/posts/${postId}` };
+    const postId = postResp.postSubmissionId || postResp.id || postResp.post_id;
+    return { success: true, url: postId ? `https://blotato.com/posts/${postId}` : undefined, postSubmissionId: postId };
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -1077,15 +1124,27 @@ async function handleSoraProcessVideo(args: { video_id?: string; file_path?: str
 
   const pipeline = await processVideoFull({ rawPath, prompt, videoId, skipYoutube: args.skip_youtube, youtubeTitle: args.youtube_title });
 
-  // Update video record
-  const idx = (state.videos || []).findIndex(v => v.rawPath === rawPath);
+  // Update or create video record in state
+  if (!state.videos) state.videos = [];
+  const idx = state.videos.findIndex(v => v.rawPath === rawPath);
+  const record = {
+    id: videoId,
+    soraVideoId: videoId,
+    prompt,
+    rawPath: rawPath!,
+    passportPath: pipeline.passportPath,
+    processedPath: pipeline.processedPath,
+    aiAnalysis: pipeline.analysis,
+    youtubeUrl: pipeline.youtubeResult?.url,
+    createdAt: new Date().toISOString(),
+    status: 'processed' as const,
+  };
   if (idx !== -1) {
-    state.videos[idx].passportPath = pipeline.passportPath || state.videos[idx].passportPath;
-    state.videos[idx].processedPath = pipeline.processedPath || state.videos[idx].processedPath;
-    state.videos[idx].aiAnalysis = pipeline.analysis;
-    state.videos[idx].youtubeUrl = pipeline.youtubeResult?.url || state.videos[idx].youtubeUrl;
-    saveState(state);
+    state.videos[idx] = { ...state.videos[idx], ...record };
+  } else {
+    state.videos.push(record);
   }
+  saveState(state);
 
   return JSON.stringify({ success: true, ...pipeline });
 }
@@ -1524,6 +1583,217 @@ async function handleSoraMaximize(args: {
   }
 }
 
+async function runSoraLibrary(limit: number): Promise<{ success: boolean; videos: unknown[]; total: number; error?: string }> {
+  const runnerPath = path.join(__dirname, 'run-sora-library.ts');
+  if (!fs.existsSync(runnerPath)) {
+    fs.writeFileSync(runnerPath, `
+import { SoraFullAutomation } from './sora-full-automation.js';
+const sora = new SoraFullAutomation();
+sora.getLibrary(${limit}).then(r => { console.log(JSON.stringify(r)); }).catch(e => { console.error(JSON.stringify({ error: e.message })); process.exit(1); });
+`);
+  }
+  try {
+    const { stdout } = await execAsync(`npx tsx "${runnerPath}"`, { cwd: path.resolve(__dirname, '../../../../../'), timeout: 60_000 });
+    return JSON.parse(stdout.trim().split('\n').pop() || '{}');
+  } catch (e) {
+    return { success: false, videos: [], total: 0, error: String(e) };
+  }
+}
+
+async function runSoraExplore(limit: number): Promise<{ success: boolean; videos: unknown[]; total: number; pageUrl: string; error?: string }> {
+  const runnerPath = path.join(__dirname, 'run-sora-explore.ts');
+  if (!fs.existsSync(runnerPath)) {
+    fs.writeFileSync(runnerPath, `
+import { SoraFullAutomation } from './sora-full-automation.js';
+const sora = new SoraFullAutomation();
+sora.getExplore(${limit}).then(r => { console.log(JSON.stringify(r)); }).catch(e => { console.error(JSON.stringify({ error: e.message })); process.exit(1); });
+`);
+  }
+  try {
+    const { stdout } = await execAsync(`npx tsx "${runnerPath}"`, { cwd: path.resolve(__dirname, '../../../../../'), timeout: 60_000 });
+    return JSON.parse(stdout.trim().split('\n').pop() || '{}');
+  } catch (e) {
+    return { success: false, videos: [], total: 0, pageUrl: '', error: String(e) };
+  }
+}
+
+async function handleSoraScrapeLibrary(args: { limit?: number; sync_state?: boolean }): Promise<string> {
+  const limit = args.limit ?? 50;
+  const syncState = args.sync_state !== false;
+
+  const result = await runSoraLibrary(limit);
+  if (!result.success) return JSON.stringify({ success: false, error: result.error });
+
+  const state = loadState();
+  if (!state.videos) state.videos = [];
+
+  const newVideos: Array<{ id: string; prompt: string }> = [];
+  const knownIds = new Set(state.videos.map(v => v.id));
+  const knownSoraIds = new Set(state.videos.map(v => v.soraVideoId).filter(Boolean));
+
+  if (syncState) {
+    for (const v of result.videos as Array<{ id: string; prompt: string; videoUrl?: string; thumbnailUrl?: string; href?: string }>) {
+      if (!knownIds.has(v.id) && !knownSoraIds.has(v.id)) {
+        const record: VideoRecord = {
+          id: v.id,
+          soraVideoId: v.id,
+          prompt: v.prompt || 'Unknown — scraped from Sora library',
+          rawPath: '',
+          youtubeUrl: undefined,
+          generatedAt: new Date().toISOString(),
+        };
+        state.videos.push(record);
+        newVideos.push({ id: v.id, prompt: v.prompt });
+      }
+    }
+    if (newVideos.length > 0) saveState(state);
+  }
+
+  return JSON.stringify({
+    success: true,
+    total_on_sora: result.total,
+    scraped: (result.videos as unknown[]).length,
+    new_in_state: newVideos.length,
+    synced_to_state: syncState,
+    videos: result.videos,
+    new_videos: newVideos,
+  });
+}
+
+async function handleSoraScrapeExplore(args: { limit?: number }): Promise<string> {
+  const limit = args.limit ?? 30;
+  const result = await runSoraExplore(limit);
+
+  // Extract prompt patterns from explore videos
+  const prompts = (result.videos as Array<{ prompt: string }>).map(v => v.prompt).filter(Boolean);
+  const wordFreq: Record<string, number> = {};
+  for (const p of prompts) {
+    for (const w of p.toLowerCase().split(/\s+/).filter(w => w.length > 4)) {
+      wordFreq[w] = (wordFreq[w] || 0) + 1;
+    }
+  }
+  const topKeywords = Object.entries(wordFreq)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 15)
+    .map(([word, count]) => ({ word, count }));
+
+  return JSON.stringify({
+    success: result.success,
+    page_url: result.pageUrl,
+    total_cards: result.total,
+    videos_extracted: (result.videos as unknown[]).length,
+    top_prompt_keywords: topKeywords,
+    videos: result.videos,
+    error: result.error,
+  });
+}
+
+async function handleSoraFetchYtStats(args: { video_id?: string }): Promise<string> {
+  const env = loadEnvFiles(ACTP_ENV_FILE, SAFARI_ENV_FILE);
+  const blaKey = env['BLOTATO_API_KEY'] || process.env.BLOTATO_API_KEY;
+  const ytApiKey = env['YOUTUBE_API_KEY'] || process.env.YOUTUBE_API_KEY;
+
+  if (!blaKey) return JSON.stringify({ success: false, error: 'BLOTATO_API_KEY not found' });
+  if (!ytApiKey) return JSON.stringify({ success: false, error: 'YOUTUBE_API_KEY not found in .env' });
+
+  const state = loadState();
+  const videos = (state.videos || []).filter(v => {
+    if (args.video_id) return v.id === args.video_id || v.soraVideoId === args.video_id;
+    return v.youtubeUrl && v.youtubeUrl.includes('blotato.com/posts/');
+  });
+
+  if (videos.length === 0) return JSON.stringify({ success: false, error: 'No videos with Blotato youtubeUrl found. Run sora_process_video first.' });
+
+  const results: Array<{ id: string; blotato_status?: string; yt_url?: string; yt_video_id?: string; views?: number; likes?: number; comments?: number; error?: string }> = [];
+  let updated = 0;
+
+  for (const vid of videos) {
+    const postId = vid.youtubeUrl?.match(/blotato\.com\/posts\/([^/?#]+)/)?.[1];
+    if (!postId) { results.push({ id: vid.id, error: 'No postSubmissionId in youtubeUrl' }); continue; }
+
+    try {
+      // Step 1: Get Blotato post status → real YouTube URL
+      const statusOut = execSyncSafe(`curl -s "https://backend.blotato.com/v2/posts/${postId}" -H "blotato-api-key: ${blaKey}"`);
+      const statusResp = JSON.parse(statusOut);
+      const ytUrl = statusResp.publicUrl || '';
+      const ytVideoId = ytUrl.match(/[?&]v=([^&]+)/)?.[1] || ytUrl.match(/youtu\.be\/([^?]+)/)?.[1] || '';
+
+      if (!ytVideoId) {
+        results.push({ id: vid.id, blotato_status: statusResp.status, yt_url: ytUrl, error: 'Could not extract YouTube video ID' });
+        continue;
+      }
+
+      // Step 2: YouTube Data API v3 — videos.list statistics
+      const ytOut = execSyncSafe(`curl -s "https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${ytVideoId}&key=${ytApiKey}"`);
+      const ytResp = JSON.parse(ytOut);
+      const stats = ytResp.items?.[0]?.statistics || {};
+      const views = parseInt(stats.viewCount || '0', 10);
+      const likes = parseInt(stats.likeCount || '0', 10);
+      const comments = parseInt(stats.commentCount || '0', 10);
+
+      // Update state record
+      const idx = state.videos.findIndex(v => v.id === vid.id);
+      if (idx !== -1) {
+        state.videos[idx].ytViews = views;
+        state.videos[idx].ytLikes = likes;
+        state.videos[idx].ytComments = comments;
+        state.videos[idx].metricsUpdatedAt = new Date().toISOString();
+        // Store real YouTube URL
+        if (ytUrl) (state.videos[idx] as unknown as Record<string, unknown>).ytVideoUrl = ytUrl;
+        if (ytVideoId) (state.videos[idx] as unknown as Record<string, unknown>).ytVideoId = ytVideoId;
+        updated++;
+      }
+
+      results.push({ id: vid.id, blotato_status: statusResp.status, yt_url: ytUrl, yt_video_id: ytVideoId, views, likes, comments });
+    } catch (e) {
+      results.push({ id: vid.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (updated > 0) saveState(state);
+
+  return JSON.stringify({ success: true, checked: videos.length, updated, results });
+}
+
+function execSyncSafe(cmd: string): string {
+  const { execSync } = require('child_process');
+  return execSync(cmd, { timeout: 30000 }).toString();
+}
+
+async function handleSoraScrapePlatformLeaderboard(): Promise<string> {
+  const sora = new SoraFullAutomation();
+  const result = await sora.getPlatformLeaderboard();
+  return JSON.stringify({
+    success: result.success,
+    sections_found: result.sections.length,
+    total_entries: result.sections.reduce((sum, s) => sum + s.entries.length, 0),
+    sections: result.sections,
+    scraped_at: new Date().toISOString(),
+    error: result.error,
+  });
+}
+
+async function handleSoraScrapeMyStats(args: { limit?: number }): Promise<string> {
+  const sora = new SoraFullAutomation();
+  const result = await sora.getMyVideoStats(args.limit ?? 20);
+  if (result.success) {
+    const state = loadState();
+    let updated = 0;
+    for (const v of result.videos) {
+      const idx = state.videos.findIndex(sv => sv.id === v.id || sv.soraVideoId === v.id);
+      if (idx !== -1 && (v.views !== null || v.likes !== null)) {
+        if (v.views !== null) state.videos[idx].ytViews = v.views;
+        if (v.likes !== null) state.videos[idx].ytLikes = v.likes;
+        state.videos[idx].metricsUpdatedAt = new Date().toISOString();
+        updated++;
+      }
+    }
+    if (updated > 0) saveState(state);
+    return JSON.stringify({ success: true, total_found: result.total_found, scraped: result.videos.length, synced_to_state: updated, page_url: result.page_url, videos: result.videos });
+  }
+  return JSON.stringify({ success: false, error: result.error });
+}
+
 async function handleSoraBatchClean(args: {
   input_dir?: string; output_dir?: string; limit?: number; skip_passport?: boolean;
 }): Promise<string> {
@@ -1752,6 +2022,11 @@ async function handleRequest(req: { id?: unknown; method: string; params?: { nam
       else if (name === 'sora_notifications') content = await handleSoraNotifications(args as { unread_only?: boolean; type?: string; mark_read?: boolean; clear_all?: boolean; limit?: number });
       else if (name === 'sora_check_usage') content = await handleSoraCheckUsage();
       else if (name === 'sora_maximize') content = await handleSoraMaximize(args as { extra_prompts?: string[]; skip_youtube?: boolean; trend_platform?: string });
+      else if (name === 'sora_scrape_library') content = await handleSoraScrapeLibrary(args as { limit?: number; sync_state?: boolean });
+      else if (name === 'sora_scrape_explore') content = await handleSoraScrapeExplore(args as { limit?: number });
+      else if (name === 'sora_fetch_yt_stats') content = await handleSoraFetchYtStats(args as { video_id?: string });
+      else if (name === 'sora_platform_leaderboard') content = await handleSoraScrapePlatformLeaderboard();
+      else if (name === 'sora_my_stats') content = await handleSoraScrapeMyStats(args as { limit?: number });
       else throw new Error(`Unknown tool: ${name}`);
     } catch (e) {
       content = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
