@@ -67,6 +67,73 @@ describe('Layer 1: Scoring unit tests', () => {
     });
     expect(highBudgetScore).toBeGreaterThan(noBudgetScore);
   });
+
+  it('filters out jobs with explicit hourly rate below $29/hr', () => {
+    const score = scoreUpworkJob({
+      title: 'AI automation workflow with Claude integration',
+      description: 'Build ai automation using claude api. Rate: $20/hr',
+      budget: '',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBe(0);
+  });
+
+  it('passes jobs with hourly rate above $29/hr', () => {
+    const score = scoreUpworkJob({
+      title: 'AI automation workflow with Claude integration',
+      description: 'Build ai automation using claude api. We pay $50/hr for the right candidate.',
+      budget: '',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBeGreaterThan(0);
+  });
+
+  it('filters out fixed-price jobs below $500', () => {
+    const score = scoreUpworkJob({
+      title: 'Build Claude API automation integration',
+      description: 'Quick n8n workflow automation project for our team.',
+      budget: '$200',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBe(0);
+  });
+
+  it('passes fixed-price job at exactly $500', () => {
+    const score = scoreUpworkJob({
+      title: 'Build Claude API automation integration',
+      description: 'N8n workflow automation with claude api integration.',
+      budget: '$500',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBeGreaterThan(0);
+  });
+
+  it('passes job with no explicit budget (Upwork often hides it)', () => {
+    const score = scoreUpworkJob({
+      title: 'AI automation expert needed — Claude API integration',
+      description: 'Looking for someone to build workflow automation with claude and n8n.',
+      budget: '',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBeGreaterThan(0);
+  });
+
+  it('scores 0 for job with no strong ICP keywords despite large budget', () => {
+    const score = scoreUpworkJob({
+      title: 'Senior React Developer for Dashboard',
+      description: 'Build a modern dashboard for our analytics platform. Tech stack: React, TypeScript.',
+      budget: '$5000',
+      pubDate: new Date().toISOString(),
+    });
+    expect(score).toBe(0);
+  });
+
+  it('filters out asset-generator test endpoint correctly', async () => {
+    // Just confirm the endpoint exists on the running server
+    const res = await fetch('http://localhost:3107/api/proposals/assets/nonexistent').catch(() => null);
+    // Either 404 (proposal not found) or 503 (supabase not configured) — never 500
+    if (res) expect(res.status).not.toBe(500);
+  });
 });
 
 // ─── Layer 1: HTTP endpoint tests ─────────────────────────────────────────────

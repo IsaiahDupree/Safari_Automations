@@ -119,6 +119,9 @@ function scoreJob(job: { title: string; description: string; budget?: string; pu
     if (text.includes(kw)) return 0;
   }
 
+  // Hard budget/rate filter — below minimums → score 0
+  if (!passesMinimumBudget(job)) return 0;
+
   // Must have at least 1 strong ICP keyword — prevents budget-only false positives
   let strongHits = 0;
   for (const kw of ICP_STRONG_KEYWORDS) {
