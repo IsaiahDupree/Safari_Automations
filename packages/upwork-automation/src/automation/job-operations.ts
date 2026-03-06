@@ -1262,13 +1262,17 @@ export async function submitProposal(
       })()
     `);
 
-    // ── Step 2: Click "Apply now" button ──
+    // ── Step 2: Click "Apply now" button (keyboard-first: focus + Enter, fallback JS click) ──
     const clickResult = await d.executeJS(`
       (function() {
         if (window.location.href.includes('/apply')) return 'already_on_apply';
         var btn = document.querySelector('button[aria-label="Apply now"]') ||
                   document.querySelector('button.air3-btn-primary');
         if (btn && btn.innerText.trim().toLowerCase().includes('apply')) {
+          btn.scrollIntoView({ block: 'center' });
+          btn.focus();
+          btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+          btn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
           btn.click();
           return 'clicked';
         }
@@ -1642,7 +1646,7 @@ export async function submitProposal(
       return result;
     }
 
-    // Click Submit
+    // Click Submit (keyboard-first: focus + Enter + click for React event handling)
     const submitResult = await d.executeJS(`
       (function() {
         var btns = document.querySelectorAll('button.air3-btn-primary, button[type="submit"]');
@@ -1650,6 +1654,10 @@ export async function submitProposal(
           var text = btn.innerText.trim().toLowerCase();
           if (text.includes('send') || text.includes('submit') || text.includes('connect')) {
             if (btn.disabled) return 'disabled: ' + btn.innerText.trim();
+            btn.scrollIntoView({ block: 'center' });
+            btn.focus();
+            btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+            btn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
             btn.click();
             return 'submitted';
           }
@@ -1708,33 +1716,11 @@ export async function submitProposal(
       console.log(`[Upwork] Checkbox: ${checkboxResult}`);
       await d.wait(1000);
 
-      // If JS click didn't work on checkbox, try OS-level click
+      // If JS click didn't work on checkbox, use keyboard activation (Space key) — no coordinates
       if (checkboxResult === 'no_checkbox' || checkboxResult === 'no_modal') {
-        // Try clicking the checkbox area via OS-level click
-        const cbPos = await d.executeJS(`
-          (function() {
-            var modal = document.querySelector('.air3-modal');
-            if (!modal) return JSON.stringify({found: false});
-            var cb = modal.querySelector('input[type="checkbox"]');
-            if (!cb) {
-              var labels = modal.querySelectorAll('label');
-              for (var l of labels) {
-                if (l.innerText.trim().includes('Yes')) { cb = l; break; }
-              }
-            }
-            if (!cb) return JSON.stringify({found: false});
-            var r = cb.getBoundingClientRect();
-            return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
-          })()
-        `);
-        try {
-          const pos = JSON.parse(cbPos);
-          if (pos.found) {
-            await d.clickAtViewportPosition(pos.x, pos.y);
-            console.log(`[Upwork] OS-level checkbox click at (${pos.x}, ${pos.y})`);
-            await d.wait(1000);
-          }
-        } catch {}
+        const kbResult = await d.keyboardActivate('.air3-modal input[type="checkbox"]', 'Space');
+        console.log(`[Upwork] Keyboard checkbox activation: ${kbResult}`);
+        await d.wait(1000);
       }
 
       // Step 2: Click "Continue" button (should now be enabled)
@@ -1757,28 +1743,10 @@ export async function submitProposal(
       console.log(`[Upwork] Continue button: ${continueResult}`);
 
       if (continueResult === 'still_disabled' || continueResult === 'no_button') {
-        // OS-level click as fallback
-        const btnPos = await d.executeJS(`
-          (function() {
-            var modal = document.querySelector('.air3-modal');
-            if (!modal) return JSON.stringify({found: false});
-            var btns = modal.querySelectorAll('button');
-            for (var b of btns) {
-              if (b.innerText.trim() === 'Continue') {
-                var r = b.getBoundingClientRect();
-                return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
-              }
-            }
-            return JSON.stringify({found: false});
-          })()
-        `);
-        try {
-          const pos = JSON.parse(btnPos);
-          if (pos.found) {
-            await d.clickAtViewportPosition(pos.x, pos.y);
-            console.log(`[Upwork] OS-level Continue click at (${pos.x}, ${pos.y})`);
-          }
-        } catch {}
+        // Keyboard fallback: Tab to the Continue button and press Enter (no screen coordinates)
+        await d.pressTab(2);
+        await d.pressKey('return');
+        console.log('[Upwork] Keyboard fallback: Tab+Enter on Continue button');
       }
 
       await d.wait(5000);

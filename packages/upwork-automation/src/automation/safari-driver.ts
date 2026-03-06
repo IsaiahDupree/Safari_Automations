@@ -645,12 +645,54 @@ end tell`;
 
   /**
    * Press Tab key via AppleScript to move focus between form fields.
+   * @param times - number of times to press Tab (default 1)
    */
-  async pressTab(): Promise<boolean> {
+  async pressTab(times = 1): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
     try {
+      for (let i = 0; i < times; i++) {
+        await execAsync(
+          `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke (ASCII character 9)'`
+        );
+        await this.wait(150);
+      }
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * Activate a focusable element using keyboard events (no screen coordinates).
+   * Focuses element, dispatches keydown+keyup, falls back to .click().
+   * More reliable than coordinate-based clicks for React modal buttons.
+   */
+  async keyboardActivate(selector: string, key: 'Enter' | 'Space' = 'Enter'): Promise<boolean> {
+    const keyChar = key === 'Space' ? ' ' : 'Enter';
+    const keyCode = key === 'Space' ? 32 : 13;
+    const keyCode2 = key === 'Space' ? "'Space'" : "'Enter'";
+    const result = await this.executeJS(`
+      (function() {
+        var sel = '${selector.replace(/'/g, "\\'")}';
+        var el = document.querySelector(sel);
+        if (!el) return 'not_found';
+        el.scrollIntoView({ block: 'center' });
+        el.focus();
+        var opts = { bubbles: true, cancelable: true, key: '${keyChar}', keyCode: ${keyCode}, code: ${keyCode2} };
+        el.dispatchEvent(new KeyboardEvent('keydown', opts));
+        el.dispatchEvent(new KeyboardEvent('keyup', opts));
+        el.click();
+        return 'activated';
+      })()
+    `);
+    return result === 'activated';
+  }
+
+  /** Press a named key in the active Safari window (return, space, escape). */
+  async pressKey(key: 'space' | 'return' | 'tab' | 'escape'): Promise<boolean> {
+    if (this.config.instanceType !== 'local') return false;
+    const keyCodes: Record<string, number> = { space: 49, return: 36, tab: 48, escape: 53 };
+    try {
       await execAsync(
-        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke (ASCII character 9)'`
+        `osascript -e 'tell application "System Events" to tell process "Safari" to key code ${keyCodes[key] ?? 49}'`
       );
       return true;
     } catch { return false; }
@@ -848,6 +890,15 @@ Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Pin this driver to a specific Safari window+tab (called by TabCoordinator after claiming).
+   */
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
+    console.log(`[SafariDriver] Pinned to w=${windowIndex} t=${tabIndex} (${urlPattern})`);
   }
 
   /**

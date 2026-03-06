@@ -92,13 +92,16 @@ function scoreJob(job: { title: string; description: string; budget?: string; pu
     if (text.includes(kw)) return 0;
   }
 
-  let score = 0;
-
-  // Strong ICP keywords — 20pts each, capped at 60
+  // Must have at least 1 strong ICP keyword — prevents budget-only false positives
   let strongHits = 0;
   for (const kw of ICP_STRONG_KEYWORDS) {
     if (text.includes(kw)) strongHits++;
   }
+  if (strongHits === 0) return 0;
+
+  let score = 0;
+
+  // Strong ICP keywords — 20pts each, capped at 60
   score += Math.min(strongHits * 20, 60);
 
   // Weak supporting keywords — 8pts each, capped at 24
