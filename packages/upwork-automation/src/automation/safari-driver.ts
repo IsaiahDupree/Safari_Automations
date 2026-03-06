@@ -193,26 +193,181 @@ export class SafariDriver {
   }
 
   /**
+   * Detect login state with multiple signal layers.
+   * Returns 'logged_in' | 'login_page' | 'captcha' | 'unknown'
+   */
+  async detectLoginState(): Promise<'logged_in' | 'login_page' | 'captcha' | 'unknown'> {
+    try {
+      const result = await this.executeJS(`
+        (function() {
+          var url = window.location.href;
+          // Logged-in signals
+          var findWork = document.querySelector('a[href*="find-work"]');
+          var avatar = document.querySelector('[data-test="avatar"], img.nav-avatar, .nav-d-profile, [data-cy="nav-user-avatar"], [data-test="user-avatar"]');
+          var myJobs = document.querySelector('a[href*="my-jobs"]');
+          var clientNav = document.querySelector('a[href*="hiring"]');
+          if (findWork || avatar || myJobs || clientNav) return 'logged_in';
+          // Login page signals
+          var emailInput = document.querySelector('input#login_username, input[name="login[username]"], input[type="email"][autocomplete="username"]');
+          var loginHeading = document.querySelector('h1.air3-heading');
+          if (emailInput || (url.includes('/ab/account-security/login') || url.includes('/login'))) return 'login_page';
+          // Captcha / 2FA
+          var captcha = document.querySelector('iframe[src*="captcha"], #cf-challenge-running, .h-captcha, #challenge-form');
+          var twoFa = document.querySelector('input[name="login[otp]"], input[placeholder*="verification"]');
+          if (captcha) return 'captcha';
+          if (twoFa) return 'two_fa';
+          return 'unknown';
+        })()
+      `);
+      return (result as 'logged_in' | 'login_page' | 'captcha' | 'unknown') || 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /**
    * Check if logged in to Upwork.
    * Looks for Upwork-specific nav elements that only appear when authenticated.
    */
   async isLoggedIn(): Promise<boolean> {
+    const state = await this.detectLoginState();
+    return state === 'logged_in';
+  }
+
+  /**
+   * Sign in to Upwork using stored credentials.
+   * Handles: email step → password step → post-login verification.
+   * Returns: 'success' | 'already_logged_in' | 'captcha' | 'two_fa' | 'failed'
+   */
+  async signIn(email: string, password: string): Promise<'success' | 'already_logged_in' | 'captcha' | 'two_fa' | 'failed'> {
     try {
-      const result = await this.executeJS(`
-        (function() {
-          var findWork = document.querySelector('a[href*="find-work"]');
-          var avatar = document.querySelector('[data-test="avatar"], img.nav-avatar, .nav-d-profile');
-          var myJobs = document.querySelector('a[href*="my-jobs"]');
-          if (findWork || avatar || myJobs) return 'true';
-          var loginBtn = document.querySelector('a[href*="login"], #login_username');
-          if (loginBtn) return 'false';
-          return 'true';
-        })()
+      // Check current state first
+      const currentUrl = await this.getCurrentUrl();
+      if (!currentUrl.includes('upwork.com')) {
+        await this.navigateTo('https://www.upwork.com');
+        await this.wait(2000);
+      }
+
+      let state = await this.detectLoginState();
+      if (state === 'logged_in') {
+        console.log('[safari-driver] Already logged in');
+        return 'already_logged_in';
+      }
+      if (state === 'captcha') return 'captcha';
+
+      // Navigate to login page if not already there
+      if (state !== 'login_page') {
+        await this.navigateTo('https://www.upwork.com/ab/account-security/login');
+        await this.wait(2500);
+        state = await this.detectLoginState();
+      }
+
+      // Step 1: Enter email
+      const emailFilled = await this.typeViaJS(
+        'input#login_username, input[name="login[username]"], input[type="email"][autocomplete="username"]',
+        email,
+      );
+      if (!emailFilled) {
+        console.warn('[safari-driver] Could not find email input');
+        return 'failed';
+      }
+      await this.wait(500);
+
+      // Click Continue / Submit email form
+      const continueClicked = await this.clickElement(
+        'button[type="submit"], button#login_password_continue, button[data-test="continue-with-email"]',
+      );
+      if (!continueClicked) {
+        await this.keyboardActivate(
+          'input#login_username, input[name="login[username]"]',
+          'Enter',
+        );
+      }
+      await this.wait(2000);
+
+      // Step 2: Enter password (may be on same page or new page)
+      const passwordVisible = await this.waitForElement(
+        'input#login_password, input[name="login[password]"], input[type="password"]',
+        6000,
+      );
+      if (!passwordVisible) {
+        const midState = await this.detectLoginState();
+        if (midState === 'logged_in') return 'success';
+        if (midState === 'captcha') return 'captcha';
+        console.warn('[safari-driver] Password field not found after email submit');
+        return 'failed';
+      }
+
+      const pwFilled = await this.typeViaJS(
+        'input#login_password, input[name="login[password]"], input[type="password"]',
+        password,
+      );
+      if (!pwFilled) return 'failed';
+      await this.wait(500);
+
+      // Uncheck "keep me logged out" if present
+      await this.executeJS(`
+        var logoutCb = document.querySelector('input[name="login[keepMeLoggedOut]"]');
+        if (logoutCb && logoutCb.checked) logoutCb.click();
       `);
-      return result === 'true';
-    } catch {
+
+      // Submit password
+      const submitClicked = await this.clickElement(
+        'button#login_control_continue, button[type="submit"][data-test="submit"], button[data-ev-label="submit"]',
+      );
+      if (!submitClicked) {
+        await this.keyboardActivate(
+          'input#login_password, input[type="password"]',
+          'Enter',
+        );
+      }
+
+      // Wait for navigation / post-login
+      await this.wait(4000);
+
+      const finalState = await this.detectLoginState();
+      if (finalState === 'logged_in') {
+        console.log('[safari-driver] Sign in successful');
+        return 'success';
+      }
+      if (finalState === 'captcha') {
+        console.warn('[safari-driver] Captcha encountered after login');
+        return 'captcha';
+      }
+      // Check for 2FA
+      const twoFaField = await this.executeJS(
+        `document.querySelector('input[name="login[otp]"]') ? 'yes' : 'no'`,
+      );
+      if (twoFaField === 'yes') {
+        console.warn('[safari-driver] 2FA required — manual action needed');
+        return 'two_fa';
+      }
+
+      console.warn('[safari-driver] Login state after submit:', finalState);
+      return 'failed';
+    } catch (err) {
+      console.error('[safari-driver] signIn error:', (err as Error).message);
+      return 'failed';
+    }
+  }
+
+  /**
+   * Ensure logged in — check state, auto-sign-in if not.
+   * Uses UPWORK_EMAIL / UPWORK_PASSWORD from env.
+   */
+  async ensureLoggedIn(): Promise<boolean> {
+    const state = await this.detectLoginState();
+    if (state === 'logged_in') return true;
+
+    const email = process.env.UPWORK_EMAIL || '';
+    const password = process.env.UPWORK_PASSWORD || '';
+    if (!email || !password) {
+      console.warn('[safari-driver] No UPWORK_EMAIL/UPWORK_PASSWORD in env — cannot auto-login');
       return false;
     }
+
+    const result = await this.signIn(email, password);
+    return result === 'success' || result === 'already_logged_in';
   }
 
   /**

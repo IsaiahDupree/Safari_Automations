@@ -200,7 +200,7 @@ describe.skipIf(SKIP_LAYER2)('Layer 2: GET /api/jobs/search (real RSS)', () => {
       expect(typeof job.title).toBe('string');
       expect(typeof job.url).toBe('string');
     }
-  }, 30000);
+  }, 90000);
 });
 
 // ─── Layer 3: Claude proposal generation ──────────────────────────────────────

@@ -64,7 +64,9 @@ async function api(method: 'GET' | 'POST' | 'DELETE' | 'PATCH', path: string, bo
 }
 
 const TOOLS = [
-  { name: 'upwork_get_status', description: 'Get Upwork service health, login status, and current page URL.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_get_status', description: 'Get Upwork service health, login status (logged_in/login_page/captcha/unknown), and current page URL.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_signin', description: 'Sign in to Upwork using stored credentials (UPWORK_EMAIL/UPWORK_PASSWORD). Returns result: success|already_logged_in|captcha|two_fa|failed.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_ensure_login', description: 'Check login state and auto-signin if not logged in. Safe to call before any scraping operation.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_search_jobs', description: 'Search Upwork for jobs matching filters. Returns scored job listings with skills, budget, proposals, and client info.', inputSchema: { type: 'object', properties: { keywords: { type: 'string', description: 'Search keywords' }, jobType: { type: 'string', enum: ['hourly', 'fixed', 'both'], description: 'Job type filter', default: 'both' }, experienceLevel: { type: 'string', description: 'entry, intermediate, or expert' }, postedWithin: { type: 'string', description: 'Time filter e.g. "last_24_hours", "last_week"' }, maxResults: { type: 'number', description: 'Max jobs to return (default 30)', default: 30 } }, required: ['keywords'] } },
   { name: 'upwork_get_job_detail', description: 'Get full details for a specific job posting by URL — title, description, skills, client history, budget, proposals, connects cost.', inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'Upwork job URL' } }, required: ['url'] } },
   { name: 'upwork_score_jobs', description: 'Score multiple jobs against your skill/budget preferences. Returns sorted list with apply/maybe/skip recommendations and connects advice.', inputSchema: { type: 'object', properties: { jobs: { type: 'array', description: 'Array of job objects from upwork_search_jobs', items: { type: 'object' } }, preferredSkills: { type: 'array', description: 'Your skills to match against job requirements', items: { type: 'string' } }, minBudget: { type: 'number', description: 'Minimum budget threshold' }, availableConnects: { type: 'number', description: 'Your current connects balance' } }, required: ['jobs'] } },
@@ -100,6 +102,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   let result: unknown;
   switch (name) {
     case 'upwork_get_status':        result = await api('GET',  '/api/upwork/status'); break;
+    case 'upwork_signin':            result = await api('POST', '/api/upwork/signin'); break;
+    case 'upwork_ensure_login':      result = await api('POST', '/api/upwork/ensure-login'); break;
     case 'upwork_search_jobs':       result = await api('POST', '/api/upwork/jobs/search', { keywords: args.keywords, jobType: args.jobType, experienceLevel: args.experienceLevel, postedWithin: args.postedWithin }); break;
     case 'upwork_get_job_detail':    result = await api('GET',  `/api/upwork/jobs/detail?url=${encodeURIComponent(args.url as string)}`); break;
     case 'upwork_score_jobs':        result = await api('POST', '/api/upwork/jobs/score-batch', { jobs: args.jobs, preferredSkills: args.preferredSkills, minBudget: args.minBudget, availableConnects: args.availableConnects }); break;

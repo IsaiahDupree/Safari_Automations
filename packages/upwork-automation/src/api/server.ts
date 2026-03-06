@@ -216,34 +216,46 @@ app.get('/api/upwork/status', async (_req: Request, res: Response) => {
     const driver = getDefaultDriver();
     const url = await driver.getCurrentUrl();
     const isOnUpwork = url.includes('upwork.com');
-
-    // Check login by looking for Upwork-specific logged-in indicators
-    let isLoggedIn = false;
-    if (isOnUpwork) {
-      try {
-        const loginCheck = await driver.executeJS(`
-          (function() {
-            // Logged-in Upwork has nav-right with user avatar or "Find Work" link
-            var findWork = document.querySelector('a[href*="find-work"]');
-            var avatar = document.querySelector('[data-test="avatar"], img.nav-avatar, .nav-d-profile');
-            var loginBtn = document.querySelector('a[href*="login"], button[data-test="login"]');
-            if (findWork || avatar) return 'logged_in';
-            if (loginBtn) return 'not_logged_in';
-            return 'unknown';
-          })()
-        `);
-        isLoggedIn = loginCheck === 'logged_in';
-      } catch { isLoggedIn = false; }
-    }
+    const loginState = isOnUpwork ? await driver.detectLoginState() : 'unknown';
 
     res.json({
       isOnUpwork,
-      isLoggedIn,
+      isLoggedIn: loginState === 'logged_in',
+      loginState,
       currentUrl: url,
       rateLimits: { actionsThisHour: actionCount, limit: rateLimits.searchesPerHour },
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Auth ─────────────────────────────────────────────────────
+
+app.post('/api/upwork/signin', async (_req: Request, res: Response) => {
+  try {
+    const driver = getDefaultDriver();
+    const email = process.env.UPWORK_EMAIL || '';
+    const password = process.env.UPWORK_PASSWORD || '';
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'UPWORK_EMAIL/UPWORK_PASSWORD not set' });
+    }
+    const result = await driver.signIn(email, password);
+    const loginState = await driver.detectLoginState();
+    res.json({ success: result === 'success' || result === 'already_logged_in', result, loginState });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/upwork/ensure-login', async (_req: Request, res: Response) => {
+  try {
+    const driver = getDefaultDriver();
+    const loggedIn = await driver.ensureLoggedIn();
+    const loginState = await driver.detectLoginState();
+    res.json({ success: loggedIn, loginState });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -308,6 +320,13 @@ app.post('/api/upwork/jobs/search', async (req: Request, res: Response) => {
     if (!checkRateLimit()) {
       return res.status(429).json({ error: 'Rate limit exceeded' });
     }
+    // Auto-recover session if not logged in
+    const driver = getDefaultDriver();
+    const loginState = await driver.detectLoginState();
+    if (loginState !== 'logged_in') {
+      console.log(`[server] Not logged in (${loginState}), attempting auto-signin...`);
+      await driver.ensureLoggedIn();
+    }
     const config: Partial<JobSearchConfig> = req.body;
     const jobs = await searchJobs(config);
     res.json({ jobs, count: jobs.length });
@@ -320,6 +339,13 @@ app.post('/api/upwork/jobs/search', async (req: Request, res: Response) => {
 app.post('/api/upwork/jobs/tab', async (req: Request, res: Response) => {
   try {
     if (!checkRateLimit()) return res.status(429).json({ error: 'Rate limit exceeded' });
+    // Auto-recover session if not logged in
+    const driver = getDefaultDriver();
+    const loginState = await driver.detectLoginState();
+    if (loginState !== 'logged_in') {
+      console.log(`[server] Not logged in (${loginState}), attempting auto-signin...`);
+      await driver.ensureLoggedIn();
+    }
     const { tab } = req.body;
     const validTabs: JobTab[] = ['best_matches', 'most_recent', 'us_only', 'saved_jobs'];
     if (!tab || !validTabs.includes(tab)) {
