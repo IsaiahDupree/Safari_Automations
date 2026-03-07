@@ -112,8 +112,8 @@ export async function listConversations(driver?: SafariDriver): Promise<DMConver
         if (SKIP.indexOf(username) !== -1) return;
         seen[username] = true;
         var lastMsg = texts.length > 1 ? texts[1] : '';
-        // Detect outbound ("You: " prefix) before stripping
-        var lastMsgIsOutbound = /^You:\\s*/i.test(lastMsg);
+        // Detect outbound: "You: text", "You sent an attachment.", "You sent a voice message.", etc.
+        var lastMsgIsOutbound = /^You[:\\s]/i.test(lastMsg);
         lastMsg = lastMsg.replace(/^You:\\s*/i, '');
         conversations.push(JSON.stringify({ username: username, threadId: '', lastMessage: lastMsg.substring(0, 100), lastMessageIsOutbound: lastMsgIsOutbound }));
       });

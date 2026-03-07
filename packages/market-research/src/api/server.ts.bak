@@ -2369,19 +2369,6 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// ─── Global Heartbeat Refresh ────────────────────────────────────────
-// Keep all active claims alive by refreshing heartbeats every 30s
-setInterval(async () => {
-  for (const [id, coord] of activeCoordinators) {
-    try {
-      await coord.heartbeat();
-    } catch {
-      activeCoordinators.delete(id);
-    }
-  }
-}, 30_000);
-
-
 // ─── Start Server ────────────────────────────────────────────────
 
 export function startServer(port: number = PORT): void {

@@ -60,7 +60,7 @@ export class SelfPollCron {
     this.port = port;
   }
 
-  async tick(): Promise<{ fetched: Record<string, number> }> {
+  async tick(force = false): Promise<{ fetched: Record<string, number> }> {
     const db = getDb();
     if (!db) {
       console.warn('[SelfPoll:twitter] Supabase not configured — skipping cache write');

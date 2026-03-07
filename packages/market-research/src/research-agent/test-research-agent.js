@@ -16,8 +16,9 @@ import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
 
-const AGENT_DIR = path.dirname(new URL(import.meta.url).pathname);
+const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_SCRIPT = path.join(AGENT_DIR, 'twitter-research-agent.js');
 const BATCH_DIR = path.join(os.homedir(), 'Documents/twitter-research/batches');
 const SYNTHESIS_DIR = path.join(os.homedir(), 'Documents/twitter-research/synthesis');

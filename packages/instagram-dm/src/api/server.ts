@@ -1625,7 +1625,12 @@ app.post('/api/prospect/schedule-batch', async (req, res) => {
       const scheduledFor = new Date(Date.now() + delayMs).toISOString();
 
       if (!dryRun) {
-        await scheduleProspectDM(username, message, scheduledFor);
+        const result = await scheduleProspectDM(username, message, scheduledFor);
+        if (!result.success) {
+          console.warn(`[schedule-batch] Insert failed for @${username}: ${result.error}`);
+          skipped++;
+          continue;
+        }
         await markProspectQueued(username);
       }
 

@@ -683,15 +683,39 @@ export async function scheduleProspectDM(
   platform = 'instagram',
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   if (!supabase) return { success: false, error: 'Template engine not initialized' };
+
+  // contact_id is UUID — look up the real CRM contact ID by username+platform
+  let contactUuid: string | undefined;
+  const { data: existing } = await supabase
+    .from('crm_contacts')
+    .select('id')
+    .eq('username', username)
+    .eq('platform', platform)
+    .limit(1)
+    .single();
+  if (existing?.id) {
+    contactUuid = existing.id as string;
+  } else {
+    // Create a minimal contact so the UUID is valid
+    const { data: created, error: createErr } = await supabase
+      .from('crm_contacts')
+      .insert({ username, platform, display_name: username })
+      .select('id')
+      .single();
+    if (createErr) return { success: false, error: `CRM upsert failed: ${createErr.message}` };
+    contactUuid = (created as Record<string, string>)?.id;
+  }
+
+  if (!contactUuid) return { success: false, error: 'Could not resolve contact UUID' };
+
   const { data, error } = await supabase
     .from('crm_message_queue')
     .insert({
-      contact_id: username,
-      username,
+      contact_id: contactUuid,
       platform,
-      message,
+      message_body: message,
       scheduled_for: scheduledFor,
-      status: 'queued',
+      status: 'pending',
     })
     .select('id')
     .single();

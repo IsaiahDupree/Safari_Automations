@@ -1404,6 +1404,18 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal Server Error', message });
 });
 
+// ─── Global Heartbeat Refresh ────────────────────────────────────────
+// Keep all active claims alive by refreshing heartbeats every 30s
+setInterval(async () => {
+  for (const [id, coord] of activeCoordinators) {
+    try {
+      await coord.heartbeat();
+    } catch {
+      activeCoordinators.delete(id);
+    }
+  }
+}, 30_000);
+
 // ═══════════════════════════════════════════════════════════════
 // START
 // ═══════════════════════════════════════════════════════════════

@@ -1,220 +1,158 @@
-# @safari-automation/tiktok-dm
+# TikTok DM Automation
 
-TikTok DM automation module using Safari browser automation. Designed to be called from a CRM server or used directly on macOS.
+Safari-based browser automation for TikTok DM management, profile scraping, and prospect discovery.
 
-**API Port:** 3102 (default)  
-**Status:** ✅ Verified Working (Jan 31, 2026)
+## Features
+
+- **Profile Scraping**: Extract TikTok profile data (followers, bio, engagement)
+- **DM Operations**: Send and manage direct messages
+- **Prospect Discovery**: Find and score potential leads via hashtag searches
+- **ICP Scoring**: Built-in scoring system for B2B SaaS founders/indie hackers
+- **Rate Limiting**: Configurable daily limits and active hours
+- **CRMLite Integration**: Auto-sync DM conversations to CRM
 
 ## Installation
 
 ```bash
-npm install @safari-automation/tiktok-dm
+cd packages/tiktok-dm
+npm install
 ```
 
-## Verification
+## Setup
 
-Run the verification script to test all API endpoints:
+1. Ensure Safari is running and logged into TikTok
+2. Copy `.env.example` to `.env` and configure:
+   ```
+   SUPABASE_URL=https://ivhfuhxorppptyuofbgq.supabase.co
+   SUPABASE_KEY=your_supabase_key
+   CRMLITE_API_KEY=your_crmlite_key
+   SAFARI_AUTOMATION_WINDOW=1
+   ```
+
+## Usage
+
+### Start the REST API Server
+
 ```bash
-npx tsx scripts/tiktok-verify.ts
-```
-
-## Quick Start
-
-### Direct Automation (macOS)
-
-```typescript
-import { 
-  SafariDriver, 
-  navigateToInbox, 
-  listConversations, 
-  sendDMByUsername 
-} from '@safari-automation/tiktok-dm';
-
-// Create driver
-const driver = new SafariDriver({ verbose: true });
-
-// Navigate to inbox
-await navigateToInbox(driver);
-
-// List conversations
-const conversations = await listConversations(driver);
-console.log(conversations);
-
-// Send DM via profile
-await sendDMByUsername('creator123', 'Love your content!', driver);
-```
-
-### Via REST API (from any server)
-
-**Start the API server on macOS:**
-```bash
-npx tsx packages/tiktok-dm/src/api/server.ts
-# or
 npm run start:server
+# Server runs on http://localhost:3102
 ```
 
-**Call from your CRM server:**
-```typescript
-import { createTikTokDMClient } from '@safari-automation/tiktok-dm';
+### Run Tests
 
-const client = createTikTokDMClient('http://mac-server:3102');
+```bash
+npm test              # Run all tests
+npm run test:watch    # Watch mode
+```
 
-// Check status
-const status = await client.getStatus();
-console.log(status.data?.isLoggedIn);
+### Build
 
-// Send message
-const result = await client.sendMessageTo('creator123', 'Love your content!');
-console.log(result.success);
-
-// List conversations
-const convos = await client.listConversations();
-console.log(convos.data?.conversations);
+```bash
+npm run build         # Compile TypeScript
 ```
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/tiktok/status` | TikTok login status |
-| GET | `/api/tiktok/rate-limits` | Rate limit status |
-| PUT | `/api/tiktok/rate-limits` | Update rate limits |
-| GET | `/api/tiktok/conversations` | List conversations |
-| POST | `/api/tiktok/inbox/navigate` | Navigate to inbox |
-| POST | `/api/tiktok/conversations/open` | Open conversation |
-| POST | `/api/tiktok/conversations/new` | Start new conversation |
-| POST | `/api/tiktok/conversations/scroll` | Scroll to load more |
-| GET | `/api/tiktok/messages` | Read messages |
-| POST | `/api/tiktok/messages/send` | Send message |
-| POST | `/api/tiktok/messages/send-to` | Send to user (via profile) |
-| POST | `/api/tiktok/messages/send-to-url` | Send via profile URL |
+### Health & Session
+
+- `GET /health` - Service health check
+- `GET /api/status` - Current Safari session status (isOnTikTok, isLoggedIn, currentUrl)
+- `POST /api/inbox/navigate` - Navigate to TikTok messages
+- `POST /api/session/clear` - Reset tracked Safari tab
+
+### Profile & Discovery
+
+- `GET /api/profile/:username` - Get TikTok profile data
+- `GET /api/search?q=:query&type=users` - Search TikTok users
+
+### DM Operations
+
+- `GET /api/conversations` - List DM conversations
+- `POST /api/conversations/open` - Open a conversation by username
+- `GET /api/messages?limit=N` - Read messages from current conversation
+- `POST /api/messages/send-to` - Send a DM (body: `{ username, text, dryRun? }`)
+
+### Prospect Discovery
+
+- `POST /api/prospect/discover` - Find prospects by hashtags (body: `{ hashtags, minFollowers?, maxFollowers?, maxCandidates? }`)
+- `GET /api/prospect/score/:username` - Get ICP score for a profile
+
+## ICP Scoring
+
+Scoring criteria for B2B SaaS founders / indie hackers:
+
+- **Follower Range**: 1K–50K (+25), 50K–500K (+15)
+- **Bio Keywords**: 'founder', 'saas', 'build', 'software', 'ai', 'startup', 'indie', 'developer' (+15 each, max 45)
+- **Engagement Ratio**: likes/followers > 0.1 (+20)
+- **Not Verified**: +5
+
+**Qualification Threshold**: Score ≥ 50
 
 ## Rate Limiting
 
-Built-in rate limiting to avoid detection:
-
-| Limit | Default |
-|-------|---------|
-| Messages per hour | 10 |
-| Messages per day | 50 |
-| Min delay between | 2min |
-| Max delay between | 5min |
-| Active hours | 9 AM - 9 PM |
-
-Configure via environment or API:
-
-```bash
-export CRM_RATE_MESSAGES_PER_HOUR=15
-export CRM_RATE_MESSAGES_PER_DAY=40
-export CRM_ACTIVE_HOURS_START=8
-export CRM_ACTIVE_HOURS_END=22
-```
+- **Daily Limit**: 20 DMs/day
+- **Active Hours**: 9am–9pm local time
+- **Min Delay**: 30s between DMs
 
 ## Architecture
 
 ```
-tiktok-dm/
-├── src/
-│   ├── automation/
-│   │   ├── types.ts          # TypeScript interfaces + selectors
-│   │   ├── safari-driver.ts  # Safari/AppleScript wrapper
-│   │   └── dm-operations.ts  # High-level DM functions
-│   ├── api/
-│   │   ├── server.ts         # Express REST API
-│   │   └── client.ts         # API client library
-│   ├── utils/                # Helpers
-│   └── index.ts              # Main exports
-└── tests/
+src/
+├── api/
+│   ├── server.ts              # Express REST API
+│   └── tiktok-operations.ts   # TikTok DOM operations
+├── automation/
+│   └── safari-driver.ts       # Safari/AppleScript driver
+├── utils/
+│   ├── rate-limiter.ts        # Rate limiting logic
+│   └── icp-scoring.ts         # ICP scoring algorithm
+├── types/
+│   └── index.ts               # TypeScript interfaces
+└── lib/
+    └── supabase.ts            # Supabase client
 ```
 
-## Key Functions
+## Example Usage
 
-### Profile-to-DM Flow
+### Get Profile
 
-```typescript
-import { sendDMByUsername } from '@safari-automation/tiktok-dm';
-
-// Navigate to profile -> click DM button -> send message
-const result = await sendDMByUsername('creator123', 'Great content!', driver);
-if (result.success) {
-  console.log('Message sent!');
-} else {
-  console.error('Failed:', result.error);
-}
+```bash
+curl http://localhost:3102/api/profile/charlidamelio
 ```
 
-### Error Handling
+### Send DM (Dry Run)
 
-The profile-to-DM flow handles various states:
-- `User not found` - Account doesn't exist
-- `Cannot message this user` - DMs disabled or need to follow
-- `Could not find message button` - UI changed or not available
-- `DM composer did not open` - UI timing issue
-
-## TikTok-Specific Notes
-
-### Selectors
-TikTok uses `data-e2e` attributes which are relatively stable:
-
-| Element | Selector |
-|---------|----------|
-| Messages Icon | `[data-e2e="message-icon"]` |
-| Message Input | `[data-e2e="message-input"]` |
-| Send Button | `[data-e2e="send-message-btn"]` |
-| Conversation List | `[class*="DivConversationListContainer"]` |
-
-### Challenges
-1. **Dynamic class names** - Use `data-e2e` or `[class*="Pattern"]`
-2. **Contenteditable divs** - Use `document.execCommand` for typing
-3. **Virtual scrolling** - Check element visibility with `getBoundingClientRect`
-4. **Rate limiting** - TikTok is aggressive; use conservative limits
-
-## CRM Integration
-
-```typescript
-import { createTikTokDMClient } from '@safari-automation/tiktok-dm';
-
-const dm = createTikTokDMClient(process.env.TIKTOK_DM_API_URL);
-
-async function sendOutreach(username: string, message: string) {
-  // Check rate limits first
-  const limits = await dm.getRateLimits();
-  if (!limits.data?.activeHours.isActive) {
-    console.log('Outside active hours, queuing for later');
-    return;
-  }
-  
-  // Send message
-  const result = await dm.sendMessageTo(username, message);
-  
-  if (result.success) {
-    // Log to CRM database
-    await logMessage(username, message, result.data?.rateLimits);
-  }
-  
-  return result;
-}
+```bash
+curl -X POST http://localhost:3102/api/messages/send-to \
+  -H "Content-Type: application/json" \
+  -d '{"username": "testuser", "text": "Hi!", "dryRun": true}'
 ```
 
-## Environment Variables
+### Discover Prospects
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` or `TIKTOK_DM_PORT` | API server port | 3102 |
-| `VERBOSE` | Enable verbose logging | false |
-| `CRM_RATE_MESSAGES_PER_HOUR` | Hourly limit | 10 |
-| `CRM_RATE_MESSAGES_PER_DAY` | Daily limit | 50 |
-| `CRM_RATE_MIN_DELAY_MS` | Min delay | 120000 |
-| `CRM_RATE_MAX_DELAY_MS` | Max delay | 300000 |
-| `CRM_ACTIVE_HOURS_START` | Start hour | 9 |
-| `CRM_ACTIVE_HOURS_END` | End hour | 21 |
+```bash
+curl -X POST http://localhost:3102/api/prospect/discover \
+  -H "Content-Type: application/json" \
+  -d '{"hashtags": ["buildinpublic", "indiehacker"], "maxCandidates": 10}'
+```
 
-## Safety Notes
+## Testing
 
-- Always test with a test account first
-- TikTok is aggressive with rate limits - start very conservative
-- Monitor for shadowbans or restrictions
-- Use human-like delays and personalization
-- Respect TikTok's terms of service
-- Never spam or harass users
+4-layer test suite:
+
+- **Layer 1**: Service health (`/health`, `/api/status`)
+- **Layer 2**: Profile API (known public accounts)
+- **Layer 3**: Prospect discovery (Safari required)
+- **Layer 4**: DM dry-run (Safari required)
+
+## Dependencies
+
+- **express**: REST API server
+- **@supabase/supabase-js**: Database client
+- **dotenv**: Environment configuration
+- **TypeScript**: Type safety
+- **vitest**: Test runner
+
+## License
+
+MIT

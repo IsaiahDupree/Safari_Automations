@@ -9,7 +9,7 @@ import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import type { AutomationConfig } from './types.js';
+import type { AutomationConfig } from '../types/index.js';
 
 const execAsync = promisify(exec);
 
@@ -53,7 +53,7 @@ export class SafariDriver {
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim(); // preserve newlines — file-based execution handles them fine; stripping breaks // comments
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
@@ -93,7 +93,7 @@ export class SafariDriver {
    * Execute JavaScript in a specific window+tab regardless of tracking state.
    */
   async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
-    const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanJS = js.trim(); // preserve newlines for same reason as executeLocalJS
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
     await fs.writeFile(tempFile, cleanJS);
     const script = `
@@ -173,8 +173,12 @@ export class SafariDriver {
   async getCurrentUrl(): Promise<string> {
     try {
       if (this.config.instanceType === 'local') {
+        // Use tracked tab when available — avoids "front document" returning wrong tab
+        const tabSpec = (this.trackedWindow && this.trackedTab)
+          ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+          : 'front document';
         const { stdout } = await execAsync(
-          `osascript -e 'tell application "Safari" to get URL of front document'`
+          `osascript -e 'tell application "Safari" to get URL of ${tabSpec}'`
         );
         return stdout.trim();
       } else {
@@ -186,21 +190,22 @@ export class SafariDriver {
   }
 
   /**
-   * Check if Safari is on Instagram.
+   * Check if Safari is on TikTok.
    */
-  async isOnInstagram(): Promise<boolean> {
+  async isOnTikTok(): Promise<boolean> {
     const url = await this.getCurrentUrl();
-    return url.includes('instagram.com');
+    return url.includes('tiktok.com');
   }
 
   /**
-   * Check if logged in to Instagram.
+   * Check if logged in to TikTok.
    */
   async isLoggedIn(): Promise<boolean> {
     const result = await this.executeJS(`
       (function() {
         var notLoggedIn = document.querySelector('input[name="username"]') ||
-                          document.querySelector('button[type="submit"]')?.innerText?.includes('Log in');
+                          document.querySelector('a[href*="/login"]') ||
+                          window.location.pathname.includes('/login');
         return notLoggedIn ? 'false' : 'true';
       })()
     `);
@@ -524,7 +529,8 @@ end tell`;
   }
 
   /**
-   * Explicitly set the tracked tab (used by TabCoordinator after claiming a tab).
+   * Pin the driver to a specific Safari window+tab (called by tab coordinator after claiming).
+   * All subsequent executeJS and navigateTo calls will target this exact tab.
    */
   setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
     this.trackedWindow = windowIndex;
@@ -569,60 +575,65 @@ end tell`;
   }
 
   /**
-   * Click at a specific viewport coordinate using elementFromPoint.
-   * NOTE: TikTok's virtual DOM ignores JS .click() — use clickAtScreenPosition instead.
+   * Click at absolute screen coordinates using OS-level clicking.
+   * @param x - X coordinate on screen
+   * @param y - Y coordinate on screen
+   * @param osLevel - If true, uses AppleScript/System Events for click (bypasses JS DOM)
    */
-  async clickAtViewportPosition(x: number, y: number): Promise<boolean> {
-    const result = await this.executeJS(`
-      (function() {
-        var el = document.elementFromPoint(${Math.round(x)}, ${Math.round(y)});
-        if (el) { el.click(); return 'clicked'; }
-        return 'not_found';
-      })()
-    `);
-    return result === 'clicked';
+  async clickAtScreenPosition(x: number, y: number, osLevel: boolean = false): Promise<void> {
+    if (!osLevel) {
+      // JS-based viewport click
+      await this.executeJS(`
+        (function() {
+          var el = document.elementFromPoint(${x}, ${y});
+          if (el) el.click();
+        })()
+      `);
+      return;
+    }
+
+    // OS-level click using AppleScript
+    const script = `
+      tell application "System Events"
+        click at {${x}, ${y}}
+      end tell
+    `;
+
+    try {
+      await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      await this.wait(500); // Brief delay after OS click
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error('[SafariDriver] OS click error:', error);
+      }
+      throw error;
+    }
   }
 
   /**
-   * Click at an absolute screen coordinate using cliclick (OS-level Quartz event).
-   * Required for TikTok and other apps whose virtual DOM ignores JS .click().
-   * Viewport coords from getBoundingClientRect need Safari's window offset added.
-   * Pass addSafariOffset=true to auto-detect and add the Safari window position.
+   * Click at viewport-relative coordinates.
+   * @param x - X coordinate in viewport
+   * @param y - Y coordinate in viewport
    */
-  async clickAtScreenPosition(x: number, y: number, addSafariOffset: boolean = false): Promise<boolean> {
-    if (this.config.instanceType !== 'local') return false;
-    try {
-      let screenX = Math.round(x);
-      let screenY = Math.round(y);
-
-      if (addSafariOffset) {
-        // window.screenX/screenY = window top-left including toolbar.
-        // Toolbar height = outerHeight - innerHeight.
-        // Content area origin = (screenX, screenY + toolbarHeight).
-        const originRaw = await this.executeJS(
-          'JSON.stringify({x: window.screenX||0, y: window.screenY||0, toolbar: (window.outerHeight||0)-(window.innerHeight||0)})'
-        );
-        let contentX = 0, contentY = 0;
-        try {
-          const o = JSON.parse(originRaw);
-          contentX = o.x || 0;
-          contentY = (o.y || 0) + (o.toolbar || 88);
-        } catch { contentY = 148; }
-        screenX = Math.round(x) + contentX;
-        screenY = Math.round(y) + contentY;
-        if (this.config.verbose) {
-          console.log(`[SafariDriver] clickAtScreenPosition: viewport(${x},${y}) + content_origin(${contentX},${contentY}) = screen(${screenX},${screenY})`);
+  async clickAtViewportPosition(x: number, y: number): Promise<void> {
+    await this.executeJS(`
+      (function() {
+        var el = document.elementFromPoint(${x}, ${y});
+        if (el) {
+          el.click();
+        } else {
+          // Fallback: dispatch mouse event at position
+          var evt = new MouseEvent('click', {
+            view: window,
+            bubbles: true,
+            cancelable: true,
+            clientX: ${x},
+            clientY: ${y}
+          });
+          document.elementFromPoint(${x}, ${y})?.dispatchEvent(evt);
         }
-      }
-
-      await this.activateSafari();
-      await this.wait(200);
-      await execAsync(`cliclick c:${screenX},${screenY}`, { timeout: this.config.timeout });
-      return true;
-    } catch (error) {
-      if (this.config.verbose) console.error('[SafariDriver] cliclick error:', error);
-      return false;
-    }
+      })()
+    `);
   }
 
   /**
