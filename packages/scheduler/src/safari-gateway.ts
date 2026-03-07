@@ -487,6 +487,90 @@ app.post('/gateway/safari/prepare', async (req: Request, res: Response) => {
   res.json(result);
 });
 
+// ─── Tab Detection & Tracking ────────────────────────────────
+//
+// Reads two sources:
+//   /tmp/safari-tab-claims.json       — live per-service claims (60s TTL, heartbeat)
+//   harness/safari-tab-layout.json    — coordinator layout (tab → platform mapping)
+//
+// Returns a merged per-platform tab status so you can see exactly which Safari
+// window/tab each service owns, how stale the heartbeat is, and whether the
+// claim is still live.
+
+const CLAIMS_FILE  = '/tmp/safari-tab-claims.json';
+const LAYOUT_FILE  = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/safari-tab-layout.json';
+const CLAIM_TTL_MS = 90_000; // treat claim as stale after 90s without heartbeat
+
+function readClaims(): any[] {
+  try { return JSON.parse(fs.readFileSync(CLAIMS_FILE, 'utf-8')); } catch { return []; }
+}
+
+function readLayout(): { platforms: any[]; tabMap: Record<string, any>; coordinatedAt?: string } {
+  try { return JSON.parse(fs.readFileSync(LAYOUT_FILE, 'utf-8')); } catch { return { platforms: [], tabMap: {} }; }
+}
+
+app.get('/gateway/tabs', (_req: Request, res: Response) => {
+  const now     = Date.now();
+  const claims  = readClaims();
+  const layout  = readLayout();
+
+  // Build index: port → layout entry
+  const layoutByPort: Record<number, any> = {};
+  for (const p of layout.platforms || []) layoutByPort[p.port] = p;
+
+  // Build index: port → latest claim (by heartbeat desc)
+  const claimByPort: Record<number, any> = {};
+  for (const c of claims) {
+    const port = c.port;
+    if (!claimByPort[port] || c.heartbeat > claimByPort[port].heartbeat) {
+      claimByPort[port] = c;
+    }
+  }
+
+  // Merge per registered service
+  const tabs = SERVICES.map(svc => {
+    const claim  = claimByPort[svc.port];
+    const layout = layoutByPort[svc.port];
+
+    const heartbeatAgeMs = claim ? now - claim.heartbeat : null;
+    const claimLive      = claim ? heartbeatAgeMs! < CLAIM_TTL_MS : false;
+
+    return {
+      service:        svc.name,
+      platform:       svc.platform,
+      port:           svc.port,
+      // Tab coordinates
+      windowIndex:    claim?.windowIndex ?? layout?.tab ? parseInt(String(layout.tab).match(/w(\d+)/)?.[1] ?? '0') : null,
+      tabIndex:       claim?.tabIndex    ?? layout?.tab ? parseInt(String(layout.tab).match(/t(\d+)/)?.[1] ?? '0') : null,
+      tabRef:         claim ? `w${claim.windowIndex}t${claim.tabIndex}` : (layout?.tab ?? null),
+      tabUrl:         claim?.tabUrl ?? null,
+      // Claim health
+      claimed:        claimLive,
+      claimStale:     claim ? !claimLive : false,
+      heartbeatAgeMs,
+      heartbeatAgeSec: heartbeatAgeMs != null ? Math.round(heartbeatAgeMs / 1000) : null,
+      claimedAt:      claim ? new Date(claim.claimedAt).toISOString() : null,
+      agentId:        claim?.agentId ?? null,
+      // Layout coordinator data (last full coordinator run)
+      layoutClaimed:  layout?.claimed ?? false,
+      coordinatedAt:  layout.coordinatedAt ?? null,
+    };
+  });
+
+  // Summary counts
+  const live   = tabs.filter(t => t.claimed).length;
+  const stale  = tabs.filter(t => t.claimStale).length;
+  const unclaimed = tabs.filter(t => !t.claimed && !t.claimStale).length;
+
+  res.json({
+    summary:      { live, stale, unclaimed, total: tabs.length },
+    tabs,
+    claimsFile:   CLAIMS_FILE,
+    layoutFile:   LAYOUT_FILE,
+    checkedAt:    new Date().toISOString(),
+  });
+});
+
 // ─── Sessions ───────────────────────────────────────────────
 
 app.get('/gateway/sessions', (_req: Request, res: Response) => {

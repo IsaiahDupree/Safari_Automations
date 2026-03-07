@@ -19,7 +19,7 @@ import { runAnomalyDetection } from './anomaly-detector';
 import { runMentionMonitor } from './mention-monitor';
 import { writePlatformCache, CACHE_TTLS } from './cache-writer';
 
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3000';
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3085';
 const LOCK_HOLDER = 'cloud-sync';
 const SETTLE_DELAY_MS = 3000; // wait between platform switches
 const LOCK_TIMEOUT_MS = 60000; // max time to hold lock per platform
