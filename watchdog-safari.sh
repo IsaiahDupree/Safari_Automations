@@ -51,8 +51,7 @@ while true; do
       recheck=$(curl -s --max-time 3 "http://localhost:$port/health" 2>/dev/null)
       if [ -n "$recheck" ]; then
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] :$port RESTORED"
-        # Re-seed tab claims so restored service uses window 1
-        python3 "$ACTP_DIR/platform_launcher.py" --scan >> $LOG_DIR/safari-watchdog.log 2>&1
+        # Services auto-claim their tabs via requireTabClaim middleware
       else
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] :$port FAILED to restart — check $LOG_DIR/safari-$port.log"
       fi
