@@ -1,16 +1,16 @@
 {
   "projectId": "test-safari-tiktok",
   "projectRoot": "/Users/isaiahdupree/Documents/Software/Safari Automation",
-  "lastUpdated": "2026-03-07T18:00:58.267Z",
-  "sessionType": "error",
-  "status": "max_errors",
+  "lastUpdated": "2026-03-07T18:01:36.528Z",
+  "sessionType": "INITIALIZER",
+  "status": "failed",
   "stats": {
     "total": 103,
     "passing": 2,
     "pending": 101,
     "percentComplete": "1.9"
   },
-  "pid": 12742,
-  "message": "Stopped after 3 consecutive errors",
-  "lastError": "unknown"
+  "pid": 13545,
+  "errorType": "unknown",
+  "model": "claude-sonnet-4-5-20250929"
 }

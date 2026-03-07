@@ -890,9 +890,10 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
       var lines    = srcText.split('\\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length > 0; });
 
       // Stats: match "186 posts", "697 followers", "498 following"
-      var pMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+posts?/i);
-      var fMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+followers?/i);
-      var ngMatch = srcText.match(/([\\d.,KkMmBb]+)\\s+following/i);
+      // Require number prefix to avoid matching button labels like "Following"
+      var pMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+posts?(?!\\S)/i);
+      var fMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+followers?(?!\\S)/i);
+      var ngMatch = srcText.match(/([\\d.,KkMmBb]+)\\s+following(?!\\S)/i);
 
       // Full name: skip username line (handle pattern), take next non-stat, non-handle line
       var fullName = '';
