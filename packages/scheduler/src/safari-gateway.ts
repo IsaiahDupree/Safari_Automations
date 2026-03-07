@@ -13,6 +13,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs';
 
 const execAsync = promisify(exec);
 
@@ -226,7 +227,7 @@ export class SafariLockManager {
 
 // ─── Gateway Server ─────────────────────────────────────────
 
-const PORT = parseInt(process.env.GATEWAY_PORT || '3000');
+const PORT = parseInt(process.env.GATEWAY_PORT || '3085');
 const app = express();
 app.use(cors());
 app.use(express.json());
