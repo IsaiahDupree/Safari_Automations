@@ -108,9 +108,9 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   let result: unknown;
   switch (name) {
     case 'tiktok_send_dm': {
-      if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'tiktok', to: args.username, text: args.text } }; break; }
+      if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'tiktok', to: args.username, text: args.text, force: args.force } }; break; }
       const _tkDmConflict = await checkNavigationConflict(); if (_tkDmConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_tkDmConflict.blocker.service}' (:${_tkDmConflict.blocker.port}). Call tiktok_session_ensure first.`, blocker: _tkDmConflict.blocker };
-      result = await api(DM_BASE, 'POST', '/api/tiktok/messages/send-to', { username: args.username, text: args.text }); break;
+      result = await api(DM_BASE, 'POST', '/api/tiktok/messages/send-to', { username: args.username, text: args.text, force: args.force }); break;
     }
     case 'tiktok_get_conversations': {
       const cursor = args.cursor ? `?cursor=${encodeURIComponent(args.cursor as string)}` : '';
