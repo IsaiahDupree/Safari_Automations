@@ -2203,7 +2203,7 @@ app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
   try {
     const { SelfPollCron } = await import('../self-poll-cron.js');
     const poller = new SelfPollCron(Number(PORT), AUTH_TOKEN);
-    const result = await poller.tick(true);
+    const result = await poller.tick();
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });

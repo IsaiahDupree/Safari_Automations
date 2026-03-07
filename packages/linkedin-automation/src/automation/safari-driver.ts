@@ -567,29 +567,54 @@ export class SafariDriver {
   }
 
   /**
-   * Type text character by character — redirected to background-safe JS injection.
+   * Type text character by character using AppleScript keystroke commands.
+   * Used as fallback when clipboard paste is rejected.
    */
-  async typeCharByChar(text: string, _delayMs: number = 30): Promise<boolean> {
-    return this.typeViaJS('', text);
+  async typeCharByChar(text: string, delayMs: number = 30): Promise<boolean> {
+    if (this.config.instanceType !== 'local') {
+      // Fall back to JS injection for remote instances
+      return this.typeViaJS('', text);
+    }
+
+    try {
+      // Activate Safari first to ensure keystrokes go to the right window
+      await this.activateSafari();
+      await this.wait(200);
+
+      // Type each character with AppleScript keystroke
+      for (const char of text) {
+        const escaped = char.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "${escaped}"'`);
+        if (delayMs > 0) {
+          await this.wait(delayMs);
+        }
+      }
+
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] typeCharByChar error:', error);
+      return false;
+    }
   }
 
   /**
    * Type text by copying to clipboard and pasting (works for contenteditable).
    * Returns an object indicating success and which method was used.
-   * Redirected to background-safe JS injection — no focus steal.
+   * Hybrid approach: tries clipboard first, falls back to char-by-char on rejection.
    */
   async typeViaClipboard(text: string): Promise<{ success: boolean; method: 'clipboard' | 'keystroke' }> {
-    const ok = await this.typeViaJS('', text);
-    return { success: ok, method: 'clipboard' };
-  }
+    if (this.config.instanceType !== 'local') {
+      const ok = await this.typeViaJS('', text);
+      return { success: ok, method: 'clipboard' };
+    }
 
-  // ---- UNUSED DEAD CODE BELOW (kept for reference, never called) ----
-  async _typeViaClipboardLegacy(text: string): Promise<{ success: boolean; method: 'clipboard' | 'keystroke' }> {
-    if (this.config.instanceType !== 'local') return { success: false, method: 'clipboard' };
     try {
+      // Copy text to clipboard
       const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
       await execAsync(`printf "%s" "${escaped}" | pbcopy`);
       await this.wait(200);
+
+      // Activate Safari and paste
       await this.activateSafari();
       await this.wait(200);
       await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
@@ -600,6 +625,7 @@ export class SafariDriver {
         (function() {
           var el = document.querySelector('[contenteditable="true"]');
           if (!el) el = document.querySelector('.msg-form__contenteditable');
+          if (!el) el = document.querySelector('[role="textbox"][contenteditable="true"]');
           return el ? el.textContent.trim().length : 0;
         })()
       `);
@@ -607,6 +633,7 @@ export class SafariDriver {
       const pasteSucceeded = parseInt(contentLength || '0', 10) > 0;
 
       if (pasteSucceeded) {
+        if (this.config.verbose) console.log('[SafariDriver] Clipboard paste succeeded');
         return { success: true, method: 'clipboard' };
       } else {
         // Paste was rejected, fall back to char-by-char typing
@@ -621,6 +648,7 @@ export class SafariDriver {
       return { success: charByCharSuccess, method: 'keystroke' };
     }
   }
+
 
   /**
    * Press Enter key via OS-level event.
