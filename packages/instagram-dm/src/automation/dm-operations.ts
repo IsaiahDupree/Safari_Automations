@@ -870,66 +870,70 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
   const currentUrl = await d.getCurrentUrl();
   if (!currentUrl.includes(`/${username.replace('@', '')}/`)) {
     await d.navigateTo(profileUrl);
-    await d.wait(6000); // full page reload — Instagram needs time to populate meta tags
+    await d.wait(4000);
   } else {
-    await d.wait(1000); // already on profile, just wait for any async updates
+    await d.wait(1000);
   }
 
   const raw = await d.executeJS(`
     (function() {
-      // --- Stats from meta description (most reliable across all login states) ---
-      var descMeta = '';
-      var metas = document.querySelectorAll('meta[name="description"], meta[property="og:description"]');
-      for (var i = 0; i < metas.length; i++) {
-        var c = metas[i].getAttribute('content') || '';
-        if (c.match(/Followers/i)) { descMeta = c; break; }
-      }
-      var fMatch  = descMeta.match(/([\\d.,KkMm]+)\\s*Followers/i);
-      var ngMatch = descMeta.match(/([\\d.,KkMm]+)\\s*Following/i);
-      var pMatch  = descMeta.match(/([\\d.,KkMm]+)\\s*Posts/i);
+      // --- Primary: parse header.innerText (works for SPA navigation, no meta tag dependency) ---
+      // Instagram renders all profile data into <header> in a consistent text layout:
+      //   line 0: username handle
+      //   line 1: Full Name
+      //   optional: pronouns (e.g. "she/her/hers")
+      //   then: "N posts", "N followers", "N following" (any order)
+      //   then: bio lines
+      //   then: "more" / social proof / buttons
+      var headerEl = document.querySelector('header');
+      var srcText  = headerEl ? headerEl.innerText : document.body.innerText;
+      var lines    = srcText.split('\\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length > 0; });
 
-      // --- Full name from page title: "Sarah Ashley (@saraheashley) • Instagram..." ---
+      // Stats: match "186 posts", "697 followers", "498 following"
+      var pMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+posts?/i);
+      var fMatch  = srcText.match(/([\\d.,KkMmBb]+)\\s+followers?/i);
+      var ngMatch = srcText.match(/([\\d.,KkMmBb]+)\\s+following/i);
+
+      // Full name: skip username line (handle pattern), take next non-stat, non-handle line
       var fullName = '';
-      var titleEl = document.querySelector('title');
-      var titleText = titleEl ? titleEl.innerText : document.title;
-      var titleMatch = titleText.match(/^(.+?)\\s*\\(@/);
-      if (titleMatch) { fullName = titleMatch[1].trim(); }
-      if (!fullName) {
-        // Fallback: h1, h2, og:title meta
-        var ogTitle = document.querySelector('meta[property="og:title"]');
-        if (ogTitle) {
-          var ogMatch = (ogTitle.getAttribute('content') || '').match(/^(.+?)\\s*\\(@/);
-          if (ogMatch) fullName = ogMatch[1].trim();
+      var handleRe = /^[a-z0-9_.]{1,30}$/i;
+      var statRe   = /posts?|followers?|following/i;
+      for (var i = 1; i < Math.min(lines.length, 8); i++) {
+        var l = lines[i];
+        if (!handleRe.test(l) && !statRe.test(l) && l.length > 1 && l.length < 80) {
+          // Skip pronouns-only lines (e.g. "she/her/hers", "he/him", "they/them")
+          if (!/^(she|he|they|ze|xe|per|ve)\\//.test(l.toLowerCase())) {
+            fullName = l;
+            break;
+          }
+          // If pronouns, keep looking
         }
       }
-      if (!fullName) {
-        var h1 = document.querySelector('h1');
-        if (h1 && h1.innerText && h1.innerText.length > 1) fullName = h1.innerText.trim();
-      }
 
-      // --- Bio: try multiple selectors ---
-      var bio = '';
-      // span._ap3a is a common Instagram bio span class
-      var bioEl = document.querySelector('span._ap3a') ||
-                  document.querySelector('h1 + div span') ||
-                  document.querySelector('[data-testid="user-bio"]');
-      if (bioEl) {
-        bio = (bioEl.innerText || '').trim();
+      // Bio: lines after the last stat line, up to "more" / social buttons
+      var lastStatIdx = -1;
+      for (var i = 0; i < lines.length; i++) {
+        if (statRe.test(lines[i])) lastStatIdx = i;
       }
-      // Fallback: extract from meta description after the Instagram handle
-      if (!bio && descMeta) {
-        var bioMatch = descMeta.match(/on Instagram:\\s*"?(.+?)(?:"|$)/);
-        if (bioMatch) bio = bioMatch[1].trim();
+      var bioLines = [];
+      if (lastStatIdx >= 0) {
+        for (var i = lastStatIdx + 1; i < lines.length; i++) {
+          var l = lines[i];
+          if (/^(more|Following|Message|Followed by|Follow|Edit profile|Share profile|Contact|Subscribe)/i.test(l)) break;
+          if (handleRe.test(l) && l === lines[0]) break; // username line repeat = end of bio section
+          bioLines.push(l);
+        }
       }
+      var bio = bioLines.join('\\n').trim().substring(0, 300);
 
-      // --- Private account check ---
-      var bodyText = document.body ? (document.body.innerText || '') : '';
-      var isPrivate = bodyText.includes('This account is private') ||
+      // Private account check
+      var isPrivate = srcText.includes('This account is private') ||
+                      srcText.includes('This Account is Private') ||
                       !!document.querySelector('[class*="PrivateAccount"]');
 
       return JSON.stringify({
         fullName:  fullName,
-        bio:       bio.substring(0, 300),
+        bio:       bio,
         followers: fMatch  ? fMatch[1]  : '',
         following: ngMatch ? ngMatch[1] : '',
         posts:     pMatch  ? pMatch[1]  : '',
