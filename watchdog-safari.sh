@@ -23,7 +23,7 @@ SERVICES[3104]="packages/upwork-automation/src/api/server.ts"
 
 declare -A EXTRA_ENV
 EXTRA_ENV[3007]="SAFARI_RESEARCH_ENABLED=true"
-EXTRA_ENV[3108]="MEDIUM_PORT=3108"
+EXTRA_ENV[3108]="MEDIUM_PORT=3108 SAFARI_AUTOMATION_WINDOW=2"
 EXTRA_ENV[3104]="UPWORK_PORT=3104"
 
 ACTP_DIR="/Users/isaiahdupree/Documents/Software/actp-worker"
