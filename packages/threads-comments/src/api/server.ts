@@ -13,7 +13,7 @@
  *   - Supabase CRM integration
  */
 
-import 'dotenv/config';
+import { config as _dotenv } from 'dotenv'; _dotenv({ override: true });
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { ThreadsDriver, DEFAULT_CONFIG, type ThreadsConfig, type CommentResult } from '../automation/threads-driver.js';
@@ -38,7 +38,7 @@ const AUTH_TOKEN = process.env.THREADS_AUTH_TOKEN || process.env.AUTH_TOKEN || '
 const startedAt = new Date().toISOString();
 const SERVICE_NAME = 'threads-comments';
 const SERVICE_PORT = 3004;
-const SESSION_URL_PATTERN = 'threads.net';
+const SESSION_URL_PATTERN = 'threads.com';
 const activeCoordinators = new Map<string, TabCoordinator>();
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
@@ -264,7 +264,7 @@ app.use(authMiddleware);
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
-const OPEN_URL = 'https://www.threads.net';
+const OPEN_URL = 'https://www.threads.com';
 const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -283,7 +283,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `threads-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -293,7 +293,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
     res.status(503).json({
       error: 'No Safari tab available for threads-comments',
       detail: String(err),
-      fix: `Open Safari and navigate to https://www.threads.net, or POST /api/tabs/claim with { agentId, openUrl: "https://www.threads.net" }`,
+      fix: `Open Safari and navigate to https://www.threads.com, or POST /api/tabs/claim with { agentId, openUrl: "https://www.threads.com" }`,
     });
   }
 }
@@ -645,7 +645,7 @@ app.get('/api/threads/profile/:handle', wrapAsync(async (req, res) => {
 app.get('/api/threads/posts/:postId', wrapAsync(async (req, res) => {
   const postId = req.params.postId;
   // Threads post URLs look like threads.net/@user/post/ID
-  const engagement = await getDriver().getPostEngagement(`https://www.threads.net/t/${postId}`);
+  const engagement = await getDriver().getPostEngagement(`https://www.threads.com/t/${postId}`);
   res.json({ postId, ...engagement });
 }));
 
@@ -662,13 +662,13 @@ app.get('/api/threads/extract', wrapAsync(async (req, res) => {
 
 app.post('/api/threads/like/:postId', wrapAsync(async (req, res) => {
   const postId = req.params.postId;
-  const result = await getDriver().likePost(`https://www.threads.net/t/${postId}`);
+  const result = await getDriver().likePost(`https://www.threads.com/t/${postId}`);
   res.json({ success: result.success, postId, error: result.error });
 }));
 
 app.post('/api/threads/repost/:postId', wrapAsync(async (req, res) => {
   const postId = req.params.postId;
-  const result = await getDriver().repostPost(`https://www.threads.net/t/${postId}`);
+  const result = await getDriver().repostPost(`https://www.threads.com/t/${postId}`);
   res.json({ success: result.success, postId, error: result.error });
 }));
 
@@ -678,7 +678,7 @@ app.post('/api/threads/repost/:postId', wrapAsync(async (req, res) => {
 
 app.get('/api/threads/thread/:postId', wrapAsync(async (req, res) => {
   const postId = req.params.postId;
-  const context = await getDriver().getThreadContext(`https://www.threads.net/t/${postId}`);
+  const context = await getDriver().getThreadContext(`https://www.threads.com/t/${postId}`);
   res.json(context);
 }));
 
@@ -1165,8 +1165,8 @@ app.post('/api/threads/comment-sweep', wrapAsync(async (req, res) => {
     try {
       // Navigate to home or for-you feed
       const feedUrl = feedSource === 'following'
-        ? 'https://www.threads.net/?feed=following'
-        : 'https://www.threads.net/';
+        ? 'https://www.threads.com/?feed=following'
+        : 'https://www.threads.com/';
       await d.navigateToPost(feedUrl);
       await humanDelay(3000, 5000);
 
@@ -1267,6 +1267,113 @@ app.post('/api/threads/comment-sweep', wrapAsync(async (req, res) => {
 }));
 
 // ═══════════════════════════════════════════════════════════════
+// ─── Self-Poll Endpoint (SDPA-009) ───────────────────────────────────────────
+// POST /api/threads/self-poll
+// Called by cron-manager during quiet hours. Fetches profile posts and comments,
+// writes to safari_platform_cache for cloud-sync to consume.
+app.post('/api/threads/self-poll', async (_req: Request, res: Response) => {
+  // NO quiet hours — runs 24/7 per Phase B spec
+
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+  const PROFILE_URL = 'https://www.threads.net/@the_isaiah_dupree';
+  const result = { posts: 0, comments: 0 };
+
+  const writeCache = async (dataType: string, payload: any[], ttlMs: number) => {
+    if (!payload.length || !SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const headers: Record<string, string> = {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal',
+    };
+    await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache?platform=eq.threads&data_type=eq.${dataType}`, {
+      method: 'DELETE', headers,
+    }).catch(() => {});
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+    await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ platform: 'threads', data_type: dataType, payload, expires_at: expiresAt, source_service_port: 3004 }),
+    }).catch(() => {});
+  };
+
+  try {
+    const d = getDriver();
+
+    // Navigate to own profile
+    await d.navigateToPost(PROFILE_URL);
+    await new Promise(r => setTimeout(r, 4000));
+
+    // Discover posts on profile
+    const posts = await d.findPosts(10);
+    result.posts = posts.length;
+
+    // Collect post stats
+    const postStats: any[] = posts.map(p => ({
+      platform: 'threads',
+      post_id: p.url?.split('/').pop() || `threads_${p.index}`,
+      post_url: p.url,
+      post_type: 'text',
+      caption: p.content || '',
+      likes: 0,
+      comments: 0,
+      shares: 0,
+    }));
+
+    // For each post, get comments (up to 3 posts)
+    const allComments: any[] = [];
+    for (const post of posts.slice(0, 3)) {
+      const postId = post.url?.split('/').pop() || `threads_${post.index}`;
+      await d.navigateToPost(post.url);
+      await new Promise(r => setTimeout(r, 3000));
+
+      const context = await d.getContext();
+      if (context) {
+        // Update post stats with engagement numbers
+        const statsEntry = postStats.find(s => s.post_id === postId);
+        if (statsEntry) {
+          statsEntry.likes = parseInt(context.likeCount) || 0;
+          statsEntry.comments = parseInt(context.replyCount) || 0;
+        }
+        // Parse comments from context.replies
+        for (const reply of (context.replies || [])) {
+          if (!reply || reply.length < 3) continue;
+          const firstSpace = reply.indexOf(' ');
+          let username = 'unknown';
+          let text = reply;
+          if (firstSpace > 0 && firstSpace < 30) {
+            const fw = reply.substring(0, firstSpace);
+            if (fw.length >= 2 && fw.length <= 30) {
+              username = fw.replace(/^@/, '').replace(/[:\-]+$/, '');
+              text = reply.substring(firstSpace + 1).trim();
+            }
+          }
+          text = text.replace(/^\d{1,2}\/\d{1,2}\/\d{2,4}\s*/, '').replace(/^Replying to @\S+\s*/i, '').trim();
+          if (!text || text.length < 3) continue;
+          allComments.push({ platform: 'threads', post_id: postId, post_url: post.url, username, comment_text: text.substring(0, 500) });
+        }
+      }
+
+      // Navigate back
+      await d.navigateToPost(PROFILE_URL);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    result.comments = allComments.length;
+
+    await Promise.all([
+      writeCache('post_stats', postStats, 21_600_000),
+      writeCache('comments', allComments, 21_600_000),
+    ]);
+
+    res.json({ success: true, fetched: result });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error('[self-poll:threads] error:', msg);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
 // 404 / 405 catch-all
 // ═══════════════════════════════════════════════════════════════
 

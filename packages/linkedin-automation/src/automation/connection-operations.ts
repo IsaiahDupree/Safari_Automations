@@ -372,90 +372,85 @@ export async function sendConnectionRequest(
   }
 
   // ── Step 4: Send the connection request ──────────────────────
+  // Strategy: Click the Connect anchor on the profile page (triggers LinkedIn SPA modal),
+  // then handle the modal (add note + Send, or Send without a note).
+  // We no longer navigate to /preload/custom-invite/ since that page fails to load.
   let noteSent = false;
 
-  if (wantsNote && vanityName) {
-    // ── Path A: Navigate to custom-invite page for note form ──
-    const customInviteUrl = `https://www.linkedin.com/preload/custom-invite/?vanityName=${vanityName}`;
-    log(`Navigating to custom-invite for note: ${customInviteUrl}`);
-    await d.navigateTo(customInviteUrl);
-    await d.wait(2000);
+  const CLICK_CONNECT_JS = `(function(){var m=document.querySelector('main');var s=m?m.querySelector('section'):null;if(!s)return 'no_section';var el=s.querySelector('a[href*="custom-invite"]');if(!el)el=s.querySelector('button[aria-label*="invite" i]');if(el){el.click();return 'clicked';}return 'not_found';})()`
 
-    // Wait for the custom-invite page buttons
-    const pageLoaded = await d.waitForCondition(
-      `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='add a note')return 'ready';}return '';})()`,
-      8000
-    );
-    if (!pageLoaded) {
-      log('Custom-invite page did not load — falling back to no-note send');
-    } else {
-      // Click "Add a note" to reveal textarea
-      await d.executeJS(
-        `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='add a note'){btns[i].click();return 'clicked';}}return 'miss';})()`
-      );
-      await d.wait(1000);
+  // Helper JS: scan all buttons anywhere on page for modal actions
+  const MODAL_STATE_JS = `(function(){var r={addNote:false,sendWithoutNote:false,send:false,textarea:false};var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=(btns[i].innerText||'').trim().toLowerCase();if(t==='add a note')r.addNote=true;if(t==='send without a note')r.sendWithoutNote=true;if(t==='send'&&!btns[i].disabled)r.send=true;}r.textarea=!!document.querySelector('textarea');return JSON.stringify(r);})()`;
 
-      // Type the note via JS value + input event (works with Ember textarea)
+  log(`Clicking Connect: ${state.connect?.label || ''}`);
+  const clickResult = await d.executeJS(CLICK_CONNECT_JS);
+  log(`Connect click: ${clickResult}`);
+  await d.wait(1500);
+
+  // Wait for modal buttons to appear (up to 6s)
+  const modalButtonFound = await d.waitForCondition(
+    `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=(btns[i].innerText||'').trim().toLowerCase();if(t==='add a note'||t==='send without a note'||t==='send')return t;}return '';})()`,
+    6000
+  );
+  log(`Modal button found: ${modalButtonFound || 'none'}`);
+
+  if (modalButtonFound) {
+    const modalRaw = await d.executeJS(MODAL_STATE_JS);
+    let modal: { addNote: boolean; sendWithoutNote: boolean; send: boolean; textarea: boolean } = { addNote: false, sendWithoutNote: false, send: false, textarea: false };
+    try { modal = JSON.parse(modalRaw); } catch {}
+
+    if (wantsNote && (modal.addNote || modal.textarea)) {
+      // Click "Add a note" button if present to reveal textarea
+      if (modal.addNote) {
+        await d.executeJS(`(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if((btns[i].innerText||'').trim().toLowerCase()==='add a note'){btns[i].click();return;}}})();`);
+        await d.wait(800);
+      }
+
+      // Type the note into any textarea
       const noteText = request.note!.substring(0, 300).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
       const typed = await d.executeJS(
-        `(function(){var ta=document.querySelector('textarea#custom-message,textarea[name="message"]');if(!ta)return 'no_textarea';ta.focus();ta.value='${noteText}';ta.dispatchEvent(new Event('input',{bubbles:true}));ta.dispatchEvent(new Event('change',{bubbles:true}));return 'typed:'+ta.value.length;})()`
+        `(function(){var ta=document.querySelector('textarea');if(!ta)return 'no_textarea';ta.focus();ta.value='${noteText}';ta.dispatchEvent(new Event('input',{bubbles:true}));ta.dispatchEvent(new Event('change',{bubbles:true}));return 'typed:'+ta.value.length;})()`
       );
-      log(`Note: ${typed}`);
+      log(`Note typed: ${typed}`);
 
       if (typed.startsWith('typed:')) {
         await d.wait(500);
-
-        // Wait for Send button to become enabled
-        const sendReady = await d.waitForCondition(
+        // Wait for Send button to enable
+        await d.waitForCondition(
           `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled)return 'ready';}return '';})()`,
           3000
         );
-
-        if (sendReady) {
-          await d.executeJS(
-            `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled){btns[i].click();return 'sent';}}return 'miss';})()`
-          );
-          log('Clicked Send (with note)');
-          noteSent = true;
-        } else {
-          log('Send button did not enable — clicking "Send without a note" as fallback');
-        }
-      }
-
-      // Fallback: if typing failed, send without note
-      if (!noteSent) {
         await d.executeJS(
-          `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim().toLowerCase()==='send without a note'){btns[i].click();return 'sent';}}return 'miss';})()`
+          `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled){btns[i].click();return;}}})();`
         );
-        log('Sent without note (fallback)');
+        log('Clicked Send (with note)');
+        noteSent = true;
       }
     }
-    await d.wait(2000);
 
-  } else if (wantsNote && !vanityName) {
-    // ── Path A fallback: can't extract vanityName, send without note ──
-    log('Cannot extract vanityName for custom-invite — sending without note');
-    await d.executeJS(`(function(){var m=document.querySelector('main');var s=m.querySelector('section');var el=s.querySelector('a[href*="custom-invite"]');if(!el)el=s.querySelector('button[aria-label*="invite" i]');if(el)el.click();})()`);
-    await d.wait(3000);
-
+    if (!noteSent && modal.sendWithoutNote) {
+      await d.executeJS(
+        `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if((btns[i].innerText||'').trim().toLowerCase()==='send without a note'){btns[i].click();return;}}})();`
+      );
+      log('Clicked Send without a note');
+    } else if (!noteSent && modal.send) {
+      await d.executeJS(
+        `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=btns[i].innerText.trim().toLowerCase();if(t==='send'&&!btns[i].disabled){btns[i].click();return;}}})();`
+      );
+      log('Clicked Send (direct)');
+    } else if (!noteSent) {
+      log('Modal found but no actionable button — may have sent directly');
+    }
   } else {
-    // ── Path B: No note — JS click sends invitation directly ──
-    log(`JS-clicking Connect (no note): ${state.connect?.label || ''}`);
-    await d.executeJS(`(function(){var m=document.querySelector('main');var s=m.querySelector('section');var el=s.querySelector('a[href*="custom-invite"]');if(!el)el=s.querySelector('button[aria-label*="invite" i]');if(el)el.click();})()`);
-    await d.wait(3000);
+    log('No modal appeared — request may have sent directly or failed');
   }
+  await d.wait(2000);
 
   // ── Step 5: Verify Pending ──────
-  // If we navigated away (custom-invite path), go back to profile first
-  const currentUrl = await d.getCurrentUrl();
-  if (!currentUrl.includes(vanityName || '___none___') || currentUrl.includes('/preload/')) {
-    await d.navigateTo(request.profileUrl);
-    await d.wait(3000);
-  }
-
-  // Poll for Pending to appear (SPA may need time)
+  // We stayed on the profile page, so no navigation needed.
+  // Poll globally (not just main>section) since LinkedIn renders Pending in the section.
   const pendingVerified = await d.waitForCondition(
-    `(function(){var m=document.querySelector('main');var s=m?m.querySelector('section'):null;if(!s)return '';var p=s.querySelector('button[aria-label*="Pending" i]');return p?p.getAttribute('aria-label'):'';})()`,
+    `(function(){var p=document.querySelector('button[aria-label*="Pending" i]');if(p)return p.getAttribute('aria-label');var a=document.querySelector('a[aria-label*="Pending" i]');if(a)return a.getAttribute('aria-label');return '';})()`,
     8000, 500
   );
 

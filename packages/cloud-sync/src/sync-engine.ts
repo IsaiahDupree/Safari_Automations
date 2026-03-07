@@ -17,6 +17,7 @@ import { CloudSupabase, getCloudSupabase } from './supabase';
 import { getPoller, BasePoller } from './pollers';
 import { runAnomalyDetection } from './anomaly-detector';
 import { runMentionMonitor } from './mention-monitor';
+import { writePlatformCache, CACHE_TTLS } from './cache-writer';
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3000';
 const LOCK_HOLDER = 'cloud-sync';
@@ -159,30 +160,19 @@ export class SyncEngine {
   }
 
   // ─── Unified Poll Cycle ────────────────────────────────
-  // Runs every 15s. Checks what's due, then polls SEQUENTIALLY
-  // with lock acquisition per platform.
-  // Navigation-heavy polls (stats/comments/followers) only run during quiet hours
-  // to avoid hijacking user's active Safari tabs. DMs and notifications are lightweight.
-  private isQuietHours(): boolean {
-    const h = new Date().getHours();
-    const start = parseInt(process.env.NAV_QUIET_HOUR_START || '1');
-    const end   = parseInt(process.env.NAV_QUIET_HOUR_END   || '7');
-    return h >= start && h < end;
-  }
-
+  // Runs every 15s. Checks what's due, then polls SEQUENTIALLY.
+  // All data types run 24/7 — pollers read from safari_platform_cache only.
   private async pollCycle(): Promise<void> {
     if (!this.running || this.polling) return;
     this.polling = true;
 
     const now = Date.now();
-    const quiet = this.isQuietHours();
     const dmsDue = now - this.lastDMPoll >= this.config.dmPollIntervalMs;
     const notifsDue = now - this.lastNotifPoll >= this.config.pollIntervalMs;
-    // Stats/comments/followers navigate Safari — only allowed during quiet hours (1am–7am)
-    const statsDue = quiet && now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
+    const statsDue = now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
     const invitationsDue = now - this.lastInvitationPoll >= this.config.invitationPollIntervalMs;
-    const commentsDue = quiet && now - this.lastCommentsPoll >= this.config.commentsPollIntervalMs;
-    const followersDue = quiet && now - this.lastFollowerPoll >= this.config.commentsPollIntervalMs;
+    const commentsDue = now - this.lastCommentsPoll >= this.config.commentsPollIntervalMs;
+    const followersDue = now - this.lastFollowerPoll >= this.config.commentsPollIntervalMs;
 
     if (!dmsDue && !notifsDue && !statsDue && !invitationsDue && !commentsDue && !followersDue) {
       // Nothing due — just check action queue (no Safari needed)
@@ -306,29 +296,54 @@ export class SyncEngine {
   // ─── Poll a single data type for a single platform ────
   private async pollDataType(platform: Platform, poller: BasePoller, dataType: 'dms' | 'notifications' | 'post_stats' | 'invitations' | 'comments' | 'followers'): Promise<PollResult> {
     const start = Date.now();
+
     try {
+      // ── Cache-first strategy (SDPA-013) ──────────────────
+      // 1. Check safari_platform_cache for non-expired data
+      // 2. If fresh cache → sync from cache
+      // 3. If cache miss → call poller (which is cache-only — returns [] on miss)
+      const cached = await this.db.getPlatformCache(platform, dataType);
+      if (cached !== null && cached.length > 0) {
+        console.log(`  📦 [${platform}] Cache hit for ${dataType} (${cached.length} items)`);
+        let synced = 0;
+        switch (dataType) {
+          case 'dms':           synced = await this.db.syncDMs(cached); break;
+          case 'notifications': synced = await this.db.syncNotifications(cached); break;
+          case 'post_stats':    synced = await this.db.syncPostStats(cached); break;
+          case 'invitations':   synced = await this.db.syncInvitations(cached); break;
+          case 'comments':      synced = await this.db.syncComments(cached); break;
+          case 'followers':     synced = await this.db.syncFollowerEvents(cached); break;
+        }
+        await this.db.upsertPollState(platform, dataType, { items_synced: synced, last_poll_at: new Date().toISOString() });
+        return { platform, dataType, itemsSynced: synced, durationMs: Date.now() - start };
+      }
+
       let synced = 0;
 
       switch (dataType) {
         case 'dms': {
           const dms = await poller.pollDMs();
           synced = await this.db.syncDMs(dms);
+          if (dms.length > 0) await writePlatformCache(platform, dataType, dms, CACHE_TTLS.dms);
           break;
         }
         case 'notifications': {
           const notifs = await poller.pollNotifications();
           synced = await this.db.syncNotifications(notifs);
+          if (notifs.length > 0) await writePlatformCache(platform, dataType, notifs, CACHE_TTLS.notifications);
           break;
         }
         case 'post_stats': {
           const stats = await poller.pollPostStats();
           synced = await this.db.syncPostStats(stats);
+          if (stats.length > 0) await writePlatformCache(platform, dataType, stats, CACHE_TTLS.post_stats);
           break;
         }
         case 'invitations': {
           if (poller.pollInvitations) {
             const invitations = await poller.pollInvitations();
             synced = await this.db.syncInvitations(invitations);
+            if (invitations.length > 0) await writePlatformCache(platform, dataType, invitations, CACHE_TTLS.invitations);
           }
           break;
         }
@@ -336,6 +351,7 @@ export class SyncEngine {
           if (poller.pollComments) {
             const comments = await poller.pollComments();
             synced = await this.db.syncComments(comments);
+            if (comments.length > 0) await writePlatformCache(platform, dataType, comments, CACHE_TTLS.comments);
           }
           break;
         }
@@ -343,6 +359,7 @@ export class SyncEngine {
           if (poller.pollFollowers) {
             const followers = await poller.pollFollowers();
             synced = await this.db.syncFollowerEvents(followers);
+            if (followers.length > 0) await writePlatformCache(platform, dataType, followers, CACHE_TTLS.followers);
           }
           break;
         }
@@ -398,22 +415,33 @@ export class SyncEngine {
     return this.lastResults.filter(r => r.dataType === 'post_stats');
   }
 
+  // Read-only actions that don't navigate Safari — skip lock acquisition
+  private readonly NO_LOCK_ACTIONS = new Set([
+    'get_crm_top', 'get_conversations', 'fetch_profile',
+    'get_tweet_metrics', 'get_upwork_jobs', 'get_research_results',
+    'get_post_metrics', 'get_profile_posts',
+  ]);
+
   // ─── Action Queue Processing ───────────────────────────
-  // Actions DO need the Safari lock since they perform browser actions
+  // Write/navigation actions acquire the Safari Gateway lock.
+  // Read-only actions (NO_LOCK_ACTIONS) run immediately without lock.
   async processActionQueue(): Promise<void> {
     const actions = await this.db.getPendingActions(5);
     if (!actions.length) return;
 
     for (const action of actions) {
-      // Acquire lock for the action's platform
-      const lockAcquired = await this.acquireLock(action.platform as Platform, `action: ${action.action_type}`);
-      if (!lockAcquired) {
-        console.log(`  ⏳ Action ${action.id} skipped — lock busy`);
-        continue;
+      const needsLock = !this.NO_LOCK_ACTIONS.has(action.action_type);
+
+      if (needsLock) {
+        const lockAcquired = await this.acquireLock(action.platform as Platform, `action: ${action.action_type}`);
+        if (!lockAcquired) {
+          console.log(`  ⏳ Action ${action.id} (${action.action_type}) skipped — lock busy`);
+          continue;
+        }
       }
 
       try {
-        console.log(`  ⚡ Executing action: ${action.action_type} on ${action.platform}`);
+        console.log(`  ⚡ Executing action: ${action.action_type} on ${action.platform} ${needsLock ? '(lock)' : '(no-lock)'}`);
         await this.db.updateAction(action.id, 'running');
         const result = await this.executeAction(action);
         await this.db.updateAction(action.id, 'completed', result);
@@ -423,10 +451,10 @@ export class SyncEngine {
         await this.db.updateAction(action.id, 'failed', undefined, err);
         console.error(`  ❌ Action ${action.id} failed: ${err}`);
       } finally {
-        await this.releaseLock();
+        if (needsLock) await this.releaseLock();
       }
 
-      await this.sleep(SETTLE_DELAY_MS);
+      if (needsLock) await this.sleep(SETTLE_DELAY_MS);
     }
   }
 
@@ -523,7 +551,7 @@ export class SyncEngine {
         return post(cmtBase, '/api/twitter/tweet/retweet', { tweetUrl: target_post_url });
       }
       case 'get_tweet_metrics': {
-        return get(cmtBase, `/api/twitter/tweet/metrics?url=${encodeURIComponent(target_post_url || '')}`);
+        return get(cmtBase, `/api/twitter/tweet/metrics?tweetUrl=${encodeURIComponent(target_post_url || '')}`);
       }
       case 'twitter_comment_sweep': {
         return post(cmtBase, '/api/twitter/comment-sweep', {

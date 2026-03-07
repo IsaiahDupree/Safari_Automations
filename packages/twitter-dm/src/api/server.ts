@@ -4,7 +4,7 @@
  * Now with AI-powered message generation!
  */
 
-import 'dotenv/config';
+import { config as _dotenv } from 'dotenv'; _dotenv({ override: true });
 import express, { Request, Response, NextFunction } from 'express';
 
 // AI for DM generation

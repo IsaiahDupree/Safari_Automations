@@ -2,11 +2,14 @@
  * TikTok Comment API Server - Port 3006
  * Now with AI-powered comment generation!
  */
-import 'dotenv/config';
+import { config as _dotenv } from 'dotenv'; _dotenv({ override: true });
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { TikTokDriver, type TikTokConfig } from '../automation/tiktok-driver.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
+import { CommentLogger } from '../db/comment-logger.js';
+
+const commentLogger = new CommentLogger();
 
 const app = express();
 app.use(cors());
@@ -79,10 +82,10 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  // No claim — auto-claim now (open new tab if needed)
+  // No claim — auto-discover an existing tiktok.com tab only (never opens a new window)
   const autoId = `tiktok-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -92,7 +95,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
     res.status(503).json({
       error: 'No Safari tab available for tiktok-comments',
       detail: String(err),
-      fix: `Open Safari and navigate to https://www.tiktok.com, or POST /api/tabs/claim with { agentId, openUrl: "https://www.tiktok.com" }`,
+      fix: 'Run: node harness/safari-tab-coordinator.js --open',
     });
   }
 }
@@ -161,19 +164,19 @@ app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
 });
 
 // POST /api/tabs/claim — claim a Safari tab for this service
-// Body: { agentId: string, windowIndex?: number, tabIndex?: number, openUrl?: string }
+// Body: { agentId: string, windowIndex?: number, tabIndex?: number }
+// Note: openUrl is intentionally ignored — tab layout is managed by safari-tab-coordinator
 app.post('/api/tabs/claim', async (req: Request, res: Response) => {
-  const { agentId, windowIndex, tabIndex, openUrl } = req.body as {
+  const { agentId, windowIndex, tabIndex } = req.body as {
     agentId: string;
     windowIndex?: number;
     tabIndex?: number;
-    openUrl?: string;
   };
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
       activeCoordinators.set(agentId, coord);
     }
     const claim = await coord.claim(windowIndex, tabIndex);
@@ -270,6 +273,18 @@ app.post('/api/tiktok/navigate', async (req: Request, res: Response) => {
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+function parseCount(s: string): number {
+  if (!s) return 0;
+  const m = s.replace(/,/g, '').trim().match(/^([\d.]+)\s*([KkMmBb]?)$/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const suffix = m[2].toUpperCase();
+  if (suffix === 'K') return Math.round(n * 1_000);
+  if (suffix === 'M') return Math.round(n * 1_000_000);
+  if (suffix === 'B') return Math.round(n * 1_000_000_000);
+  return Math.round(n);
+}
+
 app.post('/api/tiktok/search-cards', async (req: Request, res: Response) => {
   try {
     const { query, maxCards = 20, waitMs = 4000 } = req.body;
@@ -296,16 +311,17 @@ app.post('/api/tiktok/search-cards', async (req: Request, res: Response) => {
           var author = userMatch ? userMatch[1] : '';
           var descEl = card.querySelector('[data-e2e=\\'search-card-video-caption\\']') || card.querySelector('[data-e2e=\\'search-card-desc\\']');
           var desc = descEl ? descEl.textContent.trim().substring(0, 200) : '';
-          var vwEl = card.querySelector('[data-e2e=\\'search-card-like-container\\']');
-          var likesRaw = vwEl ? vwEl.textContent.trim() : '0';
-          var viewsEl = card.querySelector('[class*=\\'VideoCount\\']') || card.querySelector('[class*=\\'video-count\\']') || card.querySelector('strong[class*=\\'StrongVideoCount\\']');
+          var likesEl = card.querySelector('[data-e2e=\\'search-card-like-container\\']');
+          var likesRaw = likesEl ? likesEl.textContent.trim() : '0';
+          var viewsEl = card.querySelector('[data-e2e=\\'video-views\\']') || card.querySelector('[data-e2e=\\'search-card-view-count\\']') || card.querySelector('[class*=\\'VideoCount\\']');
           var viewsRaw = viewsEl ? viewsEl.textContent.trim() : '0';
           results.push({ id: id, url: url, author: author, description: desc, viewsRaw: viewsRaw, likesRaw: likesRaw });
         }
         return JSON.stringify(results);
       })()
     `);
-    const videos = JSON.parse(raw || '[]');
+    const videos = (JSON.parse(raw || '[]') as { id: string; url: string; author: string; description: string; viewsRaw: string; likesRaw: string }[])
+      .map(v => ({ ...v, likesCount: parseCount(v.likesRaw), viewsCount: parseCount(v.viewsRaw) }));
     res.json({ success: true, query, videos, count: videos.length });
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
@@ -324,13 +340,17 @@ app.get('/api/tiktok/trending', async (req: Request, res: Response) => {
       (function() {
         var videos = [];
         var seen = {};
-        // TikTok For You page uses video cards or feed items
-        var cards = document.querySelectorAll('[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"]');
+        // Prefer stable data-e2e selectors; fall back to structural ones
+        var cards = document.querySelectorAll(
+          '[data-e2e="recommend-list-item-container"], ' +
+          '[data-e2e="video-feed-item"], ' +
+          '[data-e2e="browse-video-item"], ' +
+          'article[data-scroll-index]'
+        );
         var maxVideos = ${limit};
 
         for (var i = 0; i < Math.min(cards.length, maxVideos); i++) {
           var card = cards[i];
-          // Extract video link
           var link = card.querySelector('a[href*="/video/"]');
           if (!link) continue;
           var href = link.getAttribute('href') || '';
@@ -344,33 +364,23 @@ app.get('/api/tiktok/trending', async (req: Request, res: Response) => {
           var userMatch = href.match(/@([^\\/]+)\\/video/);
           var author = userMatch ? userMatch[1] : '';
 
-          // Extract description/caption
-          var descEl = card.querySelector('[data-e2e="video-desc"], [class*="DivVideoDescription"]');
+          var descEl = card.querySelector('[data-e2e="video-desc"], [data-e2e="browse-video-desc"]');
           var description = descEl ? descEl.textContent.trim().substring(0, 200) : '';
 
-          // Extract engagement metrics
-          var likeEl = card.querySelector('[data-e2e="like-count"], [data-e2e="video-like-count"]');
+          var likeEl = card.querySelector('[data-e2e="like-count"], [data-e2e="video-like-count"], [data-e2e="browse-like-count"]');
           var likes = likeEl ? likeEl.textContent.trim() : '0';
 
-          var commentEl = card.querySelector('[data-e2e="comment-count"], [data-e2e="video-comment-count"]');
+          var commentEl = card.querySelector('[data-e2e="comment-count"], [data-e2e="video-comment-count"], [data-e2e="browse-comment-count"]');
           var comments = commentEl ? commentEl.textContent.trim() : '0';
 
-          var shareEl = card.querySelector('[data-e2e="share-count"], [data-e2e="video-share-count"]');
+          var shareEl = card.querySelector('[data-e2e="share-count"], [data-e2e="video-share-count"], [data-e2e="browse-share-count"]');
           var shares = shareEl ? shareEl.textContent.trim() : '0';
 
-          var viewEl = card.querySelector('[data-e2e="video-views"]');
+          var viewEl = card.querySelector('[data-e2e="video-views"], [data-e2e="browse-video-views"]');
           var views = viewEl ? viewEl.textContent.trim() : '0';
 
-          videos.push({
-            id: id,
-            author: author,
-            description: description,
-            likes: likes,
-            comments: comments,
-            shares: shares,
-            views: views,
-            videoUrl: url
-          });
+          videos.push({ id: id, author: author, description: description,
+                        likes: likes, comments: comments, shares: shares, views: views, videoUrl: url });
         }
 
         return JSON.stringify(videos);
@@ -469,6 +479,16 @@ app.post('/api/tiktok/comments/post', async (req: Request, res: Response) => {
     }
 
     const result = await d.postComment(commentText);
+    // Fire-and-forget Supabase log — never block the response
+    commentLogger.logComment({
+      platform: 'tiktok',
+      username: username || (targetUrl ? new URL(targetUrl).pathname.split('/')[1]?.replace('@','') || 'unknown' : 'unknown'),
+      postUrl: targetUrl,
+      postContent: postContent,
+      commentText,
+      success: result.success,
+      error: result.error,
+    }).catch(() => {});
     res.json({ ...result, generatedComment: commentText, usedAI: useAI || !text });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
@@ -881,6 +901,288 @@ app.post('/api/tiktok/comment-sweep', async (req: Request, res: Response) => {
     res.json({ success: true, dryRun, totalCommented, feedResults, nicheResults, newlyCommentedUrls, summary });
   } catch (e) {
     res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ── Hashtag prospect scraper ──────────────────────────────────────────────────
+// Scrapes /tag/:hashtag pages in the COMMENTS tab (never touches DM inbox).
+// Returns scored creator candidates ready for DM queue.
+const HASHTAG_ICP_KEYWORDS = ['founder', 'saas', 'build', 'software', 'ai', 'startup', 'indie', 'developer', 'automation', 'b2b'];
+
+app.post('/api/tiktok/hashtag-prospects', async (req: Request, res: Response) => {
+  try {
+    const {
+      hashtags = ['buildinpublic', 'saasfounder', 'aiautomation'] as string[],
+      maxPerTag = 15,
+      minScore = 1,
+    } = req.body as { hashtags?: string[]; maxPerTag?: number; minScore?: number };
+
+    const d = getDriver();
+    const seen = new Set<string>();
+    const candidates: { username: string; source: string; score: number; signals: string[]; videoDesc: string }[] = [];
+
+    for (const hashtag of hashtags) {
+      const tag = hashtag.replace(/^#/, '');
+      await (d as any).navigateToPost(`https://www.tiktok.com/tag/${encodeURIComponent(tag)}`);
+      await new Promise(r => setTimeout(r, 3500));
+
+      // Scroll once to expose more cards
+      try { await (d as any).executeJS('window.scrollTo(0, document.body.scrollHeight * 0.6)'); } catch {}
+      await new Promise(r => setTimeout(r, 1200));
+
+      const raw = await (d as any).executeJS(`
+        (function() {
+          var results = []; var seen = {};
+          var cards = document.querySelectorAll('[data-e2e="challenge-item"], [data-e2e="video-item"], article[data-scroll-index]');
+          if (cards.length === 0) {
+            // Fallback: any video link on the page
+            var links = document.querySelectorAll('a[href*="/@"][href*="/video/"]');
+            for (var i = 0; i < links.length && results.length < ${maxPerTag * 2}; i++) {
+              var href = links[i].getAttribute('href') || '';
+              var m = href.match(/@([a-zA-Z0-9_.]+)\\/video/);
+              if (!m || seen[m[1]]) continue;
+              seen[m[1]] = 1;
+              results.push({ username: m[1], description: '' });
+            }
+            return JSON.stringify(results);
+          }
+          for (var j = 0; j < Math.min(cards.length, ${maxPerTag * 2}); j++) {
+            var card = cards[j];
+            var link = card.querySelector('a[href*="/@"][href*="/video/"]') || card.querySelector('a[href*="/video/"]');
+            if (!link) continue;
+            var href2 = link.getAttribute('href') || '';
+            var m2 = href2.match(/@([a-zA-Z0-9_.]+)\\/video/);
+            if (!m2 || seen[m2[1]]) continue;
+            seen[m2[1]] = 1;
+            var descEl = card.querySelector('[data-e2e="video-desc"], [data-e2e="challenge-video-desc"]');
+            var desc = descEl ? descEl.textContent.trim().substring(0, 150) : '';
+            results.push({ username: m2[1], description: desc });
+          }
+          return JSON.stringify(results);
+        })()`);
+
+      const found: { username: string; description: string }[] = JSON.parse(raw || '[]');
+
+      for (const { username, description } of found) {
+        if (seen.has(username.toLowerCase())) continue;
+        seen.add(username.toLowerCase());
+
+        const text = (username + ' ' + description).toLowerCase();
+        const matched = HASHTAG_ICP_KEYWORDS.filter(k => text.includes(k));
+        const score = matched.length;
+        if (score < minScore) continue;
+
+        candidates.push({
+          username,
+          source: `#${tag}`,
+          score,
+          signals: matched.map(k => `keyword:${k}`),
+          videoDesc: description,
+        });
+
+        if (candidates.length >= hashtags.length * maxPerTag) break;
+      }
+    }
+
+    // Sort by score desc
+    candidates.sort((a, b) => b.score - a.score);
+    res.json({ success: true, hashtags, count: candidates.length, candidates });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ── Profile lookup (uses comments tab, keeps DM inbox free) ──────────────────
+app.get('/api/tiktok/profile/:username', async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username.replace('@', '');
+    if (!username) { res.status(400).json({ error: 'username required' }); return; }
+
+    const d = getDriver();
+    await (d as any).navigateToPost(`https://www.tiktok.com/@${username}`);
+    await new Promise(r => setTimeout(r, 3000));
+
+    const raw = await (d as any).executeJS(`
+      (function() {
+        var followers = '', following = '', likes = '', bio = '', fullName = '';
+
+        // Display name
+        var nameEl = document.querySelector('[data-e2e="user-title"], h1[data-e2e="user-subtitle"], h2');
+        if (nameEl) fullName = nameEl.textContent.trim().substring(0, 80);
+
+        // Bio
+        var bioEl = document.querySelector('[data-e2e="user-bio"]');
+        if (bioEl) bio = bioEl.textContent.trim().substring(0, 300);
+
+        // Stats strip: Followers / Following / Likes
+        var stats = document.querySelectorAll('[data-e2e="followers-count"], [data-e2e="following-count"], [data-e2e="likes-count"]');
+        stats.forEach(function(el) {
+          var e2e = el.getAttribute('data-e2e') || '';
+          var val = el.textContent.trim();
+          if (e2e === 'followers-count') followers = val;
+          else if (e2e === 'following-count') following = val;
+          else if (e2e === 'likes-count') likes = val;
+        });
+
+        // Fallback: parse stat strip by order if data-e2e not present
+        if (!followers) {
+          var nums = document.querySelectorAll('[class*="CountText"], [class*="count-text"], strong[class*="Number"]');
+          var vals = [];
+          nums.forEach(function(n) { vals.push(n.textContent.trim()); });
+          if (vals.length >= 1) followers = vals[0];
+          if (vals.length >= 2) following = vals[1];
+          if (vals.length >= 3) likes = vals[2];
+        }
+
+        return JSON.stringify({ fullName: fullName, bio: bio, followers: followers, following: following, likes: likes });
+      })()`);
+
+    const profile: { fullName: string; bio: string; followers: string; following: string; likes: string } = JSON.parse(raw || '{}');
+
+    // Parse numeric counts
+    const followersCount = parseCount(profile.followers || '');
+    const followingCount = parseCount(profile.following || '');
+    const likesCount     = parseCount(profile.likes     || '');
+
+    res.json({
+      username,
+      displayName: profile.fullName,
+      bio: profile.bio,
+      followers: profile.followers,
+      following: profile.following,
+      likes: profile.likes,
+      followersCount,
+      followingCount,
+      likesCount,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// Get video list from a user's profile page (avoids search navigation)
+app.get('/api/tiktok/profile/:username/videos', async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username.replace('@', '');
+    if (!username) { res.status(400).json({ error: 'username required' }); return; }
+    const maxVideos = Math.min(parseInt(req.query.max as string) || 10, 30);
+    const d = getDriver();
+    await (d as any).navigateToPost(`https://www.tiktok.com/@${username}`);
+    await new Promise(r => setTimeout(r, 4000));
+    const raw = await (d as any).executeJS(`
+      (function() {
+        // Collect all video links from profile page using multiple selector strategies
+        var allLinks = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+        var results = []; var seen = {};
+        for (var i = 0; i < allLinks.length && results.length < ${maxVideos}; i++) {
+          var link = allLinks[i];
+          var href = link.getAttribute('href') || '';
+          var idMatch = href.match(/\\/video\\/(\\d+)/);
+          if (!idMatch) continue;
+          var id = idMatch[1];
+          if (seen[id]) continue; seen[id] = true;
+          var url = href.startsWith('http') ? href : 'https://www.tiktok.com' + href;
+          var userMatch = href.match(/@([^\\/]+)\\/video/);
+          var author = userMatch ? userMatch[1] : '${username}';
+          // Look for view count in the card container (parent elements)
+          var container = link.closest('[data-e2e="user-post-item"]') || link.closest('li') || link.closest('div[class*="Video"]') || link.parentElement;
+          var viewsEl = container ? (container.querySelector('[data-e2e="video-views"]') || container.querySelector('strong') || container.querySelector('[class*="count"]')) : null;
+          var viewsRaw = viewsEl ? viewsEl.textContent.trim() : '0';
+          var descEl = container ? (container.querySelector('[data-e2e="video-desc"]') || container.querySelector('p')) : null;
+          var desc = descEl ? descEl.textContent.trim().substring(0, 200) : '';
+          results.push({ id: id, url: url, author: author, description: desc, viewsRaw: viewsRaw, likesRaw: '0' });
+        }
+        return JSON.stringify(results);
+      })()
+    `);
+    const videos = (JSON.parse(raw || '[]') as { id: string; url: string; author: string; description: string; viewsRaw: string; likesRaw: string }[])
+      .map(v => ({ ...v, likesCount: 0, viewsCount: parseCount(v.viewsRaw) }));
+    res.json({ success: true, username, videos, count: videos.length });
+  } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
+});
+
+// ─── Self-Poll Endpoint (SDPA-010) ───────────────────────────────────────────
+// POST /api/tiktok/self-poll
+// Called by cron-manager during quiet hours. Fetches profile videos and comments,
+// writes to safari_platform_cache for cloud-sync to consume.
+app.post('/api/tiktok/self-poll', async (_req: Request, res: Response) => {
+  // NO quiet hours — runs 24/7 per Phase B spec
+
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+  const result = { videos: 0, comments: 0 };
+
+  const writeCache = async (dataType: string, payload: any[], ttlMs: number) => {
+    if (!payload.length || !SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const headers: Record<string, string> = {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal',
+    };
+    await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache?platform=eq.tiktok&data_type=eq.${dataType}`, {
+      method: 'DELETE', headers,
+    }).catch(() => {});
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+    await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ platform: 'tiktok', data_type: dataType, payload, expires_at: expiresAt, source_service_port: 3006 }),
+    }).catch(() => {});
+  };
+
+  try {
+    const d = getDriver();
+
+    // 1. Fetch analytics/content (profile videos with stats)
+    const analyticsResult = await d.getAnalyticsContent(10);
+    const videos = analyticsResult.videos || [];
+    result.videos = videos.length;
+
+    // Convert to post_stats format
+    const postStats: any[] = videos.map(v => ({
+      platform: 'tiktok',
+      post_id: v.videoId,
+      post_type: 'video',
+      caption: v.caption || '',
+      views: v.views || 0,
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      raw_data: v,
+    }));
+
+    // 2. Fetch comments from top 3 videos
+    const allComments: any[] = [];
+    for (const video of videos.slice(0, 3)) {
+      try {
+        const videoUrl = `https://www.tiktok.com/@isaiah_dupree/video/${video.videoId}`;
+        await d.navigateToPost(videoUrl);
+        await new Promise(r => setTimeout(r, 3000));
+        const comments = await d.getComments(20);
+        for (const c of comments) {
+          if (!c.username || !c.text || c.text.length < 2) continue;
+          allComments.push({
+            platform: 'tiktok',
+            post_id: video.videoId,
+            post_url: videoUrl,
+            username: c.username,
+            comment_text: c.text.substring(0, 500),
+          });
+        }
+        result.comments += comments.length;
+      } catch { /* non-fatal per video */ }
+    }
+
+    await Promise.all([
+      writeCache('post_stats', postStats, 21_600_000),
+      writeCache('comments', allComments, 21_600_000),
+    ]);
+
+    res.json({ success: true, fetched: result });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error('[self-poll:tiktok] error:', msg);
+    res.status(500).json({ success: false, error: msg });
   }
 });
 

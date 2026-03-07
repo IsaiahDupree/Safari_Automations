@@ -741,7 +741,6 @@ export class SoraFullAutomation {
   async getPlatformLeaderboard(): Promise<{
     success: boolean;
     sections: Array<{ section: string; entries: Array<{ rank: number; username: string; views: number | null; likes: number | null; comments: number | null; post_href: string }> }>;
-    raw_text: string;
     error?: string;
   }> {
     console.log('\n[SORA] Scraping platform leaderboard from /explore...');
@@ -756,36 +755,49 @@ export class SoraFullAutomation {
             .map(function(a) { return a.getAttribute('href'); })
             .filter(function(h, i, arr) { return arr.indexOf(h) === i; }); // deduplicate
 
-          // Parse the visible text: pattern is username followed by 3 numbers (views likes comments)
+          // Parse number strings — handles K/M suffixes on decimals (e.g. "2.5K" → 2500)
+          function parseNum(s) {
+            var c = s.replace(/,/g, '').trim();
+            var m = c.match(/^(\\d+\\.?\\d*)([KkMm])?$/);
+            if (!m) return null;
+            var val = parseFloat(m[1]);
+            if (m[2]) {
+              var mult = m[2].toLowerCase() === 'k' ? 1000 : 1000000;
+              val = Math.round(val * mult);
+            }
+            return val;
+          }
+
+          // Parse the visible text: pattern is username followed by up to 3 numbers
           // Text looks like: "\\nmemexpert\\n\\n916\\n\\n291\\n\\n125\\n\\n"
           var lines = allText.split('\\n').map(function(l) { return l.trim(); }).filter(Boolean);
           var NAV = ['Activity','Home','Explore','Search','Drafts','Profile','Settings','Attach media','Storyboard','Create video','For you'];
           var entries = [];
+          var hrefIdx = 0; // tracks post_href alignment independently
           var i = 0;
           while (i < lines.length && entries.length < 30) {
             var line = lines[i];
-            // Skip nav items and empty-ish lines
+            // Skip nav items and long lines (prompts/captions)
             if (NAV.indexOf(line) !== -1 || line.length > 60) { i++; continue; }
-            // A username line: non-numeric, reasonable length
-            if (!line.match(/^[\\d,.K]+$/) && line.length >= 2 && line.length <= 40) {
-              // Collect next up to 3 numeric values
+            // A username line: non-numeric, 2-40 chars
+            if (!line.match(/^[\\d,.KkMm]+$/) && line.length >= 2 && line.length <= 40) {
               var nums = [];
               var j = i + 1;
               while (j < lines.length && nums.length < 3) {
-                var n = lines[j].replace(/,/g, '').replace(/K$/i, '000');
-                if (/^[\\d.]+$/.test(n)) { nums.push(parseFloat(n)); j++; }
-                else if (lines[j].match(/^[\\d,.K]+$/)) { nums.push(parseFloat(lines[j].replace(/,/g,'').replace(/K$/i,'000'))); j++; }
+                var parsed = parseNum(lines[j]);
+                if (parsed !== null) { nums.push(parsed); j++; }
                 else break;
               }
               if (nums.length >= 1) {
                 entries.push({
                   rank: entries.length + 1,
                   username: line,
-                  views: nums[0] ?? null,
-                  likes: nums[1] ?? null,
-                  comments: nums[2] ?? null,
-                  post_href: postHrefs[entries.length] || ''
+                  views: nums[0] !== undefined ? nums[0] : null,
+                  likes: nums[1] !== undefined ? nums[1] : null,
+                  comments: nums[2] !== undefined ? nums[2] : null,
+                  post_href: postHrefs[hrefIdx] || ''
                 });
+                hrefIdx++;
                 i = j;
                 continue;
               }
@@ -796,7 +808,6 @@ export class SoraFullAutomation {
           return JSON.stringify({
             entries: entries,
             post_hrefs_count: postHrefs.length,
-            raw_text: allText.slice(0, 4000),
             page_url: location.href
           });
         })();
@@ -808,9 +819,166 @@ export class SoraFullAutomation {
 
       // Wrap as single "Trending" section to match existing schema
       const sections = parsed.entries?.length ? [{ section: 'Trending', entries: parsed.entries }] : [];
-      return { success: true, sections, raw_text: parsed.raw_text || '' };
+      return { success: true, sections };
     } catch (error) {
-      return { success: false, sections: [], raw_text: '', error: error instanceof Error ? error.message : String(error) };
+      return { success: false, sections: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ==========================================================================
+  // GET CREATOR PROMPTS — visit profile + each post to extract prompt text
+  // ==========================================================================
+
+  async getCreatorPrompts(username: string, limit = 10): Promise<{
+    success: boolean;
+    username: string;
+    profile_url: string;
+    posts: Array<{
+      id: string;
+      post_href: string;
+      prompt: string;
+      views: number | null;
+      likes: number | null;
+      comments: number | null;
+      video_url: string | null;
+    }>;
+    total_found: number;
+    error?: string;
+  }> {
+    const profileUrl = `${this.config.baseUrl}/profile/${username}`;
+    console.log(`\n[SORA] Scraping creator: ${username} — ${profileUrl}`);
+
+    try {
+      // Step 1: Navigate to profile, collect post hrefs
+      await this.safari.navigateWithVerification(profileUrl, 'sora.chatgpt.com', 3);
+      await this.wait(5000);
+
+      const profileResult = await this.safari.executeJS(`
+        (function() {
+          var hrefs = Array.from(document.querySelectorAll('a[href*="/p/s_"]'))
+            .map(function(a) { return a.getAttribute('href'); })
+            .filter(function(h, i, arr) { return arr.indexOf(h) === i; });
+          var bodyText = document.body.innerText.slice(0, 500);
+          return JSON.stringify({ hrefs: hrefs, bodyText: bodyText, url: location.href });
+        })();
+      `);
+
+      const profileParsed = JSON.parse(
+        typeof profileResult === 'string' ? profileResult : (profileResult as any).result || '{}'
+      );
+
+      if (profileParsed.bodyText?.includes('404')) {
+        return { success: false, username, profile_url: profileUrl, posts: [], total_found: 0, error: `Profile not found: /profile/${username}` };
+      }
+
+      const hrefs: string[] = (profileParsed.hrefs || []).slice(0, limit);
+      console.log(`[SORA] Found ${hrefs.length} posts for ${username}`);
+
+      // Step 2: Visit each post, extract prompt + stats
+      const posts: Array<{
+        id: string; post_href: string; prompt: string;
+        views: number | null; likes: number | null; comments: number | null; video_url: string | null;
+      }> = [];
+
+      for (const href of hrefs) {
+        const postUrl = `${this.config.baseUrl}${href}`;
+        console.log(`[SORA] Visiting post: ${href}`);
+
+        try {
+          await this.safari.navigateWithVerification(postUrl, 'sora.chatgpt.com', 2);
+          await this.wait(4000);
+
+          const postResult = await this.safari.executeJS(`
+            (function() {
+              // Prompt from page title
+              var prompt = document.title.replace(/ \\| Sora$/, '').trim();
+
+              // Primary: extract stats from embedded Next.js __next_f JSON data.
+              // The page embeds serialised post objects with view_count/like_count/reply_count.
+              var views = null, likes = null, comments = null;
+              try {
+                var postIdMatch = location.pathname.match(/\\/p\\/(s_[a-f0-9]+)/);
+                var postId = postIdMatch ? postIdMatch[1] : null;
+                var scripts = document.querySelectorAll('script');
+                for (var i = 0; i < scripts.length; i++) {
+                  var text = scripts[i].textContent || '';
+                  if (text.indexOf('view_count') === -1 || text.indexOf('like_count') === -1) continue;
+                  if (postId && text.indexOf(postId) === -1) continue;
+                  var vm = /view_count[^:]*:(\\d+)/.exec(text);
+                  var lm = /like_count[^:]*:(\\d+)/.exec(text);
+                  var cm = /reply_count[^:]*:(\\d+)/.exec(text);
+                  if (vm || lm) {
+                    views = vm ? parseInt(vm[1], 10) : null;
+                    likes = lm ? parseInt(lm[1], 10) : null;
+                    comments = cm ? parseInt(cm[1], 10) : null;
+                    break;
+                  }
+                }
+                // Fallback: any script with these fields, no postId filter
+                if (views === null && likes === null) {
+                  for (var j = 0; j < scripts.length; j++) {
+                    var t = scripts[j].textContent || '';
+                    var vm2 = /view_count[^:]*:(\\d+)/.exec(t);
+                    var lm2 = /like_count[^:]*:(\\d+)/.exec(t);
+                    if (vm2 || lm2) {
+                      views = vm2 ? parseInt(vm2[1], 10) : null;
+                      likes = lm2 ? parseInt(lm2[1], 10) : null;
+                      break;
+                    }
+                  }
+                }
+              } catch(e) {}
+
+              // Video src
+              var vid = document.querySelector('video');
+              var videoUrl = vid ? (vid.src || vid.getAttribute('src') || null) : null;
+
+              return JSON.stringify({
+                prompt: prompt,
+                views: views,
+                likes: likes,
+                comments: comments,
+                videoUrl: videoUrl
+              });
+            })();
+          `);
+
+          const postParsed = JSON.parse(
+            typeof postResult === 'string' ? postResult : (postResult as any).result || '{}'
+          );
+
+          const id = href.replace(/^.*\/p\/s_/, '') || href.replace(/[^a-zA-Z0-9]/g, '').slice(-20);
+          posts.push({
+            id,
+            post_href: href,
+            prompt: postParsed.prompt || '',
+            views: postParsed.views ?? null,
+            likes: postParsed.likes ?? null,
+            comments: postParsed.comments ?? null,
+            video_url: postParsed.videoUrl || null,
+          });
+
+          console.log(`[SORA]   "${postParsed.prompt?.slice(0, 50)}" — ${postParsed.views ?? '?'} views`);
+        } catch (postErr) {
+          console.warn(`[SORA] Failed to scrape post ${href}:`, postErr instanceof Error ? postErr.message : postErr);
+        }
+
+        // Brief pause between posts to avoid hammering
+        await this.wait(1500);
+      }
+
+      return {
+        success: true,
+        username,
+        profile_url: profileUrl,
+        posts,
+        total_found: profileParsed.hrefs?.length || hrefs.length,
+      };
+    } catch (error) {
+      return {
+        success: false, username, profile_url: profileUrl, posts: [], total_found: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 

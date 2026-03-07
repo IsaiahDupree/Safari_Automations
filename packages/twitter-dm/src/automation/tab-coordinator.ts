@@ -6,7 +6,7 @@
  * Claims expire after CLAIM_TTL_MS without a heartbeat (handles crashed agents).
  *
  * Usage:
- *   const coord = new TabCoordinator('tw-sync-123', 'twitter-dm', 3003, 'x.com');
+ *   const coord = new TabCoordinator('ig-sync-123', 'instagram-dm', 3100, 'instagram.com');
  *   const claim = await coord.claim();          // auto-discover + claim
  *   await coord.heartbeat();                    // call every ~30s
  *   await coord.release();                      // on clean exit
@@ -24,11 +24,20 @@ const execAsync = promisify(exec);
 export const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
 export const CLAIM_TTL_MS = 60_000; // 60s — claim expires if no heartbeat
 
+// ── Phase A: automation window enforcement ─────────────────────────────────
+// Read at call time (not module load time) so dotenv override takes effect.
+// Set SAFARI_AUTOMATION_WINDOW=2 in .env (matches the automation profile window).
+export function getAutomationWindow(): number {
+  return parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
+}
+/** @deprecated use getAutomationWindow() — kept for backward compat */
+export const AUTOMATION_WINDOW = 0; // placeholder, not used internally
+
 export interface TabClaim {
-  agentId: string;        // unique, e.g. 'tw-sync-20240304-32396'
+  agentId: string;        // unique, e.g. 'ig-sync-20240304-32396'
   service: string;        // 'instagram-dm', 'twitter-dm', 'tiktok-dm', etc.
   port: number;           // server port (3100, 3003, 3102, …)
-  urlPattern: string;     // e.g. 'x.com'
+  urlPattern: string;     // e.g. 'instagram.com/direct'
   windowIndex: number;    // Safari window index (1-based)
   tabIndex: number;       // Safari tab index within that window (1-based)
   tabUrl: string;         // actual URL at claim time
@@ -90,20 +99,21 @@ export class TabCoordinator {
    * Filters out tabs already claimed by other agents.
    */
   async findAvailableTab(): Promise<{ windowIndex: number; tabIndex: number; url: string } | null> {
+    // Phase A: only scan the designated automation window
     const script = `
 tell application "Safari"
-  set result to {}
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
+  set tabList to {}
+  if (count of windows) >= ${getAutomationWindow()} then
+    repeat with t from 1 to count of tabs of window ${getAutomationWindow()}
       try
-        set u to URL of tab t of window w
+        set u to URL of tab t of window ${getAutomationWindow()}
         if u contains "${this.urlPattern.replace(/"/g, '\\"')}" then
-          set end of result to ((w as text) & "||" & (t as text) & "||" & u)
+          set end of tabList to ((${getAutomationWindow()} as text) & "||" & (t as text) & "||" & u)
         end if
       end try
     end repeat
-  end repeat
-  return result
+  end if
+  return tabList
 end tell`;
 
     let matches: Array<{ windowIndex: number; tabIndex: number; url: string }> = [];
@@ -153,6 +163,14 @@ end tell`;
     let url = '';
 
     if (windowIndex != null && tabIndex != null) {
+      // Phase A: enforce automation window
+      if (windowIndex !== getAutomationWindow()) {
+        throw new Error(
+          `Refusing to claim tab ${windowIndex}:${tabIndex} — not in automation window ` +
+          `(SAFARI_AUTOMATION_WINDOW=${getAutomationWindow()}). ` +
+          `Only Window ${getAutomationWindow()} is the designated automation profile.`
+        );
+      }
       // Specific tab requested — check for conflict
       const conflict = await TabCoordinator.getConflict(windowIndex, tabIndex, this.agentId);
       if (conflict) {
@@ -230,30 +248,38 @@ end tell`;
   // ─── Open new tab ─────────────────────────────────────────────────────────
 
   /**
-   * Open a new Safari tab (in a new window) navigated to `url`.
+   * Open a new tab inside the automation window (AUTOMATION_WINDOW) navigated to `url`.
+   * Phase A: never opens a new Safari window — always uses the designated automation window.
    * Returns { windowIndex, tabIndex } of the new tab.
    * Called automatically by claim() when no existing tab matches urlPattern.
    */
   async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
-    const safeUrl = url.replace(/"/g, '\"');
+    const safeUrl = url.replace(/"/g, '\\"');
     const script = `
 tell application "Safari"
-  activate
-  make new document with properties {URL:"${safeUrl}"}
-  set w to count of windows
-  delay 1
-  return w as text
+  if (count of windows) < ${getAutomationWindow()} then
+    error "Automation window ${getAutomationWindow()} is not open — open Safari and navigate to the automation profile"
+  end if
+  set w to window ${getAutomationWindow()}
+  tell w
+    set newTab to make new tab with properties {URL:"${safeUrl}"}
+    activate
+  end tell
+  set t to count of tabs of w
+  return ("${getAutomationWindow()}||" & t)
 end tell`;
     try {
       const { stdout } = await execAsync(
         `osascript << 'ASEOF'\n${script}\nASEOF`,
         { timeout: 15000 }
       );
-      const windowIndex = parseInt(stdout.trim(), 10);
-      if (isNaN(windowIndex)) throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
-      return { windowIndex, tabIndex: 1 };
+      const parts = stdout.trim().split('||');
+      const windowIndex = parseInt(parts[0], 10);
+      const tabIndex = parseInt(parts[1] ?? '1', 10);
+      if (isNaN(windowIndex) || isNaN(tabIndex)) throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
+      return { windowIndex, tabIndex };
     } catch (err) {
-      throw new Error(`Failed to open new Safari tab to '${url}': ${err}`);
+      throw new Error(`Failed to open new tab in automation window ${getAutomationWindow()} to '${url}': ${err}`);
     }
   }
 

@@ -22,6 +22,7 @@
     "test:selectors": "vitest run tests/selectors",
     "test:flows": "vitest run tests/flows",
     "test:coverage": "vitest run --coverage",
+    "test:push-arch": "npx tsx tests/integration/push-arch-pollers.test.ts",
     "selectors:test": "tsx scripts/test-selectors.ts",
     "selectors:health": "tsx scripts/selector-health.ts",
     "session:verify": "tsx scripts/verify-session.ts",

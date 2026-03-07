@@ -335,16 +335,15 @@ export class SafariDriver {
       return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
     }
     try {
-      const script = `
+      const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
+    const script = `
 tell application "Safari"
-  set found to false
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      set tabURL to URL of tab t of window w
-      if tabURL contains "${urlPattern}" then
-        return (w as text) & ":" & (t as text) & ":" & tabURL
-      end if
-    end repeat
+  if (count of windows) < ${automationWindow} then return "not_found:0:0:"
+  repeat with t from 1 to count of tabs of window ${automationWindow}
+    set tabURL to URL of tab t of window ${automationWindow}
+    if tabURL contains "${urlPattern}" then
+      return (${automationWindow} as text) & ":" & (t as text) & ":" & tabURL
+    end if
   end repeat
   return "not_found:0:0:"
 end tell`;
@@ -617,3 +616,17 @@ export function getDefaultDriver(): SafariDriver {
 export function setDefaultDriver(driver: SafariDriver): void {
   defaultDriver = driver;
 }
+
+// ─── Aliases for medium-operations compatibility ──────────────────────────────
+export { SafariDriver as MediumSafariDriver };
+
+export const SELECTORS = {
+  HEADER_NOTIFICATION_COUNT: 'button[aria-label*="notification" i] span, div[data-testid="headerNotificationCount"]',
+  EDITOR_TITLE: 'h3.graf--title, div.section-content h3, p[data-placeholder="Title"]',
+  FOOTER_CLAP: 'button[aria-label*="clap" i], div[data-testid="clapButton"], button.js-multirecommendCountButton',
+  RESPONSE_RESPOND_BTN: 'button[aria-label*="respond" i], button[data-action="respond"], button.button--chromeless',
+  RESPONSE_TEXTBOX: 'div.editable-content[contenteditable="true"], div[data-slate-editor="true"]',
+  HEADER_BOOKMARK: 'button[aria-label*="bookmark" i], button[data-action="bookmark"], div[data-testid="bookmarkButton"]',
+  POST_PREVIEW: 'article section, div.postArticle-content, div[data-field="body"]',
+  STORY_TITLE: 'h1.graf--title, h1[data-placeholder="Title"], div.section-content h1',
+};

@@ -7,11 +7,17 @@ export abstract class BasePoller {
   protected platform: Platform;
   protected port: number;
   protected baseUrl: string;
+  protected authToken: string | null;
 
-  constructor(platform: Platform, port: number) {
+  constructor(platform: Platform, port: number, authToken?: string) {
     this.platform = platform;
     this.port = port;
     this.baseUrl = `http://localhost:${port}`;
+    this.authToken = authToken || null;
+  }
+
+  protected authHeaders(): Record<string, string> {
+    return this.authToken ? { 'Authorization': `Bearer ${this.authToken}` } : {};
   }
 
   async isServiceHealthy(): Promise<boolean> {
@@ -25,7 +31,10 @@ export abstract class BasePoller {
 
   protected async get<T = any>(path: string): Promise<T | null> {
     try {
-      const r = await fetch(`${this.baseUrl}${path}`, { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(`${this.baseUrl}${path}`, {
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(15000),
+      });
       if (!r.ok) return null;
       return await r.json() as T;
     } catch (e) {
@@ -38,7 +47,7 @@ export abstract class BasePoller {
     try {
       const r = await fetch(`${this.baseUrl}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(15000),
       });

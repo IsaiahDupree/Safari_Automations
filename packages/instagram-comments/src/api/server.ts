@@ -125,8 +125,9 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   const myClaim = claims.find(c => c.service === SERVICE_NAME);
 
   if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
+    // Claim exists — pin both drivers to the claimed tab and proceed
     getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
     next();
     return;
   }
@@ -134,10 +135,11 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `instagram-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
     console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
     next();
   } catch (err) {

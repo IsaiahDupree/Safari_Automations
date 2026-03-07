@@ -139,9 +139,16 @@ export const DEFAULT_RESEARCH_CONFIG: ResearchConfig = {
 
 export class TwitterResearcher {
   private config: ResearchConfig;
+  private _trackedWindow: number | null = null;
+  private _trackedTab: number | null = null;
 
   constructor(config: Partial<ResearchConfig> = {}) {
     this.config = { ...DEFAULT_RESEARCH_CONFIG, ...config };
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this._trackedWindow = windowIndex;
+    this._trackedTab = tabIndex;
   }
 
   // ─── Low-level Safari helpers ──────────────────────────────
@@ -149,7 +156,10 @@ export class TwitterResearcher {
   private async executeJS(script: string): Promise<string> {
     const tmpFile = path.join(os.tmpdir(), `safari_research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+    const tabTarget = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : `current tab of front window`;
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
     fs.writeFileSync(tmpFile, appleScript);
     try {
       const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
@@ -162,7 +172,10 @@ export class TwitterResearcher {
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
       return true;
     } catch { return false; }
   }

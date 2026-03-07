@@ -8,6 +8,9 @@ import cors from 'cors';
 import { TwitterDriver, type TwitterConfig, type ComposeOptions, type SearchResult, type TweetDetail } from '../automation/twitter-driver.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { SafariDriver } from '../automation/safari-driver.js';
+import { CommentLogger } from '../db/comment-logger.js';
+
+const commentLogger = new CommentLogger();
 
 const app = express();
 app.use(cors());
@@ -35,7 +38,8 @@ function getTabDriver(): SafariDriver {
 // ─── Authentication Middleware ──────────────────────────────
 const VALID_TOKEN = process.env.API_TOKEN || 'test-token-12345';
 
-const AUTH_EXEMPT_PATHS = /^\/health$|^\/api\/session\/|^\/api\/tabs\/|^\/api\/[^/]+\/status$/;
+// Note: authMiddleware is mounted at /api so req.path starts after that prefix (e.g. /tabs/claim not /api/tabs/claim)
+const AUTH_EXEMPT_PATHS = /^\/health$|^\/session\/|^\/tabs\/|^\/[^/]+\/status$/;
 
 function authMiddleware(req: Request, res: Response, next: NextFunction) {
   // Skip auth for internal tab coordination endpoints
@@ -177,8 +181,9 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   const myClaim = claims.find(c => c.service === SERVICE_NAME);
 
   if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
+    // Claim exists — pin both drivers to the claimed tab and proceed
     getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
     next();
     return;
   }
@@ -186,10 +191,11 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `twitter-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
     console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
     next();
   } catch (err) {
@@ -273,6 +279,16 @@ app.post('/api/twitter/comments/post', async (req: Request, res: Response) => {
     }
 
     const result = await d.postComment(commentText);
+    // Fire-and-forget Supabase log
+    commentLogger.logComment({
+      platform: 'twitter',
+      username: username || 'unknown',
+      postUrl: postUrl,
+      postContent: postContent,
+      commentText,
+      success: result.success || false,
+      error: result.error,
+    }).catch(() => {});
     res.json({
       ...result,
       success: result.success || false,
@@ -577,7 +593,7 @@ app.post('/api/twitter/comment-sweep', async (req: Request, res: Response) => {
     const feedResults: { tweetUrl: string; author: string; reply: string; dryRun: boolean }[] = [];
     const feedErrors: string[] = [];
 
-    for (const feedTab of feedSources.filter(s => s === 'foryou' || s === 'following')) {
+    for (const feedTab of feedSources.filter((s: string) => s === 'foryou' || s === 'following')) {
       if (totalCommented >= maxTotal) break;
       let feedCount = 0;
       try {

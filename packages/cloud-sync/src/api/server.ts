@@ -270,6 +270,87 @@ app.get('/api/analytics/goals', async (_req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════
+// LOCAL → CLOUD PIPELINE PROFILE
+// ═══════════════════════════════════════════════════════
+
+app.get('/api/profile', async (_req, res) => {
+  // 1. Local Safari profile (automation window config)
+  let localProfile: Record<string, unknown> | null = null;
+  try {
+    const r = await fetch('http://localhost:3302/api/tabs/profile', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) localProfile = await r.json() as Record<string, unknown>;
+  } catch { /* cron-manager not running */ }
+
+  // 2. Cache status — all rows in safari_platform_cache
+  const { data: cacheRows, error: cacheErr } = await db.getClient()
+    .from('safari_platform_cache')
+    .select('platform, data_type, fetched_at, expires_at, payload')
+    .order('platform')
+    .order('data_type');
+
+  const now = new Date();
+  const cache: Record<string, Record<string, {
+    fresh: boolean; fetched_at: string | null; expires_at: string | null;
+    itemCount: number; ageMinutes: number | null;
+  }>> = {};
+
+  if (!cacheErr && cacheRows) {
+    for (const row of cacheRows) {
+      const platform = row.platform as string;
+      const dataType = row.data_type as string;
+      const expiresAt = new Date(row.expires_at as string);
+      const fetchedAt = new Date(row.fetched_at as string);
+      const fresh = expiresAt > now;
+      const ageMinutes = Math.round((now.getTime() - fetchedAt.getTime()) / 60_000);
+      const payload = row.payload as unknown;
+      const itemCount = Array.isArray(payload) ? (payload as unknown[]).length : (payload ? 1 : 0);
+      if (!cache[platform]) cache[platform] = {};
+      cache[platform][dataType] = { fresh, fetched_at: row.fetched_at as string, expires_at: row.expires_at as string, itemCount, ageMinutes };
+    }
+  }
+
+  // 3. Last engine sync results
+  const engineStatus = engine.getStatus();
+
+  res.json({
+    localProfile,
+    cache,
+    lastSyncResults: engineStatus.lastResults ?? [],
+    engineRunning: engineStatus.running,
+    timestamp: now.toISOString(),
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// CRON MANAGEMENT
+// ═══════════════════════════════════════════════════════
+
+app.get('/api/cron/jobs', async (_req, res) => {
+  const jobs = await db.getAutomationCronJobs();
+  res.json({ jobs, count: jobs.length });
+});
+
+app.put('/api/cron/jobs/:slug', async (req, res) => {
+  const { slug } = req.params;
+  const { enabled, schedule, quiet_hour_start, quiet_hour_end } = req.body;
+  const updates: Record<string, unknown> = {};
+  if (enabled !== undefined) updates.enabled = enabled;
+  if (schedule !== undefined) updates.schedule = schedule;
+  if (quiet_hour_start !== undefined) updates.quiet_hour_start = quiet_hour_start;
+  if (quiet_hour_end !== undefined) updates.quiet_hour_end = quiet_hour_end;
+  const ok = await db.updateCronJob(slug, updates);
+  if (!ok) { res.status(500).json({ error: 'Update failed' }); return; }
+  res.json({ success: true, slug, updates });
+});
+
+app.post('/api/cron/jobs/:slug/trigger', async (req, res) => {
+  const { slug } = req.params;
+  const ok = await db.triggerCronJob(slug);
+  if (!ok) { res.status(500).json({ error: 'Trigger failed' }); return; }
+  res.json({ success: true, slug, message: 'Trigger flag set — cloud-bridge will relay to cron-manager' });
+});
+
+// ═══════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════
 

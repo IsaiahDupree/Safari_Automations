@@ -177,12 +177,19 @@ export class TweetPerformanceTracker {
   private config: FeedbackLoopConfig;
   private tweets: TrackedTweet[] = [];
   private dataFile: string;
+  private _trackedWindow: number | null = null;
+  private _trackedTab: number | null = null;
 
   constructor(config: Partial<FeedbackLoopConfig> = {}) {
     this.config = { ...DEFAULT_FEEDBACK_CONFIG, ...config };
     this.dataFile = path.join(this.config.dataDir, 'tracked-tweets.json');
     this.ensureDir();
     this.load();
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this._trackedWindow = windowIndex;
+    this._trackedTab = tabIndex;
   }
 
   private ensureDir(): void {
@@ -241,7 +248,10 @@ export class TweetPerformanceTracker {
     try {
       // Navigate to the tweet
       const safeUrl = tweetUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
 
       // Smart wait: poll for tweet article to render (X is slow)
       let articleFound = false;
@@ -251,7 +261,10 @@ export class TweetPerformanceTracker {
           const checkTmp = path.join(os.tmpdir(), `safari_check_${Date.now()}.scpt`);
           const checkJs = `(function(){ return document.querySelector('article[data-testid="tweet"]') ? 'found' : 'waiting'; })()`;
           const checkEsc = checkJs.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-          fs.writeFileSync(checkTmp, `tell application "Safari" to do JavaScript "${checkEsc}" in current tab of front window`);
+          const checkTabSpec = (this._trackedWindow && this._trackedTab)
+            ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+            : `current tab of front window`;
+          fs.writeFileSync(checkTmp, `tell application "Safari" to do JavaScript "${checkEsc}" in ${checkTabSpec}`);
           const { stdout } = await execAsync(`osascript "${checkTmp}"`, { timeout: 5000 });
           try { fs.unlinkSync(checkTmp); } catch {}
           if (stdout.trim() === 'found') { articleFound = true; break; }
@@ -330,7 +343,10 @@ export class TweetPerformanceTracker {
         })()
       `.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 
-      const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+      const metricsTabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${metricsTabSpec}`;
       fs.writeFileSync(tmpFile, appleScript);
 
       try {

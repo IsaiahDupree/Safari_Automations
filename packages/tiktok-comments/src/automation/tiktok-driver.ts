@@ -73,7 +73,10 @@ export class TikTokDriver {
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
       await new Promise(r => setTimeout(r, 3000));
       return true;
     } catch { return false; }
@@ -119,14 +122,40 @@ export class TikTokDriver {
         var lk = document.querySelector('[data-e2e="like-count"]');
         var cm = document.querySelector('[data-e2e="comment-count"]');
         var sh = document.querySelector('[data-e2e="share-count"]');
-        var vw = document.querySelector('[data-e2e="video-views"]') || document.querySelector('[data-e2e="play-count"]') || document.querySelector('[data-e2e="browse-video-count"]') || document.querySelector('[data-e2e="video-play-count"]');
+        var vw = document.querySelector('[data-e2e="video-views"]')
+          || document.querySelector('[data-e2e="play-count"]')
+          || document.querySelector('[data-e2e="browse-video-count"]')
+          || document.querySelector('[data-e2e="video-play-count"]')
+          || document.querySelector('[data-e2e="vv-count"]')
+          || document.querySelector('[data-e2e="watch-count"]');
         var viewCount = parse(vw);
         if (!viewCount) {
+          // Check any data-e2e element whose key hints at views/plays
           var spans = document.querySelectorAll('strong[data-e2e], span[data-e2e]');
           for (var i = 0; i < spans.length; i++) {
             var attr = spans[i].getAttribute('data-e2e') || '';
             if (attr.match(/view|play|watch/i)) { viewCount = parse(spans[i]); break; }
           }
+        }
+        if (!viewCount) {
+          // Fallback: aria-label on action buttons often says "X views"
+          var btns = document.querySelectorAll('[aria-label]');
+          for (var j = 0; j < btns.length; j++) {
+            var label = btns[j].getAttribute('aria-label') || '';
+            var lm = label.match(/([\d,.]+[KkMmBb]?)\s*(view|play|watch)/i);
+            if (lm) { viewCount = parse({ textContent: lm[1] }); break; }
+          }
+        }
+        if (!viewCount) {
+          // Last resort: strong elements in the side action bar — largest number that isn't likes/comments/shares
+          var likeCount = parse(lk); var cmCount = parse(cm); var shCount = parse(sh);
+          var strongs = document.querySelectorAll('strong');
+          var best = 0;
+          for (var k = 0; k < strongs.length; k++) {
+            var n = parse(strongs[k]);
+            if (n > 0 && n !== likeCount && n !== cmCount && n !== shCount && n > best) best = n;
+          }
+          viewCount = best;
         }
         return JSON.stringify({ views: viewCount, likes: parse(lk), comments: parse(cm), shares: parse(sh), currentUrl: window.location.href.substring(0, 100) });
       })()

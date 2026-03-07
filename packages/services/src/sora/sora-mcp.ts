@@ -93,6 +93,19 @@ async function releaseSoraClaim(): Promise<void> {
   await writeClaims(claims.filter(c => c.service !== MY_SERVICE));
 }
 
+// Refreshes the claim heartbeat every 30s so long-running scrapes don't expire.
+// Returns a stop function — call it in your finally block.
+function startClaimHeartbeat(): () => void {
+  const interval = setInterval(async () => {
+    try {
+      const claims = await readActiveClaims();
+      const idx = claims.findIndex(c => c.service === MY_SERVICE);
+      if (idx !== -1) { claims[idx].heartbeat = Date.now(); await writeClaims(claims); }
+    } catch { /* non-fatal */ }
+  }, 30_000);
+  return () => clearInterval(interval);
+}
+
 async function checkConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
   const claims = await readActiveClaims();
   const myClaim = claims.find(c => c.service === MY_SERVICE);
@@ -321,6 +334,65 @@ async function telegramSendText(text: string): Promise<void> {
       { timeout: 10000 }
     );
   } catch {}
+}
+
+// ─── Supabase: upsert creator prompts ─────────────────────────────────────────
+const SUPABASE_TABLE = 'sora_creator_prompts';
+
+async function upsertCreatorPrompts(rows: Array<{
+  id: string; username: string; prompt: string; post_href: string;
+  views: number | null; likes: number | null; comments: number | null; video_url: string | null;
+}>): Promise<{ inserted: number; errors: string[] }> {
+  const env = loadEnvFiles(ACTP_ENV_FILE, SAFARI_ENV_FILE);
+  const supabaseUrl = env['SUPABASE_URL'] || process.env.SUPABASE_URL;
+  const supabaseKey = env['SUPABASE_SERVICE_ROLE_KEY'] || env['SUPABASE_SERVICE_KEY'] || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) return { inserted: 0, errors: ['SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set'] };
+
+  const errors: string[] = [];
+  let inserted = 0;
+
+  // Upsert in batches of 50
+  const BATCH = 50;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH).map(r => ({
+      id: r.id,
+      username: r.username,
+      prompt: r.prompt,
+      post_href: r.post_href,
+      views: r.views,
+      likes: r.likes,
+      comments: r.comments,
+      video_url: r.video_url,
+      scraped_at: new Date().toISOString(),
+    }));
+
+    try {
+      const { stdout } = await execAsync(
+        `curl -s -X POST "${supabaseUrl}/rest/v1/${SUPABASE_TABLE}" \
+          -H "apikey: ${supabaseKey}" \
+          -H "Authorization: Bearer ${supabaseKey}" \
+          -H "Content-Type: application/json" \
+          -H "Prefer: resolution=merge-duplicates,return=minimal" \
+          -d '${JSON.stringify(batch).replace(/'/g, "'\\''")}'`,
+        { timeout: 30_000 }
+      );
+      // Empty response = success with return=minimal
+      if (!stdout.trim() || stdout.trim() === '[]') {
+        inserted += batch.length;
+      } else {
+        const resp = JSON.parse(stdout);
+        if (resp.code || resp.error || resp.message) {
+          errors.push(`Batch ${i}-${i + BATCH}: ${resp.message || resp.error}`);
+        } else {
+          inserted += batch.length;
+        }
+      }
+    } catch (e) {
+      errors.push(`Batch ${i}-${i + BATCH}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  return { inserted, errors };
 }
 
 // ─── Trends: read from local research files + :3106 API ───────────────────────
@@ -587,7 +659,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         unread_only: { type: 'boolean', description: 'Only show unread notifications (default false)' },
-        type: { type: 'string', description: 'Filter by type: video_generated | youtube_uploaded | reset_detected | maximize_complete | low_gens | error' },
+        type: { type: 'string', description: 'Filter by type: video_generated | youtube_uploaded | reset_detected | maximize_complete | low_gens | error | leaderboard_update' },
         mark_read: { type: 'boolean', description: 'Mark all returned notifications as read (default false)' },
         clear_all: { type: 'boolean', description: 'Delete all notifications (default false)' },
         limit: { type: 'number', description: 'Max notifications to return (default 20)' },
@@ -667,6 +739,22 @@ const TOOLS = [
       type: 'object',
       properties: {
         limit: { type: 'number', description: 'Max videos to scrape (default 20)' },
+      },
+    },
+  },
+  {
+    name: 'sora_scrape_creators',
+    description: 'Visit popular Sora creator profile pages, scrape their latest video prompts (with views/likes/comments), and upsert everything to Supabase sora_creator_prompts table for later recreation. Pass explicit usernames or leave empty to auto-use the last platform leaderboard.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        usernames: {
+          type: 'array', items: { type: 'string' },
+          description: 'Sora usernames to scrape (e.g. ["memexpert","dheera"]). Leave empty to use last leaderboard top creators.',
+        },
+        posts_per_creator: { type: 'number', description: 'Max posts to scrape per creator (default 8, max 20)' },
+        save_to_db: { type: 'boolean', description: 'Upsert results to Supabase sora_creator_prompts (default true)' },
+        min_views: { type: 'number', description: 'Only save posts with at least this many views (default 0)' },
       },
     },
   },
@@ -1760,38 +1848,198 @@ function execSyncSafe(cmd: string): string {
   return execSync(cmd, { timeout: 30000 }).toString();
 }
 
+async function handleSoraScrapeCreators(args: {
+  usernames?: string[];
+  posts_per_creator?: number;
+  save_to_db?: boolean;
+  min_views?: number;
+}): Promise<string> {
+  const postsPerCreator = Math.min(args.posts_per_creator ?? 8, 20);
+  const saveToDb = args.save_to_db !== false;
+  const minViews = args.min_views ?? 0;
+
+  // Resolve usernames: explicit list OR top creators from last leaderboard scrape
+  let usernames: string[] = args.usernames ?? [];
+  if (usernames.length === 0) {
+    const state = loadState();
+    const lbNotif = [...(state.notifications ?? [])]
+      .reverse()
+      .find(n => n.type === 'leaderboard_update' && (n.data as any)?.top_creator);
+    if (lbNotif?.data) {
+      // Pull all unique creators from last scraped sections saved in notifications
+      usernames = [String((lbNotif.data as any).top_creator)];
+    }
+    if (usernames.length === 0) {
+      return JSON.stringify({ success: false, error: 'No usernames provided and no leaderboard data in notifications. Run sora_platform_leaderboard first, or pass usernames explicitly.' });
+    }
+  }
+
+  // Claim Safari tab
+  const claim = await acquireSoraClaim();
+  if (!claim) {
+    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
+  }
+  const stopHeartbeat = startClaimHeartbeat();
+
+  const allRows: Array<{ id: string; username: string; prompt: string; post_href: string; views: number | null; likes: number | null; comments: number | null; video_url: string | null }> = [];
+  const creatorResults: Array<{ username: string; scraped: number; saved: number; top_prompt: string; error?: string }> = [];
+
+  try {
+    const sora = new SoraFullAutomation();
+
+    for (const username of usernames) {
+      const result = await sora.getCreatorPrompts(username, postsPerCreator);
+
+      if (!result.success) {
+        creatorResults.push({ username, scraped: 0, saved: 0, top_prompt: '', error: result.error });
+        continue;
+      }
+
+      // Filter by minimum views
+      const qualifying = result.posts.filter(p => (p.views ?? 0) >= minViews);
+
+      const rows = qualifying.map(p => ({
+        id: p.id,
+        username,
+        prompt: p.prompt,
+        post_href: p.post_href,
+        views: p.views,
+        likes: p.likes,
+        comments: p.comments,
+        video_url: p.video_url,
+      }));
+      allRows.push(...rows);
+
+      // Best post by views for summary
+      const topPost = qualifying.sort((a, b) => (b.views ?? 0) - (a.views ?? 0))[0];
+      creatorResults.push({
+        username,
+        scraped: result.posts.length,
+        saved: rows.length,
+        top_prompt: topPost ? `"${topPost.prompt.slice(0, 80)}" (${topPost.views?.toLocaleString() ?? '?'} views)` : '',
+      });
+    }
+
+    // Upsert to DB
+    let dbResult = { inserted: 0, errors: [] as string[] };
+    if (saveToDb && allRows.length > 0) {
+      dbResult = await upsertCreatorPrompts(allRows);
+    }
+
+    // Notification
+    const state = loadState();
+    pushNotification(state, 'leaderboard_update',
+      `Creator prompts scraped: ${allRows.length} posts from ${usernames.length} creator(s) → ${dbResult.inserted} saved to DB`,
+      { creators: usernames, total_posts: allRows.length, db_inserted: dbResult.inserted, db_errors: dbResult.errors }
+    );
+    saveState(state);
+
+    return JSON.stringify({
+      success: true,
+      creators_scraped: usernames.length,
+      total_posts_found: allRows.length,
+      saved_to_db: dbResult.inserted,
+      db_errors: dbResult.errors,
+      creators: creatorResults,
+      migration_hint: dbResult.errors.some(e => e.includes('sora_creator_prompts')) || dbResult.inserted === 0
+        ? 'If DB save failed, run the migration SQL in your Supabase dashboard: harness/migrations/20260306_sora_creator_prompts.sql'
+        : undefined,
+    });
+  } finally {
+    stopHeartbeat();
+    await releaseSoraClaim();
+  }
+}
+
 async function handleSoraScrapePlatformLeaderboard(): Promise<string> {
-  const sora = new SoraFullAutomation();
-  const result = await sora.getPlatformLeaderboard();
-  return JSON.stringify({
-    success: result.success,
-    sections_found: result.sections.length,
-    total_entries: result.sections.reduce((sum, s) => sum + s.entries.length, 0),
-    sections: result.sections,
-    scraped_at: new Date().toISOString(),
-    error: result.error,
-  });
+  // Acquire tab claim before touching Safari — prevents conflicts with other services
+  const claim = await acquireSoraClaim();
+  if (!claim) {
+    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
+  }
+  const stopHeartbeat = startClaimHeartbeat();
+  try {
+    const sora = new SoraFullAutomation();
+    const result = await sora.getPlatformLeaderboard();
+
+    if (result.success && result.sections.length > 0) {
+      const totalEntries = result.sections.reduce((sum, s) => sum + s.entries.length, 0);
+      const top = result.sections[0]?.entries[0];
+      const state = loadState();
+      pushNotification(state, 'leaderboard_update',
+        `Platform leaderboard scraped: ${totalEntries} creators across ${result.sections.length} section(s)` +
+        (top ? ` — #1: ${top.username} (${top.views?.toLocaleString() ?? '?'} views)` : ''),
+        {
+          total_entries: totalEntries,
+          sections: result.sections.length,
+          top_creator: top?.username ?? null,
+          top_views: top?.views ?? null,
+          scraped_at: new Date().toISOString(),
+        }
+      );
+      saveState(state);
+    }
+
+    return JSON.stringify({
+      success: result.success,
+      sections_found: result.sections.length,
+      total_entries: result.sections.reduce((sum, s) => sum + s.entries.length, 0),
+      sections: result.sections,
+      scraped_at: new Date().toISOString(),
+      error: result.error,
+    });
+  } finally {
+    stopHeartbeat();
+    await releaseSoraClaim();
+  }
 }
 
 async function handleSoraScrapeMyStats(args: { limit?: number }): Promise<string> {
-  const sora = new SoraFullAutomation();
-  const result = await sora.getMyVideoStats(args.limit ?? 20);
-  if (result.success) {
-    const state = loadState();
-    let updated = 0;
-    for (const v of result.videos) {
-      const idx = state.videos.findIndex(sv => sv.id === v.id || sv.soraVideoId === v.id);
-      if (idx !== -1 && (v.views !== null || v.likes !== null)) {
-        if (v.views !== null) state.videos[idx].ytViews = v.views;
-        if (v.likes !== null) state.videos[idx].ytLikes = v.likes;
-        state.videos[idx].metricsUpdatedAt = new Date().toISOString();
-        updated++;
-      }
-    }
-    if (updated > 0) saveState(state);
-    return JSON.stringify({ success: true, total_found: result.total_found, scraped: result.videos.length, synced_to_state: updated, page_url: result.page_url, videos: result.videos });
+  // Acquire tab claim before touching Safari — prevents conflicts with other services
+  const claim = await acquireSoraClaim();
+  if (!claim) {
+    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
   }
-  return JSON.stringify({ success: false, error: result.error });
+  const stopHeartbeat = startClaimHeartbeat();
+  try {
+    const sora = new SoraFullAutomation();
+    const result = await sora.getMyVideoStats(args.limit ?? 20);
+    if (result.success) {
+      const state = loadState();
+      let updated = 0;
+      for (const v of result.videos) {
+        const idx = state.videos.findIndex(sv => sv.id === v.id || sv.soraVideoId === v.id);
+        if (idx !== -1 && (v.views !== null || v.likes !== null)) {
+          if (v.views !== null) state.videos[idx].ytViews = v.views;
+          if (v.likes !== null) state.videos[idx].ytLikes = v.likes;
+          state.videos[idx].metricsUpdatedAt = new Date().toISOString();
+          updated++;
+        }
+      }
+      // Push notification when we have fresh Sora-native stats
+      if (result.videos.length > 0) {
+        const withViews = result.videos.filter(v => v.views !== null);
+        pushNotification(state, 'leaderboard_update',
+          `My stats refreshed: ${result.videos.length} video(s) scraped, ${withViews.length} with view data`,
+          { scraped: result.videos.length, with_views: withViews.length, synced: updated, page_url: result.page_url }
+        );
+      }
+      saveState(state);
+      return JSON.stringify({
+        success: true,
+        total_found: result.total_found,
+        scraped: result.videos.length,
+        synced_to_state: updated,
+        scraped_at: new Date().toISOString(),
+        page_url: result.page_url,
+        videos: result.videos,
+      });
+    }
+    return JSON.stringify({ success: false, error: result.error });
+  } finally {
+    stopHeartbeat();
+    await releaseSoraClaim();
+  }
 }
 
 async function handleSoraBatchClean(args: {
@@ -2026,6 +2274,7 @@ async function handleRequest(req: { id?: unknown; method: string; params?: { nam
       else if (name === 'sora_scrape_explore') content = await handleSoraScrapeExplore(args as { limit?: number });
       else if (name === 'sora_fetch_yt_stats') content = await handleSoraFetchYtStats(args as { video_id?: string });
       else if (name === 'sora_platform_leaderboard') content = await handleSoraScrapePlatformLeaderboard();
+      else if (name === 'sora_scrape_creators') content = await handleSoraScrapeCreators(args as { usernames?: string[]; posts_per_creator?: number; save_to_db?: boolean; min_views?: number });
       else if (name === 'sora_my_stats') content = await handleSoraScrapeMyStats(args as { limit?: number });
       else throw new Error(`Unknown tool: ${name}`);
     } catch (e) {

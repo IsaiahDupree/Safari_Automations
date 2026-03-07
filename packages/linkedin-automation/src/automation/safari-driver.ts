@@ -278,6 +278,11 @@ export class SafariDriver {
   async getCurrentUrl(): Promise<string> {
     try {
       if (this.config.instanceType === 'local') {
+        // Use tracked tab if available — reading "front document" returns the wrong URL
+        // when LinkedIn is running in a background tab (not the active tab).
+        if (this.trackedWindow && this.trackedTab) {
+          return await this.getTabUrl(this.trackedWindow, this.trackedTab);
+        }
         const { stdout } = await execAsync(
           `osascript -e 'tell application "Safari" to get URL of front document'`
         );
@@ -626,24 +631,24 @@ export class SafariDriver {
   }
 
   /**
-   * Find a Safari tab by URL pattern across all windows.
-   * Returns the first matching window+tab indices.
+   * Find a Safari tab by URL pattern — restricted to SAFARI_AUTOMATION_WINDOW only.
+   * Never scans the personal profile window. Returns the first matching tab.
    */
   async findTabByUrl(urlPattern: string): Promise<SessionInfo> {
     if (this.config.instanceType !== 'local') {
       return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
     }
+    // Phase A: only search within the designated automation window
+    const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
     try {
       const script = `
 tell application "Safari"
-  set found to false
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      set tabURL to URL of tab t of window w
-      if tabURL contains "${urlPattern}" then
-        return (w as text) & ":" & (t as text) & ":" & tabURL
-      end if
-    end repeat
+  if (count of windows) < ${automationWindow} then return "not_found:0:0:"
+  repeat with t from 1 to count of tabs of window ${automationWindow}
+    set tabURL to URL of tab t of window ${automationWindow}
+    if tabURL contains "${urlPattern}" then
+      return (${automationWindow} as text) & ":" & (t as text) & ":" & tabURL
+    end if
   end repeat
   return "not_found:0:0:"
 end tell`;

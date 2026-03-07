@@ -250,9 +250,9 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
       return;
     }
 
-    // No claim — auto-claim now (finds existing tiktok.com tab or opens one)
+    // No claim — auto-claim existing tiktok.com tab only (never opens a new window)
     const autoId = `tiktok-dm-auto-${Date.now()}`;
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -463,10 +463,11 @@ app.post('/api/tiktok/conversations/open', async (req: Request, res: Response) =
       res.status(400).json({ error: 'username is required' });
       return;
     }
-    
+
     const result = await openConversation(driver, username);
     if (result.success) {
-      res.json({ success: true, currentUrl: result.currentUrl });
+      // conversationId = username — used by dm-followup-engine to fetch messages
+      res.json({ success: true, currentUrl: result.currentUrl, conversationId: username });
     } else {
       res.status(400).json({ success: false, error: result.error });
     }
@@ -517,7 +518,29 @@ app.post('/api/tiktok/conversations/scroll', async (_req: Request, res: Response
 app.get('/api/tiktok/messages', async (req: Request, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 50;
-    const messages = await readMessages(driver, limit);
+    const conversationId = req.query.conversationId as string | undefined;
+
+    // If a conversationId (username) is provided, open that conversation first.
+    // This is required by dm-followup-engine which passes conversationId after opening.
+    if (conversationId) {
+      const opened = await openConversation(driver, conversationId);
+      if (!opened.success) {
+        res.status(404).json({ error: `Conversation not found: ${conversationId}` });
+        return;
+      }
+      await driver.wait(1500);
+    }
+
+    const raw = await readMessages(driver, limit);
+    // Normalise to the schema dm-followup-engine expects:
+    // { text, isOwn, from, id, timestamp }
+    const messages = raw.map((m: { content?: string; sender?: string; text?: string; isOwn?: boolean; from?: string; id?: string; timestamp?: string }, i: number) => ({
+      text:      m.text ?? m.content ?? '',
+      isOwn:     m.isOwn ?? (m.sender === 'me'),
+      from:      m.from ?? (m.sender === 'me' ? 'me' : 'them'),
+      id:        m.id ?? `msg-${i}`,
+      timestamp: m.timestamp ?? new Date().toISOString(),
+    }));
     res.json({ messages, count: messages.length });
   } catch (error) {
     res.status(500).json({ error: String(error) });
@@ -765,6 +788,7 @@ app.get('/api/tiktok/profile/:username', async (req: Request, res: Response) => 
     const profile = await enrichContact(username, driver);
     const hasData = !!(profile.followers || profile.following || profile.fullName);
     if (!hasData) {
+      await navigateToInbox(driver);
       res.status(404).json({
         success: false,
         error: 'Profile not found or failed to load',
@@ -773,6 +797,8 @@ app.get('/api/tiktok/profile/:username', async (req: Request, res: Response) => 
       return;
     }
 
+    // Restore inbox so the tracked tab isn't left stranded on the profile page
+    await navigateToInbox(driver);
     res.json({
       username,
       displayName: profile.fullName,

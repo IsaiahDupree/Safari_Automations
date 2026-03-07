@@ -5,7 +5,8 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "npx tsx src/api/server.ts",
-    "dev": "npx tsx --watch src/api/server.ts"
+    "dev": "npx tsx --watch src/api/server.ts",
+    "test:push-arch": "npx tsx ../../tests/integration/push-arch-pollers.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

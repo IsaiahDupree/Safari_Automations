@@ -51,6 +51,54 @@ import { UniversalTaskQueue } from '../queue/universal-queue.js';
 import type { TaskPriority, TaskStatus } from '../queue/universal-queue.js';
 import { registerBuiltinWorkers } from '../queue/builtin-workers.js';
 
+// ─── Supabase logging ────────────────────────────────────────────
+
+const SUPA_URL = process.env.SUPABASE_URL || 'https://ivhfuhxorppptyuofbgq.supabase.co';
+const SUPA_KEY = process.env.SUPABASE_ANON_KEY || '';
+
+async function logResearchJob(opts: {
+  job: { id: string; platform: string; status: string; startedAt: string; completedAt?: string; error?: string };
+  niches: string[];
+  resultCount: number;
+  durationMs: number;
+}): Promise<void> {
+  if (!SUPA_KEY) return;
+  try {
+    await fetch(`${SUPA_URL}/rest/v1/market_research_jobs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPA_KEY,
+        'Authorization': `Bearer ${SUPA_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({
+        job_id: opts.job.id,
+        platform: opts.job.platform,
+        status: opts.job.status,
+        niches: opts.niches,
+        result_count: opts.resultCount,
+        duration_ms: opts.durationMs,
+        started_at: opts.job.startedAt,
+        completed_at: opts.job.completedAt,
+        error: opts.job.error ?? null,
+      }),
+    });
+  } catch { /* non-fatal */ }
+
+  // Telegram — only on successful completion with results
+  const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+  const TG_CHAT  = process.env.TELEGRAM_CHAT_ID   || '';
+  if (TG_TOKEN && TG_CHAT && opts.job.status === 'completed' && opts.resultCount > 0) {
+    const text = `🔍 <b>Market Research</b> done\nPlatform: ${opts.job.platform} | Results: ${opts.resultCount} | Niches: ${opts.niches.join(', ')}`;
+    fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: Number(TG_CHAT) || TG_CHAT, text, parse_mode: 'HTML' }),
+    }).catch(() => {});
+  }
+}
+
 // ─── Server Metadata ─────────────────────────────────────────────
 
 const SERVER_VERSION = '1.4.0';
@@ -521,7 +569,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `market-research-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -784,10 +832,14 @@ app.post('/api/research/:platform/full', async (req: Request, res: Response) => 
     // Find the latest saved file
     const files = listResultFiles(platform);
     if (files.length > 0) job.resultFile = path.join(DEFAULT_OUTPUT_DIR, files[0].filename);
+
+    // Log to Supabase
+    logResearchJob({ job, niches, resultCount: results?.length ?? 0, durationMs: summary.totalDurationMs }).catch(() => {});
   } catch (e) {
     job.status = 'failed';
     job.error = String(e);
     job.completedAt = new Date().toISOString();
+    logResearchJob({ job, niches, resultCount: 0, durationMs: 0 }).catch(() => {});
   }
   currentJob = null;
 });

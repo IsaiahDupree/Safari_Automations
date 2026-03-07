@@ -184,9 +184,16 @@ interface StepResult {
 export class TwitterDriver {
   private config: TwitterConfig;
   private commentLog: { timestamp: Date }[] = [];
+  private _trackedWindow: number | null = null;
+  private _trackedTab: number | null = null;
 
   constructor(config: Partial<TwitterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this._trackedWindow = windowIndex;
+    this._trackedTab = tabIndex;
   }
 
   // ─── Low-level Safari helpers ────────────────────────────
@@ -198,7 +205,10 @@ export class TwitterDriver {
 
     const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+    const tabTarget = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : `current tab of front window`;
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
 
     fs.writeFileSync(tmpFile, appleScript);
     try {
@@ -212,7 +222,10 @@ export class TwitterDriver {
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`, { timeout: 30000 });
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`, { timeout: 30000 });
       return true;
     } catch { return false; }
   }

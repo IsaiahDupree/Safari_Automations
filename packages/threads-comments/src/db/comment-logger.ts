@@ -48,7 +48,21 @@ export class CommentLogger {
   /**
    * Log a single comment to the database
    */
+  private _notifyTg(entry: CommentLogEntry): void {
+    const token = process.env.TELEGRAM_BOT_TOKEN || '';
+    const chat  = process.env.TELEGRAM_CHAT_ID   || '';
+    if (!token || !chat || !entry.success) return;
+    const preview = entry.commentText.substring(0, 80) + (entry.commentText.length > 80 ? '…' : '');
+    const text = `📝 <b>${entry.platform}</b> comment posted\n@${entry.username}\n<i>"${preview}"</i>`;
+    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: Number(chat) || chat, text, parse_mode: 'HTML' }),
+    }).catch(() => {});
+  }
+
   async logComment(entry: CommentLogEntry): Promise<CommentLogResult> {
+    this._notifyTg(entry);
     try {
       const response = await fetch(`${this.supabaseUrl}/rest/v1/comment_logs`, {
         method: 'POST',
@@ -183,9 +197,86 @@ export class CommentLogger {
   }
 
   /**
+   * Check if we have already commented on a specific post URL
+   * STRICT RULE: Prevents double-commenting on posts
+   */
+  async hasCommented(postUrl: string, platform: string = 'instagram'): Promise<boolean> {
+    try {
+      // Normalize the URL (remove trailing slashes, query params)
+      const normalizedUrl = postUrl.split('?')[0].replace(/\/+$/, '');
+      
+      const url = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&post_url=like.*${encodeURIComponent(normalizedUrl.split('/p/')[1] || '')}*&success=eq.true&select=id,post_url`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'apikey': this.supabaseKey,
+          'Authorization': `Bearer ${this.supabaseKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.error('[DB] Failed to check for existing comment');
+        return false; // Fail safe: allow commenting if check fails
+      }
+
+      const data = await response.json() as Array<{ id: string; post_url: string }>;
+      
+      if (data.length > 0) {
+        console.log(`[DB] ⚠️ Already commented on: ${postUrl}`);
+        console.log(`[DB]   Found ${data.length} existing comment(s)`);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('[DB] Error checking for existing comment:', error);
+      return false; // Fail safe
+    }
+  }
+
+  /**
+   * Get all post URLs we have successfully commented on
+   */
+  async getCommentedPostUrls(platform: string = 'instagram'): Promise<Set<string>> {
+    try {
+      const url = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&success=eq.true&select=post_url`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'apikey': this.supabaseKey,
+          'Authorization': `Bearer ${this.supabaseKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        return new Set();
+      }
+
+      const data = await response.json() as Array<{ post_url: string }>;
+      const urls = new Set<string>();
+      
+      for (const row of data) {
+        if (row.post_url) {
+          // Normalize: extract post ID
+          const match = row.post_url.match(/\/p\/([^\/\?]+)/);
+          if (match) {
+            urls.add(match[1]);
+          }
+        }
+      }
+      
+      console.log(`[DB] Loaded ${urls.size} previously commented post IDs`);
+      return urls;
+    } catch (error) {
+      console.error('[DB] Error loading commented URLs:', error);
+      return new Set();
+    }
+  }
+
+  /**
    * Get stats for a platform
    */
-  async getStats(platform: string = 'threads'): Promise<{
+  async getStats(platform: string = 'instagram'): Promise<{
     total: number;
     successful: number;
     failed: number;
@@ -200,7 +291,7 @@ export class CommentLogger {
       const base = `${this.supabaseUrl}/rest/v1/comment_logs?platform=eq.${platform}&select=id`;
       const today = new Date().toISOString().split('T')[0];
 
-      // Use HEAD-like requests with count=exact to avoid fetching all rows
+      // Use HEAD requests with count=exact to avoid fetching all rows
       const [totalRes, successRes, todayRes] = await Promise.all([
         fetch(`${base}`, { headers, method: 'HEAD' }),
         fetch(`${base}&success=eq.true`, { headers, method: 'HEAD' }),

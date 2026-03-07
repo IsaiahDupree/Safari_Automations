@@ -297,15 +297,15 @@ export class SafariDriver {
       return { found: false, windowId: 0, windowIndex: 1, tabIndex: 1, url: '' };
     }
     try {
+      const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
       const script = `
 tell application "Safari"
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      set tabURL to URL of tab t of window w
-      if tabURL contains "${urlPattern}" then
-        return (id of window w as text) & ":" & (w as text) & ":" & (t as text) & ":" & tabURL
-      end if
-    end repeat
+  if (count of windows) < ${automationWindow} then return "not_found:0:0:0:"
+  repeat with t from 1 to count of tabs of window ${automationWindow}
+    set tabURL to URL of tab t of window ${automationWindow}
+    if tabURL contains "${urlPattern}" then
+      return (id of window ${automationWindow} as text) & ":" & (${automationWindow} as text) & ":" & (t as text) & ":" & tabURL
+    end if
   end repeat
   return "not_found:0:0:0:"
 end tell`;

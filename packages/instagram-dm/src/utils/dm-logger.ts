@@ -64,7 +64,22 @@ async function getOrCreateContact(platform: DMPlatform, username: string): Promi
   } catch (error) { console.error('[DM Logger] getOrCreateContact error:', error); return null; }
 }
 
+function _notifyTg(entry: DMLogEntry): void {
+  const token = process.env.TELEGRAM_BOT_TOKEN || '';
+  const chat  = process.env.TELEGRAM_CHAT_ID   || '';
+  if (!token || !chat) return;
+  const dir = entry.isOutbound ? '📤 Sent' : '📥 Received';
+  const preview = entry.messageText.substring(0, 100) + (entry.messageText.length > 100 ? '…' : '');
+  const text = `${dir} <b>${entry.platform}</b> DM\n@${entry.username}\n<i>"${preview}"</i>`;
+  fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: Number(chat) || chat, text, parse_mode: 'HTML' }),
+  }).catch(() => {});
+}
+
 export async function logDM(entry: DMLogEntry): Promise<void> {
+  _notifyTg(entry);
   if (!supabase || !loggerEnabled) return;
   try {
     const contactId = await getOrCreateContact(entry.platform, entry.username);

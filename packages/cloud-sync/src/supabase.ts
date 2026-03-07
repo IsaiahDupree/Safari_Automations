@@ -518,12 +518,15 @@ export class CloudSupabase {
   }
 
   async updateAction(id: string, status: string, result?: any, error?: string): Promise<void> {
-    const updates: any = { status, updated_at: new Date().toISOString() };
+    const updates: any = { status };
     if (status === 'running') updates.started_at = new Date().toISOString();
     if (['completed', 'failed'].includes(status)) updates.completed_at = new Date().toISOString();
-    if (result) updates.result = result;
+    if (result !== undefined) {
+      updates.result = typeof result === 'object' && result !== null ? result : { value: result };
+    }
     if (error) updates.error = error;
-    await this.client.from('cloud_action_queue').update(updates).eq('id', id);
+    const { error: sbError } = await this.client.from('cloud_action_queue').update(updates).eq('id', id);
+    if (sbError) console.error(`[CloudSync] updateAction(${id}, ${status}) failed: ${sbError.message}`);
   }
 
   // ─── Content Learnings ───────────────────────────────
@@ -569,6 +572,75 @@ export class CloudSupabase {
       pendingActions: actions.count || 0,
       activeLearnings: learnings.count || 0,
     };
+  }
+
+  // ─── Platform Cache (safari_platform_cache) ──────────
+  async getPlatformCache(platform: string, dataType: string): Promise<any[] | null> {
+    const { data, error } = await this.client
+      .from('safari_platform_cache')
+      .select('payload, fetched_at')
+      .eq('platform', platform)
+      .eq('data_type', dataType)
+      .gt('expires_at', new Date().toISOString())
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .single();
+    if (error || !data) return null;
+    const payload = data.payload;
+    return Array.isArray(payload) ? payload : (payload ? [payload] : null);
+  }
+
+  async writePlatformCache(platform: string, dataType: string, payload: any[], ttlMs: number): Promise<void> {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+    // Delete old rows for same platform+dataType, then insert fresh row
+    await this.client
+      .from('safari_platform_cache')
+      .delete()
+      .eq('platform', platform)
+      .eq('data_type', dataType);
+    await this.client
+      .from('safari_platform_cache')
+      .insert({
+        platform,
+        data_type: dataType,
+        payload: payload as any,
+        fetched_at: now.toISOString(),
+        expires_at: expiresAt,
+      });
+  }
+
+  // ─── Automation Cron Jobs ────────────────────────────
+  async getAutomationCronJobs(): Promise<any[]> {
+    const { data, error } = await this.client
+      .from('automation_cron_jobs')
+      .select('*')
+      .order('slug');
+    if (error) console.error('[CloudSync] getAutomationCronJobs error:', error.message);
+    return data || [];
+  }
+
+  async updateCronJob(slug: string, updates: {
+    enabled?: boolean;
+    schedule?: string;
+    quiet_hour_start?: number;
+    quiet_hour_end?: number;
+  }): Promise<boolean> {
+    const { error } = await this.client
+      .from('automation_cron_jobs')
+      .update({ ...updates, updated_at: new Date().toISOString() })
+      .eq('slug', slug);
+    if (error) console.error('[CloudSync] updateCronJob error:', error.message);
+    return !error;
+  }
+
+  async triggerCronJob(slug: string): Promise<boolean> {
+    const { error } = await this.client
+      .from('automation_cron_jobs')
+      .update({ trigger_requested: true, last_run_status: 'trigger_requested', updated_at: new Date().toISOString() })
+      .eq('slug', slug);
+    if (error) console.error('[CloudSync] triggerCronJob error:', error.message);
+    return !error;
   }
 
   private classifyPerformance(s: PostStats): string {

@@ -16,6 +16,7 @@ import {
 } from '../automation/linkedin.js';
 import { navigateTo, getPage, waitFor, evalJS, clickAtXY, currentUrl } from '../automation/browser.js';
 import { logInfo, logWarn, logError } from '../automation/logger.js';
+import { logLinkedInAction } from '../utils/linkedin-logger.js';
 
 // ─── Chrome Tab Claim Framework ────────────────────────────────────────────
 // Mirrors /tmp/safari-tab-claims.json but for the Chrome/Puppeteer browser.
@@ -176,6 +177,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const busy2 = await isChromeBusy();
       if (busy2.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy2.blocker.service}'. Cannot extract profile while Chrome is busy.`, blocker: busy2.blocker };
       result = await withChromeClaim(args.profileUrl as string, () => extractProfile(args.profileUrl as string));
+      logLinkedInAction({ action_type: 'profile_viewed', profile_url: args.profileUrl as string, profile_name: (result as Record<string,string>)?.name, success: true });
       break;
     }
 
@@ -185,6 +187,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const busy3 = await isChromeBusy();
         if (busy3.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy3.blocker.service}'. Cannot send connection while Chrome is busy.`, blocker: busy3.blocker };
         result = await withChromeClaim(args.profileUrl as string, () => sendConnectionRequest({ profileUrl: args.profileUrl as string, note: args.note as string | undefined }));
+        logLinkedInAction({ action_type: 'connection_sent', profile_url: args.profileUrl as string, note: args.note as string | undefined, success: !!(result as Record<string,unknown>)?.success });
       }
       break;
 
@@ -194,6 +197,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const busy4 = await isChromeBusy();
         if (busy4.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busy4.blocker.service}'. Cannot send message while Chrome is busy.`, blocker: busy4.blocker };
         result = await withChromeClaim(`https://www.linkedin.com/messaging/compose/`, () => sendMessage(args.profileUrl as string, args.text as string));
+        logLinkedInAction({ action_type: 'message_sent', profile_url: args.profileUrl as string, message_text: args.text as string, success: !!(result as Record<string,unknown>)?.success });
       }
       break;
 
@@ -240,7 +244,9 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
             await sleep(2_000);
           }
         }
-        return { searched: profiles.length, qualified: scored.length, minScore, dryRun, prospects: scored, connects };
+        const pipelineResult = { searched: profiles.length, qualified: scored.length, minScore, dryRun, prospects: scored, connects };
+        logLinkedInAction({ action_type: 'pipeline_run', search_query: query, results_count: scored.length, success: true });
+        return pipelineResult;
       });
       break;
     }
@@ -299,6 +305,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const busyLike = await isChromeBusy();
         if (busyLike.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyLike.blocker.service}'. Cannot like post while Chrome is busy.`, blocker: busyLike.blocker };
         result = await withChromeClaim(args.postUrl as string, () => likePost(args.postUrl as string));
+        logLinkedInAction({ action_type: 'post_liked', profile_url: args.postUrl as string, success: true });
       }
       break;
 
@@ -308,6 +315,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const busyComment = await isChromeBusy();
         if (busyComment.busy) throw { code: 'TAB_BUSY', message: `Chrome is claimed by '${busyComment.blocker.service}'. Cannot comment while Chrome is busy.`, blocker: busyComment.blocker };
         result = await withChromeClaim(args.postUrl as string, () => commentOnPost(args.postUrl as string, args.text as string));
+        logLinkedInAction({ action_type: 'post_commented', profile_url: args.postUrl as string, message_text: args.text as string, success: true });
       }
       break;
 

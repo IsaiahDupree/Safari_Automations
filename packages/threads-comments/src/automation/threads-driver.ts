@@ -399,8 +399,11 @@ end tell`;
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const tabSpec = (this.trackedWindow && this.trackedTab)
+        ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+        : `current tab of front window`;
       await execAsync(
-        `osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`
+        `osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`
       );
       await this.wait(3000);
       return true;
