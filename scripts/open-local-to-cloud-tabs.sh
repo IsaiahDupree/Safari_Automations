@@ -19,9 +19,9 @@ declare -a PLATFORM_TABS=(
   "instagram.com|https://www.instagram.com/direct/inbox/"
   "x.com|https://x.com/messages"
   "tiktok.com|https://www.tiktok.com/"
-  "threads.net|https://www.threads.net/"
+  "threads.net|https://www.threads.net"
   "facebook.com|https://www.facebook.com/"
-  "medium.com|https://medium.com/me/stories/public"
+  "medium.com|https://medium.com"
   "upwork.com|https://www.upwork.com/"
   "sora|https://sora.com"
 )

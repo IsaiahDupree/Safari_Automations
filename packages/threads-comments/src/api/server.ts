@@ -38,7 +38,7 @@ const AUTH_TOKEN = process.env.THREADS_AUTH_TOKEN || process.env.AUTH_TOKEN || '
 const startedAt = new Date().toISOString();
 const SERVICE_NAME = 'threads-comments';
 const SERVICE_PORT = 3004;
-const SESSION_URL_PATTERN = 'threads.com';
+const SESSION_URL_PATTERN = 'threads.net';
 const activeCoordinators = new Map<string, TabCoordinator>();
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
@@ -264,7 +264,7 @@ app.use(authMiddleware);
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
-const OPEN_URL = 'https://www.threads.com';
+const OPEN_URL = 'https://www.threads.net';
 const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
