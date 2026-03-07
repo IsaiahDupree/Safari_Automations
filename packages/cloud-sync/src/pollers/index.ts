@@ -7,6 +7,7 @@ export { TwitterPoller } from './twitter-poller';
 export { TikTokPoller } from './tiktok-poller';
 export { ThreadsPoller } from './threads-poller';
 export { LinkedInPoller } from './linkedin-poller';
+export { YouTubePoller } from './youtube-poller';
 
 import { Platform } from '../types';
 import { BasePoller } from './base-poller';
@@ -15,6 +16,7 @@ import { TwitterPoller } from './twitter-poller';
 import { TikTokPoller } from './tiktok-poller';
 import { ThreadsPoller } from './threads-poller';
 import { LinkedInPoller } from './linkedin-poller';
+import { YouTubePoller } from './youtube-poller';
 
 const pollerMap: Record<Platform, () => BasePoller> = {
   instagram: () => new InstagramPoller(),
@@ -22,6 +24,7 @@ const pollerMap: Record<Platform, () => BasePoller> = {
   tiktok: () => new TikTokPoller(),
   threads: () => new ThreadsPoller(),
   linkedin: () => new LinkedInPoller(),
+  youtube: () => new YouTubePoller(),
 };
 
 export function getPoller(platform: Platform): BasePoller {
@@ -29,6 +32,6 @@ export function getPoller(platform: Platform): BasePoller {
 }
 
 export function getAllPollers(platforms?: Platform[]): BasePoller[] {
-  const list = platforms || (['instagram', 'twitter', 'tiktok', 'threads', 'linkedin'] as Platform[]);
+  const list = platforms || (['instagram', 'twitter', 'tiktok', 'threads', 'linkedin', 'youtube'] as Platform[]);
   return list.map(p => pollerMap[p]());
 }

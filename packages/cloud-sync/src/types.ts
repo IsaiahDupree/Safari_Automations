@@ -3,7 +3,7 @@
  */
 
 // ─── Platform enum ───────────────────────────────────────
-export type Platform = 'instagram' | 'twitter' | 'tiktok' | 'threads' | 'linkedin';
+export type Platform = 'instagram' | 'twitter' | 'tiktok' | 'threads' | 'linkedin' | 'youtube';
 export type DataType = 'notifications' | 'dms' | 'post_stats' | 'followers' | 'invitations' | 'comments';
 
 // ─── Platform service ports ──────────────────────────────
@@ -168,7 +168,7 @@ export const DEFAULT_SYNC_CONFIG: SyncConfig = {
   statsPollIntervalMs: 300_000,
   invitationPollIntervalMs: 120_000,
   commentsPollIntervalMs: 600_000,
-  platforms: ['instagram', 'twitter', 'tiktok', 'threads', 'linkedin'],
+  platforms: ['instagram', 'twitter', 'tiktok', 'threads', 'linkedin', 'youtube'],
   enableActions: true,
   enableLearning: true,
   supabaseUrl: process.env.SUPABASE_URL || '',

@@ -161,17 +161,28 @@ export class SyncEngine {
   // ─── Unified Poll Cycle ────────────────────────────────
   // Runs every 15s. Checks what's due, then polls SEQUENTIALLY
   // with lock acquisition per platform.
+  // Navigation-heavy polls (stats/comments/followers) only run during quiet hours
+  // to avoid hijacking user's active Safari tabs. DMs and notifications are lightweight.
+  private isQuietHours(): boolean {
+    const h = new Date().getHours();
+    const start = parseInt(process.env.NAV_QUIET_HOUR_START || '1');
+    const end   = parseInt(process.env.NAV_QUIET_HOUR_END   || '7');
+    return h >= start && h < end;
+  }
+
   private async pollCycle(): Promise<void> {
     if (!this.running || this.polling) return;
     this.polling = true;
 
     const now = Date.now();
+    const quiet = this.isQuietHours();
     const dmsDue = now - this.lastDMPoll >= this.config.dmPollIntervalMs;
     const notifsDue = now - this.lastNotifPoll >= this.config.pollIntervalMs;
-    const statsDue = now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
+    // Stats/comments/followers navigate Safari — only allowed during quiet hours (1am–7am)
+    const statsDue = quiet && now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
     const invitationsDue = now - this.lastInvitationPoll >= this.config.invitationPollIntervalMs;
-    const commentsDue = now - this.lastCommentsPoll >= this.config.commentsPollIntervalMs;
-    const followersDue = now - this.lastFollowerPoll >= this.config.commentsPollIntervalMs; // same interval as comments
+    const commentsDue = quiet && now - this.lastCommentsPoll >= this.config.commentsPollIntervalMs;
+    const followersDue = quiet && now - this.lastFollowerPoll >= this.config.commentsPollIntervalMs;
 
     if (!dmsDue && !notifsDue && !statsDue && !invitationsDue && !commentsDue && !followersDue) {
       // Nothing due — just check action queue (no Safari needed)
@@ -195,6 +206,16 @@ export class SyncEngine {
         if (statsDue) results.push({ platform, dataType: 'post_stats', itemsSynced: 0, error: 'service offline', durationMs: 0 });
         if (invitationsDue && platform === 'linkedin') results.push({ platform, dataType: 'invitations', itemsSynced: 0, error: 'service offline', durationMs: 0 });
         if (commentsDue && platform !== 'linkedin') results.push({ platform, dataType: 'comments', itemsSynced: 0, error: 'service offline', durationMs: 0 });
+        continue;
+      }
+
+      // YouTube uses a pure REST API — no Safari navigation, no lock needed
+      if (platform === 'youtube') {
+        const youtubeStatsDue = now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
+        if (youtubeStatsDue) {
+          results.push(await this.pollDataType(platform, poller, 'post_stats'));
+          this.lastStatsPoll = Date.now();
+        }
         continue;
       }
 
@@ -409,62 +430,202 @@ export class SyncEngine {
     }
   }
 
-  private async executeAction(action: any): Promise<any> {
-    const servicePort = this.getServicePort(action.platform, action.action_type);
-    const baseUrl = `http://localhost:${servicePort}`;
+  // ── Accurate endpoint map — verified against each service's server.ts ──────
+  // Port reference:
+  //   instagram-dm:      3100  twitter-dm:    3003  tiktok-dm:     3102
+  //   linkedin-dm:       3105  threads-dm:    3004
+  //   instagram-comments:3005  twitter-comments:3007 tiktok-comments:3006
+  //   upwork-automation: 3107  market-research: 3106
+  private readonly DM_PORTS: Record<string, number> = {
+    instagram: 3100, twitter: 3003, tiktok: 3102, linkedin: 3105, threads: 3004,
+  };
+  private readonly COMMENT_PORTS: Record<string, number> = {
+    instagram: 3005, twitter: 3007, tiktok: 3006, threads: 3004,
+  };
 
-    switch (action.action_type) {
+  private async executeAction(action: any): Promise<any> {
+    const { platform, action_type, target_username, target_post_url, params = {} } = action;
+    const text = params.message || params.text || '';
+
+    const dmBase  = `http://localhost:${this.DM_PORTS[platform] || 3100}`;
+    const cmtBase = `http://localhost:${this.COMMENT_PORTS[platform] || 3005}`;
+
+    const post = async (base: string, path: string, body: object) => {
+      const r = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token-12345' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status} from ${base}${path}`);
+      return r.json();
+    };
+
+    const get = async (base: string, path: string) => {
+      const r = await fetch(`${base}${path}`, {
+        headers: { 'Authorization': 'Bearer test-token-12345' },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status} from ${base}${path}`);
+      return r.json();
+    };
+
+    switch (action_type) {
+
+      // ── DMs ────────────────────────────────────────────────────────────────
+      case 'send_dm':
       case 'reply_dm': {
-        const r = await fetch(`${baseUrl}/api/messages/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: action.target_username,
-            text: action.params.message || action.params.text,
-          }),
-        });
-        return await r.json();
+        // Each platform has its own send-to endpoint path
+        const dmPaths: Record<string, string> = {
+          instagram: '/api/messages/send-to',           // body: {username, text}
+          twitter:   '/api/twitter/messages/send-to',  // body: {username, text}
+          tiktok:    '/api/tiktok/messages/send-to',   // body: {username, text}
+          linkedin:  '/api/linkedin/messages/send-to', // body: {profileUrl, text}
+          threads:   '/api/messages/send-to',          // body: {username, text}
+        };
+        const path = dmPaths[platform] || dmPaths.instagram;
+        return post(dmBase, path, { username: target_username, profileUrl: params.profileUrl, text });
       }
-      case 'reply_comment': {
-        const r = await fetch(`${baseUrl}/api/comment`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            postUrl: action.target_post_url,
-            text: action.params.message || action.params.text,
-          }),
-        });
-        return await r.json();
+
+      // ── Comments ───────────────────────────────────────────────────────────
+      case 'reply_comment':
+      case 'post_comment': {
+        const commentPaths: Record<string, string> = {
+          instagram: '/api/instagram/comments/post',  // body: {postUrl, text}
+          twitter:   '/api/twitter/tweet/reply',      // body: {tweetUrl, text}
+          tiktok:    '/api/tiktok/comments/post',     // body: {videoUrl, text}
+          threads:   '/api/threads/comments/post',    // body: {postUrl, text}
+        };
+        const path = commentPaths[platform] || commentPaths.instagram;
+        const body = platform === 'twitter'
+          ? { tweetUrl: target_post_url, text }
+          : platform === 'tiktok'
+          ? { videoUrl: target_post_url, text }
+          : { postUrl: target_post_url, text };
+        return post(cmtBase, path, body);
       }
-      case 'follow_back': {
-        const r = await fetch(`${baseUrl}/api/follow`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: action.target_username }),
-        });
-        return await r.json();
+
+      // ── Twitter-specific ───────────────────────────────────────────────────
+      case 'compose_tweet': {
+        return post(cmtBase, '/api/twitter/tweet', { text, options: params.options });
       }
-      case 'like_post': {
-        const r = await fetch(`${baseUrl}/api/like`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ postUrl: action.target_post_url }),
+      case 'search_and_reply': {
+        return post(cmtBase, '/api/twitter/search-and-reply', {
+          query: params.query,
+          replyText: text,
+          maxReplies: params.maxReplies || 3,
         });
-        return await r.json();
       }
+      case 'like_tweet': {
+        return post(cmtBase, '/api/twitter/tweet/like', { tweetUrl: target_post_url });
+      }
+      case 'retweet': {
+        return post(cmtBase, '/api/twitter/tweet/retweet', { tweetUrl: target_post_url });
+      }
+      case 'get_tweet_metrics': {
+        return get(cmtBase, `/api/twitter/tweet/metrics?url=${encodeURIComponent(target_post_url || '')}`);
+      }
+      case 'twitter_comment_sweep': {
+        return post(cmtBase, '/api/twitter/comment-sweep', {
+          postUrl: target_post_url,
+          maxComments: params.maxComments || 50,
+        });
+      }
+
+      // ── Instagram-specific ─────────────────────────────────────────────────
+      case 'get_post_metrics': {
+        // Navigate to post then fetch metrics
+        await post(cmtBase, '/api/instagram/navigate', { url: target_post_url });
+        return get(cmtBase, '/api/instagram/post/metrics');
+      }
+      case 'get_profile_posts': {
+        return get(cmtBase, `/api/instagram/profile/posts?username=${encodeURIComponent(target_username || '')}`);
+      }
+
+      // ── Prospect discovery ─────────────────────────────────────────────────
+      case 'discover_prospects': {
+        return post(dmBase, '/api/prospect/discover', {
+          hashtag: params.hashtag,
+          keyword: params.keyword,
+          maxProfiles: params.maxProfiles || 10,
+        });
+      }
+      case 'dm_top_prospects': {
+        return post(dmBase, '/api/prospect/dm-top-n', { n: params.n || 5, message: text });
+      }
+
+      // ── Upwork ────────────────────────────────────────────────────────────
+      case 'find_upwork_jobs': {
+        return post('http://localhost:3107', '/api/upwork/jobs/search', {
+          query: params.query,
+          category: params.category,
+        });
+      }
+      case 'score_upwork_jobs': {
+        return post('http://localhost:3107', '/api/upwork/jobs/score-batch', {
+          jobIds: params.jobIds || [],
+        });
+      }
+      case 'get_upwork_jobs': {
+        return get('http://localhost:3107', '/api/upwork/jobs/current-page');
+      }
+
+      // ── Market research ───────────────────────────────────────────────────
+      case 'run_research': {
+        const researchPlatform = params.platform || platform || 'twitter';
+        const researchType = params.type || 'search'; // search | niche | full | top100
+        const path = researchType === 'niche'
+          ? `/api/research/${researchPlatform}/niche`
+          : researchType === 'full'
+          ? `/api/research/${researchPlatform}/full`
+          : `/api/research/${researchPlatform}/search`;
+        return post('http://localhost:3106', path, { query: params.query, keyword: params.query });
+      }
+      case 'get_research_results': {
+        const resPlatform = params.platform || platform;
+        return get('http://localhost:3106',
+          resPlatform ? `/api/research/results/latest/${resPlatform}` : '/api/research/results'
+        );
+      }
+
+      // ── Data fetch (read-only) ────────────────────────────────────────────
+      case 'fetch_profile': {
+        if (platform === 'instagram') return get(dmBase, `/api/profile/${encodeURIComponent(target_username || '')}`);
+        if (platform === 'tiktok') return get(cmtBase, '/api/tiktok/profile');
+        return get(dmBase, `/api/profile/${encodeURIComponent(target_username || '')}`);
+      }
+      case 'get_conversations': {
+        const convPaths: Record<string, string> = {
+          instagram: '/api/conversations',
+          twitter:   '/api/twitter/conversations',
+          tiktok:    '/api/tiktok/conversations',
+        };
+        return get(dmBase, convPaths[platform] || convPaths.instagram);
+      }
+      case 'get_crm_top': {
+        const crmPaths: Record<string, string> = {
+          instagram: '/api/crm/top-contacts',
+          twitter:   '/api/twitter/crm/top-contacts',
+          tiktok:    '/api/tiktok/crm/top-contacts',
+        };
+        return get(dmBase, crmPaths[platform] || crmPaths.instagram);
+      }
+
       default:
-        throw new Error(`Unknown action type: ${action.action_type}`);
+        throw new Error(`Unknown action type: ${action_type}`);
     }
   }
 
+  // getServicePort retained for health checks
   private getServicePort(platform: Platform, actionType: string): number {
-    if (actionType === 'reply_dm') {
-      return PLATFORM_PORTS[`${platform}-dm`] || 3100;
+    if (['reply_comment', 'post_comment', 'like_tweet', 'retweet', 'compose_tweet',
+         'search_and_reply', 'get_tweet_metrics', 'twitter_comment_sweep',
+         'get_post_metrics', 'get_profile_posts'].includes(actionType)) {
+      return this.COMMENT_PORTS[platform] || 3005;
     }
-    if (['reply_comment', 'like_post'].includes(actionType)) {
-      return PLATFORM_PORTS[`${platform}-comments`] || 3005;
-    }
-    return PLATFORM_PORTS[`${platform}-dm`] || PLATFORM_PORTS[platform] || 3100;
+    if (['find_upwork_jobs', 'score_upwork_jobs', 'get_upwork_jobs'].includes(actionType)) return 3107;
+    if (['run_research', 'get_research_results'].includes(actionType)) return 3106;
+    return this.DM_PORTS[platform] || 3100;
   }
 
   // ─── Status ────────────────────────────────────────────

@@ -7,6 +7,13 @@
  *   - Cloud action queue management
  *   - Analytics + content brief
  */
+import { config as dotenvConfig } from 'dotenv';
+// Load root .env — resolved relative to this file's location at runtime
+const _envDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : new URL('.', import.meta.url).pathname;
+dotenvConfig({ path: _envDir + '/../../../../.env' });
+
 import express from 'express';
 import { SyncEngine } from '../sync-engine';
 import { PostAnalytics } from '../analytics';
@@ -20,7 +27,7 @@ const PORT = parseInt(process.env.PORT || '3200');
 
 // Initialize
 const engine = new SyncEngine({
-  platforms: (process.env.SYNC_PLATFORMS?.split(',') as Platform[]) || ['instagram', 'twitter', 'tiktok', 'threads', 'linkedin'],
+  platforms: (process.env.SYNC_PLATFORMS?.split(',') as Platform[]) || ['instagram', 'twitter', 'tiktok', 'threads', 'linkedin', 'youtube'],
   dmPollIntervalMs: parseInt(process.env.DM_POLL_MS || '30000'),
   pollIntervalMs: parseInt(process.env.NOTIF_POLL_MS || '60000'),
   statsPollIntervalMs: parseInt(process.env.STATS_POLL_MS || '300000'),
@@ -197,6 +204,69 @@ app.get('/api/analytics/brief', async (req, res) => {
 app.get('/api/analytics/dashboard', async (_req, res) => {
   const stats = await db.getDashboardStats();
   res.json(stats);
+});
+
+// ─── Business Goals Alignment ───────────────────────────
+// Aggregates all tracked platform data vs. business-goals.json targets
+app.get('/api/analytics/goals', async (_req, res) => {
+  try {
+    const fs = await import('fs/promises');
+    const goalsRaw = await fs.readFile('/Users/isaiahdupree/Documents/Software/business-goals.json', 'utf-8').catch(() => '{}');
+    const goals = JSON.parse(goalsRaw);
+
+    const [dashStats, posts, dms] = await Promise.all([
+      db.getDashboardStats(),
+      db.getPostStats(undefined, 50),
+      db.getUnrepliedDMs(undefined, 100),
+    ]);
+
+    // Aggregate by platform
+    const byPlatform: Record<string, { posts: number; totalLikes: number; totalViews: number; totalComments: number; inboundDMs: number; outboundDMs: number }> = {};
+    for (const p of posts) {
+      const pl = p.platform;
+      if (!byPlatform[pl]) byPlatform[pl] = { posts: 0, totalLikes: 0, totalViews: 0, totalComments: 0, inboundDMs: 0, outboundDMs: 0 };
+      byPlatform[pl].posts++;
+      byPlatform[pl].totalLikes += p.likes || 0;
+      byPlatform[pl].totalViews += p.views || 0;
+      byPlatform[pl].totalComments += p.comments || 0;
+    }
+    for (const d of dms) {
+      const pl = d.platform;
+      if (!byPlatform[pl]) byPlatform[pl] = { posts: 0, totalLikes: 0, totalViews: 0, totalComments: 0, inboundDMs: 0, outboundDMs: 0 };
+      if (d.direction === 'inbound') byPlatform[pl].inboundDMs++;
+      else byPlatform[pl].outboundDMs++;
+    }
+
+    const growth = goals.growth || {};
+    const revenue = goals.revenue || {};
+
+    res.json({
+      goals: {
+        revenueTarget: revenue.target_monthly_usd || 5000,
+        revenueCurrent: revenue.current_monthly_usd || 0,
+        crmContactsTarget: growth.crm_contacts_target,
+        crmContactsCurrent: growth.crm_contacts_current,
+        twitterFollowersTarget: growth.twitter_followers_target,
+        youtubeSubscribersTarget: growth.youtube_subscribers_target,
+        youtubeSubscribersCurrent: growth.youtube_subscribers_current,
+        postsPerDayTarget: growth.posts_per_day,
+        upworkProposalsPerWeekTarget: growth.upwork_proposals_per_week,
+        dmCampaignsPerWeekTarget: growth.dm_campaigns_per_week,
+      },
+      platforms: byPlatform,
+      totals: dashStats,
+      gaps: {
+        revenuePct: Math.round(((revenue.current_monthly_usd || 0) / (revenue.target_monthly_usd || 5000)) * 100),
+        crmPct: Math.round(((growth.crm_contacts_current || 0) / (growth.crm_contacts_target || 1000)) * 100),
+        youtubePct: Math.round(((growth.youtube_subscribers_current || 0) / (growth.youtube_subscribers_target || 5000)) * 100),
+      },
+      tiktokNavNote: 'TikTok stats polled 1am–7am only to avoid disrupting active Safari use',
+      trackedPlatforms: ['instagram', 'twitter', 'tiktok', 'threads', 'linkedin'],
+      untrackedPlatforms: ['youtube', 'upwork'],
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // ═══════════════════════════════════════════════════════
