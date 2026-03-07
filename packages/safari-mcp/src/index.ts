@@ -40,7 +40,7 @@ import {
 // ─── Platform config ──────────────────────────────────────────────────────────
 
 const DM_CONFIG: Record<string, { port: number; path: string }> = {
-  instagram: { port: 3001, path: '/api/messages/send-to' },  // 3100 has auth; 3001 is open
+  instagram: { port: 3100, path: '/api/messages/send-to' },
   twitter:   { port: 3003, path: '/api/twitter/messages/send-to' },
   tiktok:    { port: 3102, path: '/api/tiktok/messages/send-to' },
   linkedin:  { port: 3105, path: '/api/linkedin/messages/send-to' },

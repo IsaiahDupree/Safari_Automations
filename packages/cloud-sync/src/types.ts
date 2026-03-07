@@ -8,7 +8,7 @@ export type DataType = 'notifications' | 'dms' | 'post_stats' | 'followers' | 'i
 
 // ─── Platform service ports ──────────────────────────────
 export const PLATFORM_PORTS: Record<string, number> = {
-  'instagram-dm': 3001,
+  'instagram-dm': 3100,
   'twitter-dm': 3003,
   'tiktok-dm': 3102,
   'instagram-comments': 3005,
