@@ -919,9 +919,11 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
       if (lastStatIdx >= 0) {
         for (var i = lastStatIdx + 1; i < lines.length; i++) {
           var l = lines[i];
+          // Strip Instagram's inline "more" truncation indicator (appended via \u00a0)
+          l = l.replace(/\u00a0more\s*$/, '').trim();
           if (/^(more|Following|Message|Followed by|Follow|Edit profile|Share profile|Contact|Subscribe)/i.test(l)) break;
           if (handleRe.test(l) && l === lines[0]) break; // username line repeat = end of bio section
-          bioLines.push(l);
+          if (l.length > 0) bioLines.push(l);
         }
       }
       var bio = bioLines.join('\\n').trim().substring(0, 300);
