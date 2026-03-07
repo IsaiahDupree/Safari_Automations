@@ -45,7 +45,7 @@ const SERVICES: Service[] = [
   { name: 'twitter-comments',   port: 3007, urlPattern: 'x.com',          inboxPath: '/api/twitter/status' },
   { name: 'tiktok-dm',          port: 3102, urlPattern: 'tiktok.com',     inboxPath: '/api/tiktok/conversations/unread' },
   { name: 'tiktok-comments',    port: 3006, urlPattern: 'tiktok.com',     inboxPath: '/api/tiktok/status' },
-  { name: 'threads-comments',   port: 3004, urlPattern: 'threads.net',    inboxPath: '/api/threads/status' },
+  { name: 'threads-comments',   port: 3004, urlPattern: 'threads.com',    inboxPath: '/api/threads/status' },
   { name: 'upwork-automation',  port: 3108, urlPattern: 'upwork.com',     inboxPath: '/api/upwork/status' },
 ];
 
