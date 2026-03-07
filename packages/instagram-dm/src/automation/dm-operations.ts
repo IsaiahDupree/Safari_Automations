@@ -112,9 +112,10 @@ export async function listConversations(driver?: SafariDriver): Promise<DMConver
         if (SKIP.indexOf(username) !== -1) return;
         seen[username] = true;
         var lastMsg = texts.length > 1 ? texts[1] : '';
-        // Strip "You: " prefix from outbound preview
+        // Detect outbound ("You: " prefix) before stripping
+        var lastMsgIsOutbound = /^You:\\s*/i.test(lastMsg);
         lastMsg = lastMsg.replace(/^You:\\s*/i, '');
-        conversations.push(JSON.stringify({ username: username, threadId: '', lastMessage: lastMsg.substring(0, 100) }));
+        conversations.push(JSON.stringify({ username: username, threadId: '', lastMessage: lastMsg.substring(0, 100), lastMessageIsOutbound: lastMsgIsOutbound }));
       });
 
       // Strategy 2: Legacy — a[href*="/direct/t/"] (still works in some Instagram versions)
@@ -912,16 +913,18 @@ export async function enrichContact(username: string, driver?: SafariDriver): Pr
       }
 
       // Bio: lines after the last stat line, up to "more" / social buttons
+      // statLineRe requires a leading number so "Following" button text doesn't match
+      var statLineRe = /^[\\d.,KkMmBb]+\\s+(?:posts?|followers?|following)$/i;
       var lastStatIdx = -1;
       for (var i = 0; i < lines.length; i++) {
-        if (statRe.test(lines[i])) lastStatIdx = i;
+        if (statLineRe.test(lines[i])) lastStatIdx = i;
       }
       var bioLines = [];
       if (lastStatIdx >= 0) {
         for (var i = lastStatIdx + 1; i < lines.length; i++) {
           var l = lines[i];
           // Strip Instagram's inline "more" truncation indicator (appended via \u00a0)
-          l = l.replace(/\u00a0more\s*$/, '').trim();
+          l = l.replace(/\u00a0more\\s*$/, '').trim();
           if (/^(more|Following|Message|Followed by|Follow|Edit profile|Share profile|Contact|Subscribe)/i.test(l)) break;
           if (handleRe.test(l) && l === lines[0]) break; // username line repeat = end of bio section
           if (l.length > 0) bioLines.push(l);

@@ -414,7 +414,7 @@ app.get('/api/build/status/:jobId', async (req: Request, res: Response) => {
       .eq('job_id', req.params.jobId)
       .single();
 
-    if (error || !data) {
+    if (!data) {
       return res.status(404).json({ error: 'Job not found' });
     }
 

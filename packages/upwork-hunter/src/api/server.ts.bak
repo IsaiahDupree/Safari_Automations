@@ -187,7 +187,7 @@ app.post('/api/proposals/generate', async (req: Request, res: Response) => {
 
     if (isSupabaseConfigured()) {
       const supabase = getSupabaseClient();
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('upwork_proposals')
         .select('job_id, job_title, job_url, job_description, budget, score')
         .eq('job_id', jobId)
@@ -408,13 +408,13 @@ app.get('/api/build/status/:jobId', async (req: Request, res: Response) => {
 
   try {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('upwork_proposals')
       .select('demo_url, github_url, job_id, job_title, score')
       .eq('job_id', req.params.jobId)
       .single();
 
-    if (error || !data) {
+    if (!data) {
       return res.status(404).json({ error: 'Job not found' });
     }
 

@@ -8,6 +8,7 @@ export interface DMConversation {
   displayName?: string;
   profilePicUrl?: string;
   lastMessage?: string;
+  lastMessageIsOutbound?: boolean;
   lastMessageAt?: string;
   unreadCount?: number;
   isVerified?: boolean;

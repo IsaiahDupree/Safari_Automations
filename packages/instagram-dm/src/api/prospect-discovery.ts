@@ -62,7 +62,9 @@ export function scoreICP(profile: Profile, _source: string): { score: number; si
   const followers = parseFollowerCount(profile.followers);
 
   // Bio keyword matches: up to 30pts (10 per keyword)
+  // HARD REQUIREMENT: no bio match → score 0 (disqualified regardless of follower count)
   const matched = ICP_KEYWORDS.filter(k => bioLower.includes(k));
+  if (matched.length === 0) return { score: 0, signals: [] };
   if (matched.length > 0) {
     score += Math.min(matched.length * 10, 30);
     signals.push(...matched.map(k => `bio:${k}`));

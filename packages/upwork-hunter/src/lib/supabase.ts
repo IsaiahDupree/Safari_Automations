@@ -32,10 +32,23 @@ CREATE TABLE IF NOT EXISTS upwork_proposals (
   status TEXT DEFAULT 'pending',
   offer_type TEXT,
   telegram_message_id INTEGER,
+  demo_url TEXT,
+  github_url TEXT,
   submitted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Add columns if table already exists
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='upwork_proposals' AND column_name='demo_url') THEN
+    ALTER TABLE upwork_proposals ADD COLUMN demo_url TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='upwork_proposals' AND column_name='github_url') THEN
+    ALTER TABLE upwork_proposals ADD COLUMN github_url TEXT;
+  END IF;
+END $$;
 `;
 
 export async function applyMigration(): Promise<void> {

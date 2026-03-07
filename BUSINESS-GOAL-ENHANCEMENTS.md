@@ -143,7 +143,7 @@ YouTube is 56% to target. Need a consistent publishing cadence.
 
 ### Enhancement 10 — Agentlite deploy + cron activation
 
-The cloud brain (`agentlite`) was built but is **not deployed to Vercel**. Without it, no actions are being booked on the local machine.
+**✅ DONE (2026-03-07)** — AgentLite is deployed and live at `https://agentlite-jcma3kwoz-isaiahduprees-projects.vercel.app`. Crons running: orchestrate every 15min, process-results every 5min. Full cloud→local pipeline verified.
 
 **Steps:**
 ```bash
@@ -259,7 +259,7 @@ Fastest path to $1K:
 
 | Agent | Building | Revenue impact |
 |-------|---------|---------------|
-| `agentlite-cloud-brain` | ✅ Done — needs deploy | Unlocks all automation |
+| `agentlite-cloud-brain` | ✅ Done — deployed + verified 2026-03-07 | Unlocks all automation |
 | `self-improving-loop` | ✅ Done — needs wiring | Template optimization |
 | `safari-tab-mgmt-*` | ✅ Done | Tab conflict prevention |
 | `ig-e2e-integration` | ✅ Done | IG pipeline orchestration |

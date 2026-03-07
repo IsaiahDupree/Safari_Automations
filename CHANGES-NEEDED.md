@@ -323,7 +323,7 @@ done
 | Priority | Task | Effort | Owner |
 |----------|------|--------|-------|
 | ✅ P0 | Start tiktok-dm (:3102) and upwork-hunter (:3107) and add to watchdog | done 2026-03-06 |
-| 🔴 P0 | Deploy agentlite to Vercel + set CRON_SECRET | 15 min | manual |
+| ✅ P0 | Deploy agentlite to Vercel + set CRON_SECRET | done 2026-03-07 | |
 | 🔴 P0 | Run `ALTER TABLE safari_command_queue ADD COLUMN processed_at` migration | 2 min | manual |
 | 🔴 P0 | Add `prospect_discover`, `dm_batch`, `upwork_scan` to ig-daemon | ACD agent |
 | 🟠 P1 | Complete tab mgmt for twitter-comments, linkedin-automation, market-research | ACD agent |

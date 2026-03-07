@@ -1546,6 +1546,7 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
       minScore,
       maxRounds: 2,
       checkCRM: true,
+      selfUsername: 'the_isaiah_dupree',
     }, getDriver());
 
     discovered = result.total;
@@ -1731,7 +1732,7 @@ app.post('/api/instagram/self-poll', async (_req: Request, res: Response) => {
   try {
     const { SelfPollCron } = await import('../self-poll-cron.js');
     const poller = new SelfPollCron(parseInt(process.env.PORT || '3100'));
-    const { fetched } = await poller.tick(true);
+    const { fetched } = await poller.tick();
     result.dms = fetched.dms || 0;
     result.notifications = fetched.notifications || 0;
     res.json({ success: true, fetched: result });
@@ -1747,7 +1748,7 @@ app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
   try {
     const { SelfPollCron } = await import('../self-poll-cron.js');
     const poller = new SelfPollCron(parseInt(process.env.PORT || '3100'));
-    const result = await poller.tick(true);
+    const result = await poller.tick();
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });

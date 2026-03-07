@@ -173,8 +173,12 @@ export class SafariDriver {
   async getCurrentUrl(): Promise<string> {
     try {
       if (this.config.instanceType === 'local') {
+        // Use tracked tab when available — avoids "front document" returning wrong tab
+        const tabSpec = (this.trackedWindow && this.trackedTab)
+          ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
+          : 'front document';
         const { stdout } = await execAsync(
-          `osascript -e 'tell application "Safari" to get URL of front document'`
+          `osascript -e 'tell application "Safari" to get URL of ${tabSpec}'`
         );
         return stdout.trim();
       } else {
