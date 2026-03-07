@@ -5,11 +5,24 @@ import { BasePoller } from './base-poller';
 import { PlatformDM, PlatformNotification, PostStats, LinkedInInvitation } from '../types';
 
 export class LinkedInPoller extends BasePoller {
+  // Note: auth token passed so pollPostStats/DMs can reach linkedin-automation (:3105)
   constructor() {
-    super('linkedin', 3105);
+    super('linkedin', 3105, process.env.LINKEDIN_AUTH_TOKEN || 'test-token-12345');
+  }
+
+  // LinkedIn automation service navigates Safari — gate all polls to quiet hours
+  private isQuietHours(): boolean {
+    const h = new Date().getHours();
+    const start = parseInt(process.env.NAV_QUIET_HOUR_START || '1');
+    const end   = parseInt(process.env.NAV_QUIET_HOUR_END   || '7');
+    return h >= start && h < end;
   }
 
   async pollDMs(): Promise<PlatformDM[]> {
+    if (!this.isQuietHours()) {
+      console.log('[Poller:linkedin] pollDMs skipped — outside quiet hours (1am–7am). LinkedIn automation navigates Safari.');
+      return [];
+    }
     const result: PlatformDM[] = [];
 
     const convos = await this.get<{ conversations: any[] }>('/api/linkedin/conversations');
@@ -36,6 +49,9 @@ export class LinkedInPoller extends BasePoller {
   }
 
   async pollNotifications(): Promise<PlatformNotification[]> {
+    if (!this.isQuietHours()) {
+      return [];
+    }
     const result: PlatformNotification[] = [];
 
     // Check for unread conversations
@@ -75,6 +91,9 @@ export class LinkedInPoller extends BasePoller {
   }
 
   async pollInvitations(): Promise<LinkedInInvitation[]> {
+    if (!this.isQuietHours()) {
+      return [];
+    }
     const result: LinkedInInvitation[] = [];
 
     // Poll sent invitations
