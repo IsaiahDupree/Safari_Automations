@@ -1504,7 +1504,7 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
     keywords = ['buildinpublic', 'saasfounder', 'aiautomation'],
     sources = ['hashtag', 'top_accounts', 'followers'],
     maxProspects = 30,
-    minScore = 35,
+    minScore = 50,
     dryRun = false,
   } = req.body as {
     keywords?: string[];

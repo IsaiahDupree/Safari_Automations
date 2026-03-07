@@ -20,10 +20,11 @@ const CRM_BASE = 'https://crmlite-h3k1s46jj-isaiahduprees-projects.vercel.app';
 const MAX_ENRICH = 30; // hard cap to protect Safari rate limits
 
 export const ICP_KEYWORDS = [
-  'automation', 'ai', 'saas', 'founder', 'software', 'agency',
-  'build', 'mrr', 'arr', 'startup', 'creator', 'solopreneur',
-  'scaling', 'product', 'engineer', 'developer', 'indie hacker',
-  'buildinpublic', 'indiehacker', 'content strategy',
+  // Strong SaaS/founder signals (required for ICP qualification)
+  'saas', 'founder', 'software', 'automation', 'startup',
+  'mrr', 'arr', 'solopreneur', 'buildinpublic', 'indiehacker',
+  'indie hacker', 'developer', 'b2b', 'ai automation', 'tech founder',
+  'bootstrapped', 'microsaas', 'micro saas', 'cto', 'ceo of',
 ];
 
 // Extended keyword pool for continuation rounds when first pass yields too few candidates
