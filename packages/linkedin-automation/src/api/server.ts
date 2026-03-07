@@ -204,6 +204,17 @@ function isWithinActiveHours(): boolean {
   return hour >= rateLimits.activeHoursStart && hour < rateLimits.activeHoursEnd;
 }
 
+// Test accounts — always bypass active hours restrictions
+const TEST_PROFILE_URLS = new Set([
+  'https://www.linkedin.com/in/isaiah-dupree33/',
+  'https://www.linkedin.com/in/isaiah-dupree33',
+]);
+function isTestAccount(profileUrl?: string, username?: string): boolean {
+  if (profileUrl && TEST_PROFILE_URLS.has(profileUrl.split('?')[0].replace(/\/$/, '') + '/')) return true;
+  if (username && (username === 'isaiah-dupree33' || username === 'isaiah-dupree33/')) return true;
+  return false;
+}
+
 // ─── Health ──────────────────────────────────────────────────
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -232,7 +243,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `linkedin-automation-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -279,6 +290,14 @@ app.use('/api/*', requireAuth);
 app.get('/api/linkedin/status', async (_req: Request, res: Response) => {
   try {
     const driver = getDefaultDriver();
+    // Status is CLAIM_EXEMPT so requireTabClaim never runs — pin the driver's
+    // tracked tab manually so getCurrentUrl() reads the LinkedIn tab, not Safari's
+    // front document (which could be TikTok/Upwork/etc running in another tab).
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME_TAB);
+    if (myClaim) {
+      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    }
     const isOnLinkedIn = await driver.isOnLinkedIn();
     const isLoggedIn = isOnLinkedIn ? await driver.isLoggedIn() : false;
     const url = await driver.getCurrentUrl();
@@ -844,7 +863,7 @@ app.post('/api/linkedin/messages/send', async (req: Request, res: Response) => {
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
   const hour = new Date().getHours();
-  if ((hour < 9 || hour >= 21) && !req.body.force) {
+  if ((hour < 9 || hour >= 21) && !req.body.force && !isTestAccount(undefined, req.body.username)) {
     return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
   const { text, username, name } = req.body;
@@ -881,7 +900,7 @@ app.post('/api/linkedin/messages/send-to', async (req: Request, res: Response) =
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
   const hour = new Date().getHours();
-  if ((hour < 9 || hour >= 21) && !req.body.force) {
+  if ((hour < 9 || hour >= 21) && !req.body.force && !isTestAccount(req.body.profileUrl, req.body.username)) {
     return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
   const { profileUrl, text, username, name } = req.body;
@@ -917,7 +936,7 @@ app.post('/api/linkedin/messages/new-compose', async (req: Request, res: Respons
     return res.status(429).json({ error: 'Daily message limit reached', hint: 'Add "force": true to bypass' });
   }
   const hour = new Date().getHours();
-  if ((hour < 9 || hour >= 21) && !req.body.force && !req.body.dryRun) {
+  if ((hour < 9 || hour >= 21) && !req.body.force && !req.body.dryRun && !isTestAccount(req.body.profileUrl, req.body.username)) {
     return res.status(429).json({ error: 'outside_active_hours', message: 'DMs only sent 9am–9pm' });
   }
   const { recipientName, message, dryRun, username } = req.body;
@@ -1039,7 +1058,7 @@ app.get('/api/linkedin/posts/recent', async (req: Request, res: Response) => {
     // Extract posts with engagement metrics from the activity feed
     const raw = await d.executeJS(`(function(){` +
       `var posts=[];` +
-      `var items=document.querySelectorAll('div.feed-shared-update-v2,div[data-urn*="activity"],li.profile-creator-shared-feed-update__container');` +
+      `var items=document.querySelectorAll('div.feed-shared-update-v2,div[data-urn*="activity"],li.profile-creator-shared-feed-update__container,div[data-view-name="feed-full-update"],article.feed-shared-update-v2,div.update-components-text');` +
       `for(var i=0;i<Math.min(items.length,${limit});i++){` +
         `var el=items[i];` +
         `var text=(el.innerText||'').trim();` +
@@ -1881,6 +1900,313 @@ app.post('/api/debug/eval', async (req, res) => {
     res.json({ result });
   } catch (error) {
     res.status(500).json({ error: String(error) });
+  }
+});
+
+// ─── Discovery: Hashtag / Niche Feed ─────────────────────────
+// GET /api/linkedin/discover/hashtag?tag=aiautomation&limit=20
+// Returns top posts + authors from a hashtag feed.
+app.get('/api/linkedin/discover/hashtag', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'discover/hashtag', async () => {
+    const d = getDefaultDriver();
+    const tag = (req.query.tag as string || '').replace(/^#/, '').trim();
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    if (!tag) { res.status(400).json({ error: 'tag required' }); return; }
+
+    await d.navigateTo(`https://www.linkedin.com/feed/hashtag/${encodeURIComponent(tag)}/`);
+    await d.wait(4000);
+    // Scroll to load more posts
+    await d.executeJS(`(function(){var i=0;var t=setInterval(function(){window.scrollBy(0,700);if(++i>=6)clearInterval(t);},400);})();`);
+    await d.wait(3000);
+
+    const raw = await d.executeJS(`(function(){
+      var posts=[];
+      var seen={};
+      var feed=document.querySelector('main .scaffold-finite-scroll__content, main [data-finite-scroll-hotkey-context]');
+      var containers=feed?feed.children:document.querySelectorAll('div[data-urn*="activity"]');
+      for(var i=0;i<Math.min(containers.length,${limit}*2);i++){
+        var el=containers[i];
+        var urn=el.getAttribute('data-urn')||'';
+        if(!urn.includes('activity'))continue;
+        var postId=urn.replace(/.*activity:/,'');
+        if(seen[postId])continue;
+        seen[postId]=1;
+        var authorLink=el.querySelector('a[href*="/in/"]');
+        if(!authorLink)continue;
+        var authorUrl=authorLink.href.split('?')[0];
+        var authorName=(authorLink.querySelector('span[aria-hidden]')||authorLink).innerText.trim().split('\\n')[0];
+        var headline='';
+        var headlineEl=el.querySelector('.update-components-actor__description span[aria-hidden],.feed-shared-actor__description span[aria-hidden]');
+        if(headlineEl)headline=headlineEl.innerText.trim();
+        var text='';
+        var textEl=el.querySelector('.feed-shared-update-v2__description,.update-components-text');
+        if(textEl)text=textEl.innerText.trim().substring(0,300);
+        var reactions=0,comments=0;
+        var rEl=el.querySelector('button[aria-label*="reaction"] span,.social-details-social-counts__reactions-count');
+        if(rEl){var m=rEl.innerText.match(/\\d+/);if(m)reactions=parseInt(m[0]);}
+        var cEl=el.querySelector('button[aria-label*="comment"]');
+        if(cEl){var m2=cEl.innerText.match(/\\d+/);if(m2)comments=parseInt(m2[0]);}
+        var postUrl='https://www.linkedin.com/feed/update/urn:li:activity:'+postId+'/';
+        if(authorUrl&&authorUrl.includes('/in/')){
+          posts.push(JSON.stringify({postId:postId,postUrl:postUrl,authorName:authorName,authorUrl:authorUrl,headline:headline.substring(0,150),text:text,reactions:reactions,comments:comments}));
+        }
+        if(posts.length>=${limit})break;
+      }
+      return '['+posts.join(',')+']';
+    })()`);
+
+    let posts: any[] = [];
+    try { posts = JSON.parse(raw || '[]'); } catch {}
+    // Deduplicate by authorUrl to find unique creators
+    const creatorsMap: Record<string,any> = {};
+    for (const p of posts) {
+      if (!creatorsMap[p.authorUrl] || (p.reactions + p.comments) > (creatorsMap[p.authorUrl].reactions + creatorsMap[p.authorUrl].comments)) {
+        creatorsMap[p.authorUrl] = p;
+      }
+    }
+    const creators = Object.values(creatorsMap).sort((a:any,b:any) => (b.reactions+b.comments)-(a.reactions+a.comments));
+    res.json({ tag, posts, creators, postCount: posts.length, creatorCount: creators.length });
+  });
+});
+
+// ─── Discovery: Post Commenters ───────────────────────────────
+// POST /api/linkedin/discover/commenters  { postUrl, limit }
+// Navigate to a post and extract all visible commenters.
+app.post('/api/linkedin/discover/commenters', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'discover/commenters', async () => {
+    const d = getDefaultDriver();
+    const { postUrl, limit = 30 } = req.body;
+    if (!postUrl) { res.status(400).json({ error: 'postUrl required' }); return; }
+
+    await d.navigateTo(postUrl);
+    await d.wait(4000);
+    // Scroll to expand comments
+    await d.executeJS(`(function(){var i=0;var t=setInterval(function(){window.scrollBy(0,500);if(++i>=10)clearInterval(t);},400);})();`);
+    await d.wait(3000);
+    // Click "Load more comments" buttons
+    await d.executeJS(`(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){var t=(btns[i].innerText||'').trim().toLowerCase();if(t.includes('load more comment')||t.includes('show more comment')){btns[i].click();}}})()`);
+    await d.wait(2000);
+
+    const raw = await d.executeJS(`(function(){
+      var commenters=[];
+      var seen={};
+      var commentEls=document.querySelectorAll('.comments-comment-item,.comments-comment-list__comment-item');
+      for(var i=0;i<Math.min(commentEls.length,${limit});i++){
+        var el=commentEls[i];
+        var link=el.querySelector('a[href*="/in/"]');
+        if(!link)continue;
+        var url=link.href.split('?')[0];
+        if(seen[url]||!url.includes('/in/'))continue;
+        seen[url]=1;
+        var nameEl=link.querySelector('span[aria-hidden],.comments-post-meta__name-text');
+        var name=nameEl?nameEl.innerText.trim():link.innerText.trim().split('\\n')[0];
+        var headlineEl=el.querySelector('.comments-post-meta__headline,.comments-post-meta__description');
+        var headline=headlineEl?headlineEl.innerText.trim():'';
+        var text='';
+        var textEl=el.querySelector('.comments-comment-item__main-content,.update-components-text');
+        if(textEl)text=textEl.innerText.trim().substring(0,200);
+        var likes=0;
+        var likeEl=el.querySelector('button[aria-label*="reaction"] span,[data-reaction-type]');
+        if(likeEl){var m=(likeEl.innerText||'').match(/\\d+/);if(m)likes=parseInt(m[0]);}
+        if(name)commenters.push(JSON.stringify({name:name,profileUrl:url,headline:headline.substring(0,150),comment:text,likes:likes}));
+      }
+      return '['+commenters.join(',')+']';
+    })()`);
+
+    let commenters: any[] = [];
+    try { commenters = JSON.parse(raw || '[]'); } catch {}
+    res.json({ postUrl, commenters, count: commenters.length });
+  });
+});
+
+// ─── Discovery: My Connections List ──────────────────────────
+// GET /api/linkedin/discover/my-connections?limit=40&page=1
+// Scrapes your own 1st-degree connection list.
+app.get('/api/linkedin/discover/my-connections', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'discover/connections', async () => {
+    const d = getDefaultDriver();
+    const limit = Math.min(parseInt(req.query.limit as string) || 40, 100);
+    const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+    const start = (page - 1) * limit;
+
+    // LinkedIn connections search URL (1st degree only, sortBy RECENTLY_ADDED)
+    const url = `https://www.linkedin.com/search/results/people/?network=%5B%22F%22%5D&origin=MEMBER_PROFILE_CANNED_SEARCH&start=${start}`;
+    await d.navigateTo(url);
+    await d.wait(4000);
+    await d.executeJS(`(function(){var i=0;var t=setInterval(function(){window.scrollBy(0,600);if(++i>=6)clearInterval(t);},400);})();`);
+    await d.wait(2500);
+
+    const raw = await d.executeJS(`(function(){
+      var results=[];
+      var seen={};
+      var mainEl=document.querySelector('main');
+      if(!mainEl)return'[]';
+      var links=mainEl.querySelectorAll('a[href*="/in/"]');
+      for(var i=0;i<links.length;i++){
+        var url=links[i].href.split('?')[0];
+        if(seen[url]||!url.includes('/in/')||url.includes('ACoAA'))continue;
+        seen[url]=1;
+        var card=links[i];
+        for(var p=0;p<4;p++){if(card.parentElement)card=card.parentElement;}
+        var cardText=card.innerText||'';
+        var nameEl=links[i].querySelector('span[aria-hidden]');
+        var name=nameEl?nameEl.innerText.trim().split('\\n')[0]:links[i].innerText.trim().split('\\n')[0];
+        name=name.replace(/\\s*(1st|2nd|3rd)\\s*$/i,'').trim();
+        if(!name||name.length<2||name.length>80)continue;
+        var lines=cardText.split('\\n').map(function(l){return l.trim();}).filter(function(l){return l.length>3;});
+        var headline='';
+        for(var j=0;j<lines.length;j++){var l=lines[j];if(l===name)continue;if(l.match(/\u2022\s*(1st|2nd|3rd)/i))continue;if(l.match(/^(Connect|Message|Follow|1st|2nd|3rd|Withdraw|Ignore|Accept)$/i))continue;if(l.match(/^\d+\s*mutual/i))continue;if(l.length>5&&l.length<200){headline=l;break;}}
+        if(name&&url)results.push(JSON.stringify({name:name,profileUrl:url,headline:headline.substring(0,150),connectionDegree:'1st'}));
+        if(results.length>=${limit})break;
+      }
+      return '['+results.join(',')+']';
+    })()`);
+
+    let connections: any[] = [];
+    try { connections = JSON.parse(raw || '[]'); } catch {}
+    res.json({ page, start, connections, count: connections.length });
+  });
+});
+
+// ─── Discovery: Profile Network (People Also Viewed) ────────────────────────
+// POST /api/linkedin/discover/profile-connections  { profileUrl, limit }
+// Scrapes the "People Also Viewed" sidebar from a profile page (always visible).
+app.post('/api/linkedin/discover/profile-connections', async (req: Request, res: Response) => {
+  await withSafariLock(res, 'discover/profile-connections', async () => {
+    const d = getDefaultDriver();
+    const { profileUrl, limit = 40 } = req.body;
+    if (!profileUrl) { res.status(400).json({ error: 'profileUrl required' }); return; }
+
+    const vnMatch = profileUrl.match(/\/in\/([^/?]+)/);
+    const vanityName = vnMatch ? vnMatch[1].replace(/\/$/, '') : '';
+    if (!vanityName) { res.status(400).json({ error: 'Could not extract vanityName' }); return; }
+
+    await d.navigateTo(`https://www.linkedin.com/in/${vanityName}/`);
+    await d.wait(4000);
+    await d.executeJS(`(function(){var i=0;var t=setInterval(function(){window.scrollBy(0,400);if(++i>=5)clearInterval(t);},350);})();`);
+    await d.wait(2000);
+
+    // Extract profile links, filtering out the profile's own section URLs.
+    const raw = await d.executeJS(`(function(){
+      var vanity='${vanityName}'.toLowerCase();
+      var skipNames=['show all','contact info','link','experience','skills','education','recommendations','publications','honors','interests','top voices','browse','message','connect','follow','more','people also viewed','people you may know'];
+      var results=[];
+      var seen={};
+      var links=document.querySelectorAll('a[href*="/in/"]');
+      for(var i=0;i<links.length;i++){
+        var url=links[i].href.split('?')[0];
+        if(!url.includes('/in/'))continue;
+        var path=url.replace(/https?:\/\/[^/]+/,'');
+        if(path.toLowerCase().startsWith('/in/'+vanity+'/'))continue;
+        if(url.includes('ACoAA')||url.includes('miniProfile'))continue;
+        if(seen[url])continue;
+        seen[url]=1;
+        var card=links[i];
+        for(var p=0;p<5;p++){if(card.parentElement)card=card.parentElement;}
+        var nameEl=links[i].querySelector('span[aria-hidden]');
+        var name=nameEl?nameEl.innerText.trim():links[i].innerText.trim().split('\\n')[0];
+        name=name.replace(/\\s*(1st|2nd|3rd|\\u2022).*$/,'').trim();
+        if(skipNames.indexOf(name.toLowerCase())!==-1)continue;
+        if(!name||name.length<3||name.length>80)continue;
+        var cardText=(card.innerText||'').trim();
+        var lines=cardText.split('\\n').map(function(l){return l.trim();}).filter(function(l){return l.length>3;});
+        var headline='';
+        for(var j=0;j<lines.length;j++){
+          var l=lines[j];
+          if(l===name||skipNames.indexOf(l.toLowerCase())!==-1||l.match(/^(1st|2nd|3rd|\\d+)$/i))continue;
+          if(l.length>5&&l.length<200&&!l.match(/^\\d+ mutual/i)){headline=l.substring(0,150);break;}
+        }
+        results.push(JSON.stringify({name:name,profileUrl:url,headline:headline}));
+        if(results.length>=${limit})break;
+      }
+      return '['+results.join(',')+']';
+    })()`);
+
+    let connections: any[] = [];
+    try { connections = JSON.parse(raw || '[]'); } catch {}
+    const currentUrl = await d.getCurrentUrl();
+    res.json({ profileUrl, vanityName, method: 'peopleAlsoViewed', navigatedUrl: currentUrl, connections, count: connections.length });
+  });
+});
+
+// ─── Self-Poll Endpoint (SDPA-008) ───────────────────────────────────────────
+// POST /api/linkedin/self-poll
+// Called by cron-manager during quiet hours. Fetches DMs, invitations, post stats
+// and writes results to safari_platform_cache for cloud-sync to consume.
+app.post('/api/linkedin/self-poll', async (_req: Request, res: Response) => {
+  const result = { dms: 0, invitations: 0, posts: 0 };
+
+  try {
+    const d = getDefaultDriver();
+
+    // 1. Fetch conversations (DMs)
+    let convos: any[] = [];
+    try {
+      const r = await listConversations(d);
+      convos = Array.isArray(r) ? r : [];
+      result.dms = convos.length;
+    } catch (e) {
+      console.warn('[self-poll:linkedin] conversations error:', (e as Error).message);
+    }
+
+    // 2. Fetch pending invitations
+    let invitations: any[] = [];
+    try {
+      invitations = await listPendingRequests('received', d);
+      result.invitations = invitations.length;
+    } catch (e) {
+      console.warn('[self-poll:linkedin] invitations error:', (e as Error).message);
+    }
+
+    // Write to safari_platform_cache if we have Supabase creds
+    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+      const sbHeaders = {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      };
+      const ttlMap: Record<string, number> = { dms: 1_800_000, invitations: 7_200_000, post_stats: 21_600_000 };
+
+      // Helper to upsert one cache row
+      const writeCache = async (dataType: string, payload: any[]) => {
+        if (!payload.length) return;
+        // Delete old rows
+        await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache?platform=eq.linkedin&data_type=eq.${dataType}`, {
+          method: 'DELETE', headers: sbHeaders,
+        }).catch(() => {});
+        // Insert fresh row
+        const expiresAt = new Date(Date.now() + ttlMap[dataType]).toISOString();
+        await fetch(`${SUPABASE_URL}/rest/v1/safari_platform_cache`, {
+          method: 'POST',
+          headers: sbHeaders,
+          body: JSON.stringify({ platform: 'linkedin', data_type: dataType, payload, expires_at: expiresAt, source_service_port: 3105 }),
+        }).catch(() => {});
+      };
+
+      await Promise.all([
+        writeCache('dms', convos),
+        writeCache('invitations', invitations),
+      ]);
+    }
+
+    res.json({ success: true, fetched: result });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error('[self-poll:linkedin] error:', msg);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// GET /api/self-poll/trigger — alias used by external health checks (SDPA-008)
+app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
+  try {
+    const { SelfPollCron } = await import('../self-poll-cron.js');
+    const poller = new SelfPollCron(Number(PORT), AUTH_TOKEN);
+    const result = await poller.tick(true);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
   }
 });
 

@@ -244,7 +244,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   const autoId = `instagram-dm-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
     activeCoordinators.set(autoId, coord);
     const claim = await coord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
@@ -546,6 +546,8 @@ app.get('/api/profile/:username', requireActiveSession, async (req, res) => {
       return;
     }
     const profile = await enrichContact(username, getDriver());
+    // Restore inbox so the tracked tab isn't left stranded on the profile page
+    await navigateToInbox(getDriver());
     res.json({ success: true, username, profile });
   } catch (error) {
     res.status(500).json({ error: String(error) });
@@ -1716,6 +1718,39 @@ app.post('/api/debug/eval', requireActiveSession, async (req, res) => {
     res.json({ result });
   } catch (error) {
     res.status(500).json({ error: String(error) });
+  }
+});
+
+// ─── Self-Poll Endpoint (SDPA-011) ───────────────────────────────────────────
+// POST /api/instagram/self-poll
+// Called by cron-manager. Fetches DM conversations + unread notifications
+// and writes results to safari_platform_cache for cloud-sync to consume.
+app.post('/api/instagram/self-poll', async (_req: Request, res: Response) => {
+  const result = { dms: 0, notifications: 0 };
+
+  try {
+    const { SelfPollCron } = await import('../self-poll-cron.js');
+    const poller = new SelfPollCron(parseInt(process.env.PORT || '3100'));
+    const { fetched } = await poller.tick(true);
+    result.dms = fetched.dms || 0;
+    result.notifications = fetched.notifications || 0;
+    res.json({ success: true, fetched: result });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error('[self-poll:instagram] error:', msg);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// GET /api/self-poll/trigger — alias for external trigger
+app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
+  try {
+    const { SelfPollCron } = await import('../self-poll-cron.js');
+    const poller = new SelfPollCron(parseInt(process.env.PORT || '3100'));
+    const result = await poller.tick(true);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
   }
 });
 
