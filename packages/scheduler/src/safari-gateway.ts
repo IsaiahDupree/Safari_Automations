@@ -529,31 +529,40 @@ app.get('/gateway/tabs', (_req: Request, res: Response) => {
 
   // Merge per registered service
   const tabs = SERVICES.map(svc => {
-    const claim  = claimByPort[svc.port];
-    const layout = layoutByPort[svc.port];
+    const claim   = claimByPort[svc.port];
+    const lEntry  = layoutByPort[svc.port];
 
     const heartbeatAgeMs = claim ? now - claim.heartbeat : null;
     const claimLive      = claim ? heartbeatAgeMs! < CLAIM_TTL_MS : false;
 
+    // Derive tab ref from claim first, fall back to layout coordinator string (e.g. "w2t1")
+    let tabRef: string | null = null;
+    if (claim) {
+      tabRef = `w${claim.windowIndex}t${claim.tabIndex}`;
+    } else if (lEntry?.tab) {
+      tabRef = String(lEntry.tab);
+    }
+    const wMatch = tabRef?.match(/w(\d+)t(\d+)/);
+
     return {
-      service:        svc.name,
-      platform:       svc.platform,
-      port:           svc.port,
+      service:         svc.name,
+      platform:        svc.platform,
+      port:            svc.port,
       // Tab coordinates
-      windowIndex:    claim?.windowIndex ?? layout?.tab ? parseInt(String(layout.tab).match(/w(\d+)/)?.[1] ?? '0') : null,
-      tabIndex:       claim?.tabIndex    ?? layout?.tab ? parseInt(String(layout.tab).match(/t(\d+)/)?.[1] ?? '0') : null,
-      tabRef:         claim ? `w${claim.windowIndex}t${claim.tabIndex}` : (layout?.tab ?? null),
-      tabUrl:         claim?.tabUrl ?? null,
+      windowIndex:     wMatch ? parseInt(wMatch[1]) : null,
+      tabIndex:        wMatch ? parseInt(wMatch[2]) : null,
+      tabRef,
+      tabUrl:          claim?.tabUrl ?? null,
       // Claim health
-      claimed:        claimLive,
-      claimStale:     claim ? !claimLive : false,
+      claimed:         claimLive,
+      claimStale:      claim ? !claimLive : false,
       heartbeatAgeMs,
       heartbeatAgeSec: heartbeatAgeMs != null ? Math.round(heartbeatAgeMs / 1000) : null,
-      claimedAt:      claim ? new Date(claim.claimedAt).toISOString() : null,
-      agentId:        claim?.agentId ?? null,
+      claimedAt:       claim ? new Date(claim.claimedAt).toISOString() : null,
+      agentId:         claim?.agentId ?? null,
       // Layout coordinator data (last full coordinator run)
-      layoutClaimed:  layout?.claimed ?? false,
-      coordinatedAt:  layout.coordinatedAt ?? null,
+      layoutClaimed:   lEntry?.claimed ?? false,
+      coordinatedAt:   layout.coordinatedAt ?? null,
     };
   });
 
