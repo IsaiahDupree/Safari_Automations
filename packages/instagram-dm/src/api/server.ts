@@ -117,10 +117,28 @@ initDMLogger();
 initScoringService();
 initTemplateEngine();
 
-// Rate limiting state
-let messagesSentToday = 0;
-let messagesSentThisHour = 0;
-let lastHourReset = Date.now();
+// Rate limiting state — persisted to disk so restarts don't lose daily count
+import { readFileSync, writeFileSync } from 'fs';
+const RL_STATE_FILE = new URL('../../.rate-limit-state.json', import.meta.url).pathname;
+
+function todayDateStr() { return new Date().toISOString().slice(0, 10); }
+
+function loadRLState() {
+  try {
+    const d = JSON.parse(readFileSync(RL_STATE_FILE, 'utf8'));
+    if (d.date === todayDateStr()) return d;
+  } catch { /* first run */ }
+  return { date: todayDateStr(), sentToday: 0, sentThisHour: 0, hourStart: Date.now() };
+}
+
+function saveRLState() {
+  try { writeFileSync(RL_STATE_FILE, JSON.stringify({ date: todayDateStr(), sentToday: messagesSentToday, sentThisHour: messagesSentThisHour, hourStart: lastHourReset })); } catch { /* non-fatal */ }
+}
+
+const _rl = loadRLState();
+let messagesSentToday = _rl.sentToday;
+let messagesSentThisHour = _rl.sentThisHour;
+let lastHourReset = _rl.hourStart;
 let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 
@@ -615,6 +633,7 @@ app.post('/api/messages/send', requireActiveSession, checkRateLimit, async (req,
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      saveRLState();
       if (username) {
         logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
         // Log to Supabase if enabled
@@ -665,11 +684,14 @@ app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (r
       return;
     }
 
-    // Strategy 1: Profile-page DM (most reliable — navigate to profile, click Message button)
+    // Strategy 1: Profile-page DM (navigate to profile, click Message, type, send)
+    // Only commit if verified=true — otherwise fall through to inbox strategy which is
+    // more reliable for existing conversations.
     const profileResult = await sendDMFromProfile(username, text, getDriver());
-    if (profileResult.success) {
+    if (profileResult.success && profileResult.verified) {
       messagesSentToday++;
       messagesSentThisHour++;
+      saveRLState();
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
       logToSupabase({
         platform: 'instagram',
@@ -686,6 +708,9 @@ app.post('/api/messages/send-to', requireActiveSession, checkRateLimit, async (r
       });
       return;
     }
+    // Strategy 1 ran but could not verify delivery — log and try inbox strategy
+    console.log(`[send-to] Strategy 1 unverified for @${username} (${profileResult.error || 'verified=false'}), trying inbox`);
+
 
     // Strategy 2: Open existing inbox conversation
     const opened = await openConversation(username, getDriver());
@@ -819,6 +844,7 @@ app.post('/api/messages/smart-send', checkRateLimit, async (req, res) => {
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      saveRLState();
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
       logToSupabase({
         platform: 'instagram',
@@ -853,6 +879,7 @@ app.post('/api/messages/send-from-profile', checkRateLimit, async (req, res) => 
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      saveRLState();
       logDM({ platform: 'instagram', username, messageText: text, isOutbound: true });
       logToSupabase({
         platform: 'instagram',
@@ -888,6 +915,7 @@ app.post('/api/messages/send-to-thread', checkRateLimit, async (req, res) => {
     if (result.success) {
       messagesSentToday++;
       messagesSentThisHour++;
+      saveRLState();
       logDM({ platform: 'instagram', username: `thread:${threadId}`, messageText: text, isOutbound: true });
       logToSupabase({
         platform: 'instagram',

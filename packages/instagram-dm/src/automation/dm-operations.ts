@@ -562,32 +562,35 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
   ];
   
   let inputFound = false;
+  let foundSel = '';
   for (const sel of selectors) {
     inputFound = await d.focusElement(sel);
-    if (inputFound) break;
+    if (inputFound) { foundSel = sel; break; }
   }
-  
+
   if (!inputFound) {
     return { success: false, error: 'Message input not found' };
   }
-  
+
   await d.wait(500);
-  
-  // Type via OS-level keystrokes (works with React)
-  const typed = await d.typeViaKeystrokes(text);
+
+  // Primary: clipboard paste — most reliable for React contenteditable (Safari).
+  // Falls back to JS injection if clipboard fails.
+  const typed = await d.typeViaClipboard(foundSel, text).catch(() => false) ||
+                await d.typeViaJS(foundSel, text);
   if (!typed) {
-    return { success: false, error: 'Failed to type message via keystrokes' };
+    return { success: false, error: 'Failed to type message' };
   }
-  
+
   await d.wait(500);
-  
-  // Send via Enter key (OS-level)
-  const sent = await d.pressEnter();
+
+  // Press Enter targeting the same element
+  const sent = await d.pressEnterViaJS(foundSel);
   if (!sent) {
     return { success: false, error: 'Failed to press Enter to send' };
   }
-  
-  await d.wait(1000);
+
+  await d.wait(1500);
   return { success: true };
 }
 
@@ -737,11 +740,19 @@ export async function sendDMFromProfile(
   const result = await sendMessage(message, d);
   
   if (result.success) {
-    await d.wait(2000);
-    const snippet = message.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // Wait for message to appear in conversation thread
+    await d.wait(3000);
+    const snippet = JSON.stringify(message.substring(0, 40));
     const verified = await d.executeJS(`
       (function() {
-        return document.body.innerText.includes('${snippet}') ? 'yes' : 'no';
+        var s = ${snippet};
+        // Check conversation thread messages (most reliable)
+        var msgs = document.querySelectorAll('div[dir="auto"], span[dir="auto"]');
+        for (var i = 0; i < msgs.length; i++) {
+          if (msgs[i].textContent.includes(s)) return 'yes';
+        }
+        // Fallback: check full page text
+        return document.body.innerText.includes(s) ? 'yes' : 'no';
       })()
     `);
     return {

@@ -292,9 +292,10 @@ export async function sendMessage(
       TIKTOK_SELECTORS.messageInputCE,
     ];
     let focusResult = false;
+    let foundSel = '';
     for (const sel of selectors) {
       focusResult = await driver.focusElement(sel);
-      if (focusResult) break;
+      if (focusResult) { foundSel = sel; break; }
     }
 
     if (!focusResult) {
@@ -303,10 +304,11 @@ export async function sendMessage(
 
     await driver.wait(500);
 
-    // Type via OS-level keystrokes (works with React)
-    const typed = await driver.typeViaKeystrokes(message);
+    // Primary: clipboard paste (most reliable for React contenteditable in Safari)
+    const typed = await (driver as any).typeViaClipboard?.(foundSel, message).catch(() => false) ||
+                  await driver.typeViaKeystrokes(message);
     if (!typed) {
-      return { success: false, error: 'Failed to type message via keystrokes' };
+      return { success: false, error: 'Failed to type message' };
     }
 
     await driver.wait(500);

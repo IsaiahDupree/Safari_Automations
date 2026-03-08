@@ -251,31 +251,58 @@ export class SafariDriver {
   async typeViaJS(selector: string, text: string): Promise<boolean> {
     try {
       const escaped = JSON.stringify(text);
+      const escapedSel = JSON.stringify(selector);
       const js = `
 (function() {
-  var el = document.querySelector(${escaped.replace(/"/g, "'").replace(/^'|'$/g, '"')});
-  if (!el) {
-    // Try to find focused/active element
-    el = document.activeElement;
-  }
+  var el = (${escapedSel} ? document.querySelector(${escapedSel}) : null) || document.activeElement;
   if (!el) return false;
   el.focus();
-  // Try execCommand first (works for contenteditable, no focus steal)
-  var inserted = document.execCommand('selectAll', false, null) &&
-                 document.execCommand('insertText', false, ${escaped});
-  if (inserted) return true;
-  // Fallback: nativeInputValueSetter for <input>/<textarea>
+
+  var isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+
+  if (isContentEditable) {
+    // Strategy A: ClipboardEvent paste injection — most reliable for React contenteditable.
+    // React apps (Instagram, Twitter, TikTok) handle 'paste' natively and update their
+    // internal state, then re-render the DOM correctly.
+    try {
+      var dt = new DataTransfer();
+      dt.setData('text/plain', ${escaped});
+      var pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      el.dispatchEvent(pasteEvt);
+      if (el.textContent && el.textContent.length > 0) return true;
+    } catch(ePaste) {}
+
+    // Strategy B: execCommand('insertText') — works in some Safari versions
+    var ok = document.execCommand('insertText', false, ${escaped});
+    if (ok && el.textContent && el.textContent.includes(${escaped}.substring(0, 10))) return true;
+
+    // Strategy C: textContent + full event sequence (last resort)
+    el.textContent = ${escaped};
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch(e) {}
+    try {
+      el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: ${escaped}, bubbles: true, cancelable: true }));
+    } catch(e) {}
+    el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ${escaped}, bubbles: true }));
+    return el.textContent.length > 0;
+  }
+
+  // For <input>/<textarea>: use nativeInputValueSetter so React sees the change
   try {
     var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
                        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
     if (nativeSetter && nativeSetter.set) {
       nativeSetter.set.call(el, ${escaped});
       el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
   } catch(e) {}
-  // Last resort: direct value set
   el.value = ${escaped};
   el.dispatchEvent(new Event('input', { bubbles: true }));
   return true;
@@ -536,6 +563,53 @@ end tell`;
     this.trackedTab = tabIndex;
     this.sessionUrlPattern = urlPattern;
     this.sessionLastVerified = Date.now();
+  }
+
+  /**
+   * Type text using system clipboard + AppleScript paste targeting Safari directly.
+   * Activates the specific Safari window+tab, pastes via Cmd+V, then returns focus to previous app.
+   * Most reliable approach for React contenteditable (Instagram, Twitter, TikTok DM composers).
+   */
+  async typeViaClipboard(selector: string, text: string): Promise<boolean> {
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execP = promisify(exec);
+
+      // 1. Set clipboard content
+      const safeText = text.replace(/'/g, "'\\''");
+      await execP(`printf '%s' '${safeText}' | pbcopy`);
+
+      // 2. Activate the tracked Safari window+tab, focus element, paste, restore focus
+      const w = this.trackedWindow || 1;
+      const t = this.trackedTab || 1;
+      const escapedSel = selector.replace(/"/g, '\\"');
+      const script = `
+set prevApp to name of (info for (path to frontmost application))
+tell application "Safari"
+  activate
+  set index of window ${w} to 1
+  set current tab of window ${w} to tab ${t} of window ${w}
+  delay 0.3
+  do JavaScript "(function(){ var el = document.querySelector(\\"${escapedSel}\\"); if(el){ el.focus(); el.click(); } })()" in tab ${t} of window ${w}
+  delay 0.2
+end tell
+tell application "System Events"
+  tell process "Safari"
+    keystroke "v" using {command down}
+  end tell
+end tell
+delay 0.3
+if prevApp is not "Safari" then
+  tell application prevApp to activate
+end if`;
+      await execP(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await this.wait(300);
+      return true;
+    } catch (error) {
+      if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
+      return false;
+    }
   }
 
   /**

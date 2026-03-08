@@ -205,21 +205,24 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
     '[contenteditable="true"]',
   ];
   let inputFound = false;
+  let foundSel = '';
   for (const sel of selectors) {
     inputFound = await d.focusElement(sel);
-    if (inputFound) break;
+    if (inputFound) { foundSel = sel; break; }
   }
-  
+
   if (!inputFound) {
     return { success: false, error: 'Message input not found' };
   }
-  
+
   await d.wait(500);
-  
-  // Type via OS-level keystrokes (works with React/Draft.js)
-  const typed = await d.typeViaKeystrokes(text);
+
+  // Primary: clipboard paste (most reliable for React contenteditable in Safari)
+  // Falls back to JS injection
+  const typed = await d.typeViaClipboard(foundSel, text).catch(() => false) ||
+                await d.typeViaKeystrokes(text);
   if (!typed) {
-    return { success: false, error: 'Failed to type message via keystrokes' };
+    return { success: false, error: 'Failed to type message' };
   }
   
   await d.wait(500);
