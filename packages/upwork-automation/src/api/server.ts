@@ -214,6 +214,12 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/api/upwork/status', async (_req: Request, res: Response) => {
   try {
     const driver = getDefaultDriver();
+    // Pin to claimed tab before reading — ensures we read the upwork tab, not active tab
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME);
+    if (myClaim) {
+      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    }
     const url = await driver.getCurrentUrl();
     const isOnUpwork = url.includes('upwork.com');
     const loginState = isOnUpwork ? await driver.detectLoginState() : 'unknown';
@@ -482,6 +488,12 @@ app.get('/api/upwork/jobs/saved', async (_req: Request, res: Response) => {
 
 app.get('/api/upwork/connects', async (_req: Request, res: Response) => {
   try {
+    // Pin to claimed tab before reading balance
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME);
+    if (myClaim) {
+      getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    }
     const result = await getConnectsBalance();
     res.json(result);
   } catch (e: any) {
@@ -553,6 +565,155 @@ app.get('/api/upwork/applications', async (_req: Request, res: Response) => {
     res.json({ applications: apps, count: apps.length });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Proposal History Scraper ────────────────────────────────
+
+app.get('/api/upwork/proposal-history', async (_req: Request, res: Response) => {
+  try {
+    const driver = getDefaultDriver();
+
+    // Navigate to archived proposals page
+    await driver.navigateTo('https://www.upwork.com/nx/proposals/?status=archived');
+    await driver.wait(3500);
+
+    // Scrape proposal cards from the archived list
+    const listJson = await driver.executeJS(`
+      (function() {
+        var proposals = [];
+        var cards = document.querySelectorAll(
+          '[data-test="proposal-tile"], .proposal-item, article[data-cy], ' +
+          'section[data-test="proposals-list"] > div, .up-card-section'
+        );
+
+        if (!cards.length) {
+          // Fallback: try all list items with links to jobs
+          cards = document.querySelectorAll('li');
+        }
+
+        cards.forEach(function(card) {
+          try {
+            var titleEl = card.querySelector('h3, h4, [data-test="job-title"], a[href*="/jobs/"]');
+            var statusEl = card.querySelector('[data-test="status"], .badge, [class*="status"]');
+            var linkEl = card.querySelector('a[href*="/jobs/"], a[href*="/proposals/"]');
+            var amountEl = card.querySelector('[data-test="amount"], [class*="budget"], [class*="amount"]');
+
+            var title = titleEl ? titleEl.innerText.trim() : '';
+            var status = statusEl ? statusEl.innerText.trim().toLowerCase() : '';
+            var url = linkEl ? linkEl.href : '';
+            var amount = amountEl ? amountEl.innerText.trim() : '';
+
+            if (title && url) {
+              proposals.push(JSON.stringify({
+                title: title,
+                status: status,
+                url: url,
+                amount: amount,
+                contractId: url.replace(/[^a-z0-9]/gi, '_').slice(-30)
+              }));
+            }
+          } catch(e) {}
+        });
+
+        return '[' + proposals.join(',') + ']';
+      })()
+    `);
+
+    let cards: Array<{ title: string; status: string; url: string; amount: string; contractId: string }> = [];
+    try { cards = JSON.parse(listJson || '[]'); } catch { cards = []; }
+
+    const results = [];
+
+    for (const card of cards.slice(0, 20)) {
+      const outcome: 'hired' | 'rejected' | 'ghosted' | 'unknown' =
+        card.status.includes('hired') || card.status.includes('contract') ? 'hired' :
+        card.status.includes('declin') || card.status.includes('not hired') ? 'rejected' :
+        card.status.includes('withdrawn') ? 'ghosted' : 'unknown';
+
+      // Navigate to proposal detail page to get actual text
+      let proposalText = '';
+      let jobDescription = '';
+      let clientFeedback = '';
+
+      if (card.url) {
+        try {
+          await driver.navigateTo(card.url);
+          await driver.wait(2500);
+
+          const detailJson = await driver.executeJS(`
+            (function() {
+              var out = {};
+
+              // Proposal text — the cover letter
+              var coverEl = document.querySelector(
+                '[data-test="cover-letter"], [data-cy="cover-letter"], ' +
+                '.cover-letter, [class*="coverLetter"], [class*="cover-letter"]'
+              );
+              out.proposalText = coverEl ? coverEl.innerText.trim() : '';
+
+              // Job description
+              var descEl = document.querySelector(
+                '[data-test="job-description"], .job-description, [class*="jobDescription"]'
+              );
+              out.jobDescription = descEl ? descEl.innerText.trim().slice(0, 600) : '';
+
+              // Client feedback (if contract was completed)
+              var fbEl = document.querySelector(
+                '[data-test="feedback"], .feedback-comment, [class*="feedbackComment"]'
+              );
+              out.clientFeedback = fbEl ? fbEl.innerText.trim().slice(0, 200) : '';
+
+              // Bid amount
+              var bidEl = document.querySelector(
+                '[data-test="bid-amount"], [class*="bidAmount"], [class*="bid-amount"]'
+              );
+              out.bidAmount = bidEl ? bidEl.innerText.trim() : '';
+
+              // Actual earned amount (for hired)
+              var earnedEl = document.querySelector(
+                '[data-test="total-earned"], [class*="totalEarned"], [class*="total-earned"]'
+              );
+              out.earnedAmount = earnedEl ? earnedEl.innerText.trim() : '';
+
+              return JSON.stringify(out);
+            })()
+          `);
+
+          const detail = JSON.parse(detailJson || '{}');
+          proposalText = detail.proposalText || '';
+          jobDescription = detail.jobDescription || '';
+          clientFeedback = detail.clientFeedback || '';
+
+          const bidNum = parseFloat((detail.bidAmount || '').replace(/[^0-9.]/g, ''));
+          const earnedNum = parseFloat((detail.earnedAmount || '').replace(/[^0-9.]/g, ''));
+
+          if (proposalText) {
+            results.push({
+              outcome,
+              job_title: card.title,
+              job_description: jobDescription || undefined,
+              proposal_text: proposalText,
+              bid_amount: isNaN(bidNum) ? undefined : bidNum,
+              actual_amount_paid: isNaN(earnedNum) ? undefined : earnedNum,
+              client_feedback: clientFeedback || undefined,
+              upwork_job_url: card.url,
+              upwork_contract_id: `upwork_${card.contractId}`,
+            });
+          }
+        } catch (e) {
+          // Skip proposal if navigation fails
+        }
+      }
+
+      // Back to list
+      await driver.navigateTo('https://www.upwork.com/nx/proposals/?status=archived');
+      await driver.wait(2000);
+    }
+
+    res.json({ proposals: results, scraped: results.length, cards_found: cards.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message, proposals: [] });
   }
 });
 
