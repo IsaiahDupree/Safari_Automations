@@ -463,7 +463,7 @@ export class SyncEngine {
   //   instagram-dm:      3100  twitter-dm:    3003  tiktok-dm:     3102
   //   linkedin-dm:       3105  threads-dm:    3004
   //   instagram-comments:3005  twitter-comments:3007 tiktok-comments:3006
-  //   upwork-automation: 3107  market-research: 3106
+  //   upwork-automation: 3107  upwork-hunter: 3109  market-research: 3106
   private readonly DM_PORTS: Record<string, number> = {
     instagram: 3100, twitter: 3003, tiktok: 3102, linkedin: 3105, threads: 3004,
   };
@@ -478,12 +478,16 @@ export class SyncEngine {
     const dmBase  = `http://localhost:${this.DM_PORTS[platform] || 3100}`;
     const cmtBase = `http://localhost:${this.COMMENT_PORTS[platform] || 3005}`;
 
+    // Long-running scraping operations need more time than simple API calls
+    const SLOW_ACTIONS = new Set(['find_upwork_jobs', 'score_upwork_jobs', 'comment-sweep', 'prospect_discover']);
+    const actionTimeoutMs = SLOW_ACTIONS.has(action_type) ? 180000 : 30000;
+
     const post = async (base: string, path: string, body: object) => {
       const r = await fetch(`${base}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token-12345' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(actionTimeoutMs),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status} from ${base}${path}`);
       return r.json();
@@ -583,19 +587,19 @@ export class SyncEngine {
       }
 
       // ── Upwork ────────────────────────────────────────────────────────────
+      // Note: upwork-hunter is on port 3109; upwork-automation (Safari) is 3107
       case 'find_upwork_jobs': {
-        return post('http://localhost:3107', '/api/upwork/jobs/search', {
+        return post('http://localhost:3109', '/api/jobs/search-upwork', {
           query: params.query,
           category: params.category,
         });
       }
       case 'score_upwork_jobs': {
-        return post('http://localhost:3107', '/api/upwork/jobs/score-batch', {
-          jobIds: params.jobIds || [],
-        });
+        // Trigger proposal generation for qualified jobs
+        return post('http://localhost:3109', '/api/scan', {});
       }
       case 'get_upwork_jobs': {
-        return get('http://localhost:3107', '/api/upwork/jobs/current-page');
+        return get('http://localhost:3109', '/api/jobs/pending');
       }
 
       // ── Market research ───────────────────────────────────────────────────
@@ -651,7 +655,7 @@ export class SyncEngine {
          'get_post_metrics', 'get_profile_posts'].includes(actionType)) {
       return this.COMMENT_PORTS[platform] || 3005;
     }
-    if (['find_upwork_jobs', 'score_upwork_jobs', 'get_upwork_jobs'].includes(actionType)) return 3107;
+    if (['find_upwork_jobs', 'score_upwork_jobs', 'get_upwork_jobs'].includes(actionType)) return 3109;
     if (['run_research', 'get_research_results'].includes(actionType)) return 3106;
     return this.DM_PORTS[platform] || 3100;
   }
