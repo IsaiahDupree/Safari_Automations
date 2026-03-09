@@ -316,81 +316,86 @@ export async function scanAllWatches(): Promise<ScanResult[]> {
 
 // ─── Preset Watch Configs ────────────────────────────────────
 
+// ICP: software founders $500K–$5M ARR needing AI automation
+// Aligned with harness/upwork-keywords.json
 export const PRESET_WATCHES: Record<string, Omit<JobWatchConfig, 'id'>> = {
-  typescript_saas: {
-    name: 'TypeScript SaaS Dev',
+  ai_automation_workflow: {
+    name: 'AI Automation Workflow',
     enabled: true,
     search: {
-      keywords: ['TypeScript', 'React', 'Node.js'],
+      keywords: ['ai automation workflow', 'claude api integration'],
       experienceLevel: ['intermediate', 'expert'],
       jobType: 'both',
       paymentVerified: true,
       sortBy: 'newest',
       postedWithin: '24h',
+      fixedPriceMin: 500,
     },
-    preferredSkills: ['TypeScript', 'React', 'Node.js', 'Next.js', 'PostgreSQL', 'Supabase', 'AWS'],
+    preferredSkills: ['Claude', 'OpenAI', 'Anthropic', 'AI automation', 'workflow automation', 'API integration'],
     minBudget: 500,
-    minScore: 45,
-    notifyOnScore: 'maybe',
-    notifyMacOS: true,
-    logToFile: true,
-  },
-
-  automation_ai: {
-    name: 'AI & Automation',
-    enabled: true,
-    search: {
-      keywords: ['AI automation', 'browser automation', 'web scraping'],
-      experienceLevel: ['intermediate', 'expert'],
-      jobType: 'both',
-      paymentVerified: true,
-      sortBy: 'newest',
-      postedWithin: '24h',
-    },
-    preferredSkills: ['Python', 'TypeScript', 'AI', 'Automation', 'Puppeteer', 'Selenium', 'Web Scraping', 'API'],
-    minBudget: 300,
     minScore: 40,
     notifyOnScore: 'maybe',
-    notifyMacOS: true,
+    notifyMacOS: false, // Telegram is primary notification channel
     logToFile: true,
   },
 
-  fullstack_expert: {
-    name: 'Full-Stack Expert',
+  n8n_zapier_make: {
+    name: 'N8n / Zapier / Make Automation',
     enabled: true,
     search: {
-      keywords: ['full stack developer'],
-      experienceLevel: ['expert'],
-      jobType: 'both',
-      paymentVerified: true,
-      sortBy: 'newest',
-      postedWithin: '24h',
-      hourlyRateMin: 50,
-    },
-    preferredSkills: ['TypeScript', 'React', 'Node.js', 'Python', 'PostgreSQL', 'AWS', 'Docker'],
-    minBudget: 1000,
-    minScore: 50,
-    notifyOnScore: 'apply',
-    notifyMacOS: true,
-    logToFile: true,
-  },
-
-  mobile_app: {
-    name: 'React Native / Mobile',
-    enabled: false,
-    search: {
-      keywords: ['React Native', 'Expo', 'mobile app'],
+      keywords: ['n8n automation developer', 'zapier make automation'],
       experienceLevel: ['intermediate', 'expert'],
       jobType: 'both',
       paymentVerified: true,
       sortBy: 'newest',
       postedWithin: '24h',
+      fixedPriceMin: 500,
     },
-    preferredSkills: ['React Native', 'Expo', 'TypeScript', 'iOS', 'Android', 'Supabase'],
+    preferredSkills: ['n8n', 'Zapier', 'Make.com', 'workflow automation', 'API integration', 'webhook'],
     minBudget: 500,
-    minScore: 45,
+    minScore: 40,
     notifyOnScore: 'maybe',
-    notifyMacOS: true,
+    notifyMacOS: false,
+    logToFile: true,
+  },
+
+  llm_agent_development: {
+    name: 'LLM / AI Agent Development',
+    enabled: true,
+    search: {
+      keywords: ['ai agent development', 'llm api integration', 'openai api integration'],
+      experienceLevel: ['intermediate', 'expert'],
+      jobType: 'both',
+      paymentVerified: true,
+      sortBy: 'newest',
+      postedWithin: '24h',
+      fixedPriceMin: 500,
+    },
+    preferredSkills: ['LLM', 'AI agent', 'function calling', 'langchain', 'OpenAI', 'Claude', 'Anthropic'],
+    minBudget: 500,
+    minScore: 40,
+    notifyOnScore: 'maybe',
+    notifyMacOS: false,
+    logToFile: true,
+  },
+
+  crm_marketing_automation: {
+    name: 'CRM & Marketing Automation',
+    enabled: true,
+    search: {
+      keywords: ['crm automation integration', 'marketing automation saas'],
+      experienceLevel: ['intermediate', 'expert'],
+      jobType: 'both',
+      paymentVerified: true,
+      sortBy: 'newest',
+      postedWithin: '24h',
+      fixedPriceMin: 500,
+    },
+    preferredSkills: ['CRM integration', 'marketing automation', 'Supabase', 'Airtable', 'API integration', 'webhook'],
+    minBudget: 500,
+    minScore: 35,
+    notifyOnScore: 'maybe',
+    notifyMacOS: false,
     logToFile: true,
   },
 };

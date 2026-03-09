@@ -20,6 +20,10 @@ const SERVICE_PORT = PORT;
 const SESSION_URL_PATTERN = 'tiktok.com';
 const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
+const STABLE_AGENT_ID = 'tiktok-comments-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
+
 // Rate limit headers middleware
 app.use((req, res, next) => {
   res.setHeader('X-RateLimit-Limit', '100');
@@ -73,7 +77,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
     // Claim exists — pin driver to the claimed tab and proceed
@@ -83,13 +87,14 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 
   // No claim — auto-discover an existing tiktok.com tab only (never opens a new window)
-  const autoId = `tiktok-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({
@@ -706,6 +711,79 @@ app.post('/api/tiktok/search', async (req: Request, res: Response) => {
   } catch (e) {
     res.status(500).json({ success: false, error: String(e) });
   }
+});
+
+// POST /api/prospect/hashtag-search
+// Prospect discovery via TikTok tag pages — mirrors the IG DM hashtag-search design.
+// Uses the existing tiktok-comments tab claim (requireTabClaim is global).
+// tiktok.com/tag/{hashtag} renders quickly and exposes @username links in the DOM.
+app.post('/api/prospect/hashtag-search', async (req: Request, res: Response) => {
+  const { keywords = ['saasfounder', 'buildinpublic', 'aiautomation', 'indiehacker'], scrapedPosts = [] } = req.body as { keywords?: string[]; scrapedPosts?: string[] };
+  const alreadyScraped = new Set<string>(scrapedPosts.map((u: string) => u.split('?')[0]));
+
+  const d = getDriver();
+  const OWN_ACCOUNTS = new Set(['isaiah_dupree']);
+  const NAV_SKIP = new Set(['home','foryou','explore','discover','messages','live','upload','settings','about','terms','privacy','login','tiktokstudio','analytics','creator','shop','more','tag']);
+
+  const results: Array<{ username: string; url: string; keyword: string }> = [];
+  const scrapedThisCall: string[] = [];
+  const seen = new Set<string>();
+
+  for (const kw of keywords) {
+    try {
+      const tag = kw.replace(/^#/, '').replace(/\s+/g, '');
+      const tagUrl = `https://www.tiktok.com/tag/${encodeURIComponent(tag)}`;
+      const tagKey = tagUrl.split('?')[0];
+      if (alreadyScraped.has(tagKey)) {
+        console.log(`[tt-hashtag-search] #${tag} already scraped, skipping`);
+        continue;
+      }
+
+      console.log(`[tt-hashtag-search] Navigating to ${tagUrl}`);
+      await (d as any).navigate(tagUrl);
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Extract @username links from the tag page — TikTok shows creator cards here
+      const raw = await d.executeJS(`(function(){
+        var links = Array.from(document.querySelectorAll('a[href*="/@"]'));
+        var skip = new Set(['home','foryou','explore','discover','messages','live','upload','settings','about','terms','privacy','login','tiktokstudio','analytics','creator','shop','tag']);
+        var seen = new Set();
+        var users = [];
+        links.forEach(function(a){
+          var m = (a.href||'').match(/@([^/?&#]+)/);
+          if (!m) return;
+          var u = m[1].toLowerCase();
+          if (skip.has(u)) return;
+          if (seen.has(u)) return;
+          seen.add(u);
+          users.push({username: m[1], url: 'https://www.tiktok.com/@' + m[1]});
+        });
+        return JSON.stringify(users.slice(0, 20));
+      })()`);
+
+      let pageUsers: Array<{username: string; url: string}> = [];
+      try { pageUsers = JSON.parse(raw); } catch { /* skip */ }
+
+      let added = 0;
+      for (const pu of pageUsers) {
+        if (NAV_SKIP.has(pu.username.toLowerCase())) continue;
+        if (OWN_ACCOUNTS.has(pu.username.toLowerCase())) continue;
+        if (seen.has(pu.username.toLowerCase())) continue;
+        seen.add(pu.username.toLowerCase());
+        results.push({ username: pu.username, url: pu.url, keyword: kw });
+        added++;
+      }
+      scrapedThisCall.push(tagKey);
+      console.log(`[tt-hashtag-search] #${tag} → ${added} prospects (${pageUsers.length} found on page)`);
+    } catch (err) {
+      console.warn(`[tt-hashtag-search] Error on keyword "${kw}": ${err}`);
+    }
+  }
+
+  // Restore to TikTok home
+  try { await (d as any).navigate('https://www.tiktok.com/foryou'); } catch { /* ok */ }
+
+  res.json({ success: true, keywords, count: results.length, prospects: results, scrapedPosts: scrapedThisCall });
 });
 
 // ═══ Trending Operations ═══

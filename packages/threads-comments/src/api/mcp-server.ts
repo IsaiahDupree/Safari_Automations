@@ -29,6 +29,7 @@ async function checkNavigationConflict(): Promise<{ conflict: false } | { confli
 const THREADS_BASE = 'http://localhost:3004';
 const THREADS_AUTH = process.env.THREADS_AUTH_TOKEN || 'threads-local-dev-token';
 const TIMEOUT_MS = 30_000;
+const SWEEP_TIMEOUT_MS = 300_000; // 5 min — batch sweeps can take 1-5 min
 
 async function api(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<unknown> {
   const ctrl = new AbortController();
@@ -53,7 +54,7 @@ async function api(method: 'GET' | 'POST', path: string, body?: Record<string, u
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'threads-safari-automation';
-const SERVER_VERSION = '1.2.0';
+const SERVER_VERSION = '1.3.0';
 
 // ═══════════════════════════════════════════════════════════════
 // Tool definitions
@@ -142,6 +143,19 @@ const TOOLS = [
   { name: 'threads_session_ensure', description: 'Ensure the threads-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
   { name: 'threads_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with threads-comments.', inputSchema: { type: 'object', properties: {} } },
   { name: 'threads_release_session', description: 'Release the threads-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
+  {
+    name: 'threads_comment_sweep',
+    description: 'Batch comment sweep on Threads: search a keyword, generate AI comments for each matching post, post them all. Has 5-minute timeout. Checks tab conflicts first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        keywords: { type: 'array', items: { type: 'string' }, description: 'Keywords to search for posts (default: business niches)', default: [] },
+        maxTotal: { type: 'number', description: 'Max comments to post in this run', default: 8 },
+        style: { type: 'string', description: 'Comment tone / style', default: 'insightful, practitioner-level, adds genuine value' },
+        dryRun: { type: 'boolean', description: 'Generate comments without posting', default: false },
+      },
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -267,6 +281,66 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
     case 'threads_release_session':
       return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
+
+    case 'threads_comment_sweep': {
+      const sweepConflict = await checkNavigationConflict();
+      if (sweepConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${sweepConflict.blocker.service}' (:${sweepConflict.blocker.port}). Call threads_session_ensure first.`, blocker: sweepConflict.blocker };
+
+      const defaultKeywords = ['aiagents', 'aiautomation', 'saasfounder', 'b2bsaas', 'contentcreator', 'digitalmarketing'];
+      const keywords = (args.keywords as string[] | undefined)?.length ? args.keywords as string[] : defaultKeywords;
+      const maxTotal = (args.maxTotal as number) || 8;
+      const style = (args.style as string) || 'insightful, practitioner-level, adds genuine value to the conversation';
+      const dryRun = !!(args.dryRun as boolean);
+
+      // Search for posts from each keyword, collect up to maxTotal, post AI comments
+      const results: { postUrl: string; keyword: string; success: boolean; dryRun: boolean; error?: string }[] = [];
+      let totalPosted = 0;
+
+      const ctrl = new AbortController();
+      const sweepTimer = setTimeout(() => ctrl.abort(), SWEEP_TIMEOUT_MS);
+
+      try {
+        for (const keyword of keywords) {
+          if (totalPosted >= maxTotal) break;
+
+          const searchRes = await fetch(`${THREADS_BASE}/api/threads/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${THREADS_AUTH}` },
+            body: JSON.stringify({ query: keyword, max_results: 5 }),
+            signal: ctrl.signal,
+          });
+          if (!searchRes.ok) continue;
+          const searchData = await searchRes.json() as { posts?: { url?: string; text?: string }[] };
+          const posts = searchData.posts || [];
+
+          for (const post of posts) {
+            if (totalPosted >= maxTotal || !post.url || !post.text) continue;
+            if (dryRun) {
+              results.push({ postUrl: post.url, keyword, success: true, dryRun: true });
+              totalPosted++;
+              continue;
+            }
+            const commentRes = await fetch(`${THREADS_BASE}/api/threads/comments/post`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${THREADS_AUTH}` },
+              body: JSON.stringify({ postUrl: post.url, style }),
+              signal: ctrl.signal,
+            });
+            const commentData = await commentRes.json() as { success?: boolean; error?: string };
+            results.push({ postUrl: post.url, keyword, success: !!commentData.success, dryRun: false, error: commentData.error });
+            if (commentData.success) totalPosted++;
+            await new Promise(r => setTimeout(r, 4000 + Math.random() * 3000));
+          }
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ totalCommented: totalPosted, dryRun, results }) }] };
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'AbortError') throw { code: 'SERVICE_DOWN', message: `threads_comment_sweep timed out after ${SWEEP_TIMEOUT_MS / 1000}s` };
+        throw err;
+      } finally {
+        clearTimeout(sweepTimer);
+      }
+    }
 
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };

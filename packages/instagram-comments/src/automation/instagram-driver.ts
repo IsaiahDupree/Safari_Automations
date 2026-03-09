@@ -655,8 +655,8 @@ end tell`;
     const result = await this.executeJS(`
       (function() {
         var posts = [];
-        // Try multiple selectors for Instagram posts
-        var postLinks = document.querySelectorAll('a[href*="/p/"]');
+        // Match both posts (/p/) and reels (/reel/) — Instagram explore shows mostly reels now
+        var postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
         var seen = new Set();
         for (var i = 0; i < postLinks.length && posts.length < ${limit}; i++) {
           var link = postLinks[i];
@@ -666,7 +666,7 @@ end tell`;
             var url = href.startsWith('http') ? href : 'https://www.instagram.com' + href;
             // Try to find username from nearby elements
             var container = link.closest('article') || link.closest('div[role="presentation"]') || link.parentElement;
-            var userLink = container ? container.querySelector('a[href^="/"]:not([href*="/p/"])') : null;
+            var userLink = container ? container.querySelector('a[href^="/"]:not([href*="/p/"]):not([href*="/reel/"])') : null;
             var username = userLink ? userLink.getAttribute('href').replace(/\\//g, '') : '';
             posts.push({ username: username, url: url });
           }
@@ -776,35 +776,90 @@ end tell`;
    * Search Instagram by keyword/hashtag
    * Note: Explore pages have React rendering issues, so we use feed-based collection
    */
-  async searchByKeyword(keyword: string): Promise<Array<{ username: string; url?: string }>> {
-    console.log(`[Instagram] Collecting posts for keyword: "${keyword}"`);
-    
-    // Go to main feed (which works reliably)
-    await this.navigate('https://www.instagram.com/');
-    await this.wait(4000);
-    
-    // Collect posts by scrolling through feed
-    const allPosts: Array<{ username: string; url?: string }> = [];
-    const seenUrls = new Set<string>();
-    
-    for (let scroll = 0; scroll < 3; scroll++) {
-      const posts = await this.findPosts(20);
-      for (const post of posts) {
-        if (post.url && !seenUrls.has(post.url)) {
-          seenUrls.add(post.url);
-          allPosts.push(post);
+  async searchByKeyword(keyword: string): Promise<Array<{ username: string; url?: string; bio?: string }>> {
+    console.log(`[Instagram] Searching for keyword: "${keyword}"`);
+
+    // Instagram now redirects explore/tags/{hashtag}/ to a relevant creator's profile page.
+    // We capture the redirect target as the prospect for that keyword.
+    const hashtagUrl = `https://www.instagram.com/explore/tags/${encodeURIComponent(keyword)}/`;
+    await this.navigate(hashtagUrl);
+    await this.wait(3000);
+
+    // Check what page we landed on after the redirect
+    const pageInfo = await this.executeJS(`
+      (function() {
+        var url = window.location.href;
+        // Extract username if we landed on a profile page (/username/ format)
+        var m = url.match(/instagram\\.com\\/([a-zA-Z0-9_.]{2,30})\\/?(\\?.*)?$/);
+        if (!m || ['explore','p','reel','direct','stories','accounts','reels','tv'].indexOf(m[1].toLowerCase()) >= 0) {
+          return JSON.stringify(null);
+        }
+        // Get bio from meta description (available immediately on profile pages)
+        var bioEl = document.querySelector('meta[name="description"]');
+        var bio = bioEl ? bioEl.getAttribute('content') || '' : '';
+        return JSON.stringify({ username: m[1], url: url, bio: bio.slice(0, 300) });
+      })();
+    `) as string;
+
+    const results: Array<{ username: string; url: string; bio?: string }> = [];
+    const seenUsers = new Set<string>();
+
+    try {
+      const profile = JSON.parse(pageInfo);
+      if (profile?.username) {
+        seenUsers.add(profile.username.toLowerCase());
+        results.push({ username: profile.username, url: profile.url, bio: profile.bio });
+        console.log(`[Instagram] Hashtag "${keyword}" → @${profile.username}`);
+      }
+    } catch { /* skip */ }
+
+    // Also collect any profile links visible on the current page (related accounts sidebar etc.)
+    if (results.length > 0) {
+      const sidebarRaw = await this.executeJS(`
+        (function() {
+          var blocked = new Set(['explore','p','reel','direct','stories','accounts','about','legal','privacy','terms','reels','tv','topics','audio','locations','directory','developer','api','graphql']);
+          var seen = new Set([${JSON.stringify(results[0].username.toLowerCase())}]);
+          var profiles = [];
+          var links = document.querySelectorAll('a[href^="/"][href$="/"]');
+          for (var i = 0; i < links.length && profiles.length < 5; i++) {
+            var href = links[i].getAttribute('href') || '';
+            var m = href.match(/^\\/([a-zA-Z0-9_.]{2,30})\\/$/);
+            if (m && !blocked.has(m[1].toLowerCase()) && !seen.has(m[1].toLowerCase())) {
+              seen.add(m[1].toLowerCase());
+              profiles.push(m[1]);
+            }
+          }
+          return JSON.stringify(profiles);
+        })();
+      `) as string;
+      try {
+        const sidebarUsers: string[] = JSON.parse(sidebarRaw);
+        for (const u of sidebarUsers) {
+          if (!seenUsers.has(u.toLowerCase())) {
+            seenUsers.add(u.toLowerCase());
+            results.push({ username: u, url: `https://www.instagram.com/${u}/` });
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // Fallback: main feed if hashtag didn't redirect to a profile
+    if (results.length === 0) {
+      console.log(`[Instagram] Hashtag "${keyword}" did not redirect to a profile — using main feed`);
+      await this.navigate('https://www.instagram.com/');
+      await this.wait(2000);
+      const feedPosts = await this.findPosts(15);
+      for (const post of feedPosts) {
+        if (post.username && !seenUsers.has(post.username)) {
+          seenUsers.add(post.username);
+          results.push({ username: post.username, url: post.url || `https://www.instagram.com/${post.username}/` });
         }
       }
-      await this.scroll();
-      await this.wait(1500);
     }
-    
-    console.log(`[Instagram] Found ${allPosts.length} posts from feed`);
-    
-    // Store keyword context for comment generation
+
+    console.log(`[Instagram] Found ${results.length} prospects for keyword: "${keyword}"`);
     (this as any).currentKeyword = keyword;
-    
-    return allPosts;
+    return results;
   }
 
   /**

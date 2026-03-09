@@ -217,10 +217,11 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
   await d.wait(500);
 
-  // Primary: clipboard paste (most reliable for React contenteditable in Safari)
-  // Falls back to JS injection
-  const typed = await d.typeViaClipboard(foundSel, text).catch(() => false) ||
-                await d.typeViaKeystrokes(text);
+  // Primary: JS injection (ClipboardEvent paste → execCommand → textContent+events).
+  // Background-safe — no Safari focus required.
+  // Falls back to OS-level clipboard paste only if JS fails.
+  const typed = await d.typeViaJS(foundSel, text) ||
+                await d.typeViaClipboard(foundSel, text).catch(() => false);
   if (!typed) {
     return { success: false, error: 'Failed to type message' };
   }

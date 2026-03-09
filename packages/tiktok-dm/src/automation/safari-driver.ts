@@ -332,6 +332,37 @@ export class SafariDriver {
   }
 
   /**
+   * Press Enter via AppleScript targeting Safari directly.
+   * Needed for TikTok virtual DOM — JS keydown events are ignored.
+   * Activates the tracked window first so the keystroke goes to the right tab.
+   */
+  async pressEnterViaSafari(): Promise<boolean> {
+    try {
+      const w = this.trackedWindow || 1;
+      const t = this.trackedTab || 1;
+      // After "set index of window W to 1", our window is now at index 1.
+      const script = `
+tell application "Safari"
+  activate
+  set index of window ${w} to 1
+  set current tab of window 1 to tab ${t} of window 1
+  delay 0.3
+end tell
+tell application "System Events"
+  tell process "Safari"
+    key code 36
+  end tell
+end tell
+delay 0.2`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      return true;
+    } catch (error) {
+      if (this.config?.verbose) console.error('[SafariDriver] pressEnterViaSafari error:', error);
+      return false;
+    }
+  }
+
+  /**
    * Find a Safari tab by URL pattern across all windows.
    * Returns the first matching window+tab indices.
    */
@@ -399,11 +430,12 @@ end tell`;
    */
   async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
     try {
+      // After "set index of window W to 1", our window is now at index 1.
       const script = `
 tell application "Safari"
   activate
   set index of window ${windowIndex} to 1
-  set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
+  set current tab of window 1 to tab ${tabIndex} of window 1
 end tell
 tell application "System Events"
   set frontmost of process "Safari" to true
@@ -561,37 +593,121 @@ end tell`;
   }
 
   /**
+   * Bring the tracked Safari window to the foreground.
+   * macOS requires the target window to be in front BEFORE System Events click at {x,y}
+   * registers as an interaction (first click = focus, second = action).
+   */
+  async activateTrackedWindow(): Promise<boolean> {
+    try {
+      const w = this.trackedWindow || 1;
+      const t = this.trackedTab || 1;
+      // After "set index of window W to 1", our window is now at index 1.
+      const script = `
+tell application "Safari"
+  activate
+  set index of window ${w} to 1
+  set current tab of window 1 to tab ${t} of window 1
+  delay 0.4
+end tell
+tell application "System Events"
+  set frontmost of process "Safari" to true
+end tell
+delay 0.1`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Type text using system clipboard + AppleScript paste targeting Safari directly.
    * Activates the specific Safari window+tab, pastes via Cmd+V, then returns focus.
    */
-  async typeViaClipboard(selector: string, text: string): Promise<boolean> {
+    async typeViaClipboard(selector: string, text: string): Promise<boolean> {
+    // Method 1: Background-safe JS injection (ClipboardEvent → execCommand → nativeSetter)
+    // NOTE: Must validate text actually appeared — execCommand returns true even when React ignores it.
     try {
-      const safeText = text.replace(/'/g, "'\\''");
-      await execAsync(`printf '%s' '${safeText}' | pbcopy`);
+      const jsOk = await this.typeViaJS(selector, text);
+      if (jsOk) {
+        // Verify text is actually in the element before trusting the result
+        const snippet = text.substring(0, 15).replace(/'/g, "\\'");
+        const appeared = await this.executeJS(`
+          (function() {
+            var el = document.querySelector('${selector.replace(/'/g, "\\'")}') || document.activeElement;
+            if (!el) return false;
+            var val = (el.value || el.textContent || el.innerText || '').trim();
+            return val.length > 0 && val.includes('${snippet}');
+          })()`);
+        if (appeared === 'true' || String(appeared) === 'true') {
+          if (this.config?.verbose) console.log('[SafariDriver] typeViaClipboard: JS injection validated');
+          return true;
+        }
+        if (this.config?.verbose) console.log('[SafariDriver] typeViaClipboard: JS injection returned true but text missing — falling back to clipboard');
+      }
+    } catch { /* fall through */ }
 
+    // Method 1.5: DataTransfer ClipboardEvent dispatch — fires React's onPaste handler directly.
+    // More reliable than Cmd+V for React contenteditable (no OS focus required).
+    try {
+      const safeSnippet15 = text.substring(0, 15).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      // Use JSON.stringify to safely encode the full text for JS
+      const jsonText = JSON.stringify(text);
+      const appeared15 = await this.executeJS(`
+        (function() {
+          var sel = '${selector.replace(/'/g, "\\'")}';
+          var el = document.querySelector(sel) || document.activeElement;
+          if (!el) return 'no_el';
+          el.focus();
+          var dt = new DataTransfer();
+          dt.setData('text/plain', ${jsonText});
+          var evt = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:dt});
+          el.dispatchEvent(evt);
+          var val = (el.value || el.textContent || el.innerText || '').trim();
+          return val.length > 0 ? 'ok:' + val.substring(0,15) : 'empty';
+        })()`);
+      if (appeared15 && String(appeared15).startsWith('ok:')) {
+        if (this.config?.verbose) console.log('[SafariDriver] typeViaClipboard: ClipboardEvent paste succeeded');
+        return true;
+      }
+      if (this.config?.verbose) console.log('[SafariDriver] typeViaClipboard: ClipboardEvent paste returned:', appeared15);
+    } catch { /* fall through */ }
+
+    // Method 2: OS clipboard paste — last resort, will momentarily activate Safari
+    if (this.config?.verbose) console.warn('[SafariDriver] typeViaClipboard: falling back to clipboard+activate');
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execP = promisify(exec);
+      const safeText = text.replace(/'/g, "'\''");
+      await execP(`printf '%s' '${safeText}' | pbcopy`);
       const w = this.trackedWindow || 1;
       const t = this.trackedTab || 1;
-      const escapedSel = selector.replace(/"/g, '\\"');
+      const escapedSel = selector.replace(/"/g, '\"');
+      // After "set index of window W to 1", our window is now at index 1.
+      // All subsequent references must use window 1, not the original index W.
       const script = `
 set prevApp to name of (info for (path to frontmost application))
 tell application "Safari"
   activate
   set index of window ${w} to 1
-  set current tab of window ${w} to tab ${t} of window ${w}
+  set current tab of window 1 to tab ${t} of window 1
   delay 0.3
-  do JavaScript "(function(){ var el = document.querySelector(\\"${escapedSel}\\"); if(el){ el.focus(); el.click(); } })()" in tab ${t} of window ${w}
-  delay 0.2
+  do JavaScript "(function(){ var el = document.querySelector(\"${escapedSel}\"); if(el){ el.focus(); el.click(); } })()" in tab ${t} of window 1
+  delay 0.3
 end tell
 tell application "System Events"
   tell process "Safari"
     keystroke "v" using {command down}
   end tell
 end tell
-delay 0.3
+delay 0.5
 if prevApp is not "Safari" then
   tell application prevApp to activate
 end if`;
-      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await execP(`osascript << 'APPLESCRIPT'
+${script}
+APPLESCRIPT`);
       await this.wait(300);
       return true;
     } catch (error) {

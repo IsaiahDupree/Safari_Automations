@@ -210,8 +210,12 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
   await d.wait(500);
 
-  // Type message via clipboard
-  const typed = await d.typeViaClipboard(text);
+  // Primary: JS injection (ClipboardEvent paste → execCommand → textContent+events).
+  // Background-safe — no Safari focus required.
+  // Falls back to OS-level clipboard paste only if JS fails.
+  const composerSel = '.composer .tiptap.ProseMirror, .composer [contenteditable="true"], .up-d-composer [contenteditable="true"]';
+  const typed = await d.typeViaJS(composerSel, text) ||
+                await d.typeViaClipboard(text);
   if (!typed) {
     return { success: false, error: 'Failed to type message' };
   }

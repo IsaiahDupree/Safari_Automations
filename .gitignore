@@ -53,3 +53,5 @@ temp/
 
 # OS files
 Thumbs.db
+.env.production
+.env.development

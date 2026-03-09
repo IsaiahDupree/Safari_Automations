@@ -32,6 +32,10 @@ const startTime = Date.now();
 
 // ─── Tab Coordination ────────────────────────────────────────────────
 const activeCoordinators = new Map<string, TabCoordinator>();
+
+const STABLE_AGENT_ID = 'instagram-comments-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
   if (!tabDriver) tabDriver = new SafariDriver();
@@ -122,7 +126,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
     // Claim exists — pin both drivers to the claimed tab and proceed
@@ -133,14 +137,15 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 
   // No claim — auto-claim now (open new tab if needed)
-  const autoId = `instagram-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({

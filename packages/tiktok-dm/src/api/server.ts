@@ -6,6 +6,36 @@
 
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+import fs from 'fs';
+import path from 'path';
+
+// Persistent dedup file — survives server restarts.
+// __dirname in CJS = dist/api/ → go up to package root
+const SENT_HISTORY_FILE = path.join(__dirname, '../../tiktok-sent-history.json');
+
+function loadSentHistory(): Set<string> {
+  try {
+    const data = JSON.parse(fs.readFileSync(SENT_HISTORY_FILE, 'utf8')) as { sent: string[] };
+    return new Set((data.sent || []).map((s) => s.toLowerCase()));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function persistSentHistory(history: Set<string>): void {
+  try {
+    fs.writeFileSync(SENT_HISTORY_FILE, JSON.stringify({ sent: [...history] }, null, 2));
+  } catch (e) {
+    console.error('[dedup] Failed to write sent history:', e);
+  }
+}
+
+// In-memory set, backed by file on disk
+const sentHistory = loadSentHistory();
+
+// In-flight lock: username → Promise of the in-progress send
+// Prevents concurrent requests for the same user from both passing the dedup check
+const inFlightSends = new Map<string, Promise<void>>();
 
 // AI for DM generation
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -220,6 +250,10 @@ const SERVICE_PORT = 3102;
 // Active tab coordinators by agentId (in-process map; file is cross-process)
 const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
+const STABLE_AGENT_ID = 'tiktok-dm-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
+
 /**
  * Ensure the TikTok Safari tab is the active/front tab before any operation.
  * Scans all Safari windows, finds the tiktok.com tab, and activates it.
@@ -242,7 +276,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
 
   try {
     const claims = await TabCoordinator.listClaims();
-    const myClaim = claims.find(c => c.service === SERVICE_NAME);
+    const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
     if (myClaim) {
       driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
@@ -251,12 +285,13 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
     }
 
     // No claim — auto-claim existing tiktok.com tab only (never opens a new window)
-    const autoId = `tiktok-dm-auto-${Date.now()}`;
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({
@@ -578,13 +613,40 @@ app.post('/api/tiktok/messages/send', async (req: Request, res: Response) => {
 // Send message to specific user (profile-to-DM)
 app.post('/api/tiktok/messages/send-to', async (req: Request, res: Response) => {
   try {
-    const { username, text, message } = req.body as { username: string; text?: string; message?: string };
+    const { username, text, message, force } = req.body as { username: string; text?: string; message?: string; force?: boolean };
     const msg = text || message;
     if (!username || !msg) {
       res.status(400).json({ error: 'username and text (or message) are required' });
       return;
     }
 
+    const normalizedUser = username.toLowerCase().replace(/^@/, '');
+
+    // ── DEDUP GATE: persistent sent history (survives restarts) ──────────────
+    // force=true bypasses this for replies to existing conversations
+    if (!force && sentHistory.has(normalizedUser)) {
+      console.log(`[dedup] ⛔ @${normalizedUser} is in persistent sent history — refusing to double-send`);
+      res.status(400).json({ success: false, error: `already_messaged: @${normalizedUser} was already DMed (persistent dedup block)` });
+      return;
+    }
+    if (force && sentHistory.has(normalizedUser)) {
+      console.log(`[dedup] ⚡ FORCE mode: @${normalizedUser} in sentHistory but proceeding (reply)`);
+    }
+
+    // ── IN-FLIGHT LOCK: block concurrent requests for the same user ───────────
+    if (inFlightSends.has(normalizedUser)) {
+      console.log(`[dedup] ⛔ @${normalizedUser} has a send already in progress — refusing concurrent duplicate`);
+      res.status(429).json({ success: false, error: `in_flight: send to @${normalizedUser} already in progress` });
+      return;
+    }
+
+    // Reserve the slot immediately (before the async send starts)
+    // so any concurrent request sees it and bails out above
+    let releaseLock!: () => void;
+    const lockPromise = new Promise<void>((resolve) => { releaseLock = resolve; });
+    inFlightSends.set(normalizedUser, lockPromise);
+
+    try {
     // Check for TikTok rate limit UI before attempting to send
     const rateLimitStatus = await detectTikTokRateLimit(driver);
     if (rateLimitStatus.limited) {
@@ -597,8 +659,11 @@ app.post('/api/tiktok/messages/send-to', async (req: Request, res: Response) => 
       return;
     }
 
-    const result = await sendDMByUsername(username, msg, driver);
+    const result = await sendDMByUsername(username, msg, driver, { force: !!force });
     if (result.success) {
+      // Record in persistent dedup history immediately after confirmed send
+      sentHistory.add(normalizedUser);
+      persistSentHistory(sentHistory);
       recordMessage();
       logDM({ platform: 'tiktok', username, messageText: msg, isOutbound: true });
       logDMToSupabase(username, msg); // Fire-and-forget Supabase logging
@@ -614,6 +679,11 @@ app.post('/api/tiktok/messages/send-to', async (req: Request, res: Response) => 
       });
     } else {
       res.status(400).json({ success: false, error: result.error, username: result.username });
+    }
+    } finally {
+      // Always release the in-flight lock so future sends to this user aren't permanently blocked
+      releaseLock();
+      inFlightSends.delete(normalizedUser);
     }
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });

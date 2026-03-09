@@ -541,18 +541,27 @@ end tell`;
    * Type text using system clipboard + AppleScript paste targeting Safari directly.
    * Activates the specific Safari window+tab, pastes via Cmd+V, then returns focus.
    */
-  async typeViaClipboard(selector: string, text: string): Promise<boolean> {
+    async typeViaClipboard(selector: string, text: string): Promise<boolean> {
+    // Method 1: Background-safe JS injection (ClipboardEvent → execCommand → nativeSetter)
+    try {
+      const jsOk = await this.typeViaJS(selector, text);
+      if (jsOk) {
+        if (this.config?.verbose) console.log('[SafariDriver] typeViaClipboard: JS injection succeeded (no focus steal)');
+        return true;
+      }
+    } catch { /* fall through */ }
+
+    // Method 2: OS clipboard paste — last resort, will momentarily activate Safari
+    if (this.config?.verbose) console.warn('[SafariDriver] typeViaClipboard: falling back to clipboard+activate');
     try {
       const { exec } = await import('child_process');
       const { promisify } = await import('util');
       const execP = promisify(exec);
-
-      const safeText = text.replace(/'/g, "'\\''");
+      const safeText = text.replace(/'/g, "'\''");
       await execP(`printf '%s' '${safeText}' | pbcopy`);
-
       const w = this.trackedWindow || 1;
       const t = this.trackedTab || 1;
-      const escapedSel = selector.replace(/"/g, '\\"');
+      const escapedSel = selector.replace(/"/g, '\"');
       const script = `
 set prevApp to name of (info for (path to frontmost application))
 tell application "Safari"
@@ -560,7 +569,7 @@ tell application "Safari"
   set index of window ${w} to 1
   set current tab of window ${w} to tab ${t} of window ${w}
   delay 0.3
-  do JavaScript "(function(){ var el = document.querySelector(\\"${escapedSel}\\"); if(el){ el.focus(); el.click(); } })()" in tab ${t} of window ${w}
+  do JavaScript "(function(){ var el = document.querySelector(\"${escapedSel}\"); if(el){ el.focus(); el.click(); } })()" in tab ${t} of window ${w}
   delay 0.2
 end tell
 tell application "System Events"
@@ -572,11 +581,13 @@ delay 0.3
 if prevApp is not "Safari" then
   tell application prevApp to activate
 end if`;
-      await execP(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await execP(`osascript << 'APPLESCRIPT'
+${script}
+APPLESCRIPT`);
       await this.wait(300);
       return true;
     } catch (error) {
-      if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
+      if (this.config?.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
       return false;
     }
   }

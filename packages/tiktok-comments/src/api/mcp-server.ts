@@ -28,6 +28,23 @@ async function checkNavigationConflict(): Promise<{ conflict: false } | { confli
 const TIKTOK_BASE = 'http://localhost:3006';
 const TIKTOK_AUTH = process.env.TIKTOK_AUTH_TOKEN || '';
 const TIMEOUT_MS = 30_000;
+const SWEEP_TIMEOUT_MS = 300_000; // 5 min — batch sweeps navigate multiple videos
+
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ivhfuhxorppptyuofbgq.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+async function getTodayCommentCount(): Promise<number> {
+  if (!SUPABASE_KEY) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/comment_logs?platform=eq.tiktok&success=eq.true&created_at=gte.${today}T00:00:00&select=id`,
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Prefer': 'count=exact' } }
+    );
+    const range = res.headers.get('content-range') || '';
+    return parseInt(range.split('/')[1] || '0') || 0;
+  } catch { return 0; }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Structured error codes
@@ -86,7 +103,7 @@ async function api(method: 'GET' | 'POST' | 'PUT', path: string, body?: Record<s
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'tiktok-comments-safari-automation';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 
 // ═══════════════════════════════════════════════════════════════
 // Tool definitions
@@ -179,6 +196,34 @@ const TOOLS = [
   { name: 'tiktok_comments_session_ensure', description: 'Ensure the tiktok-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
   { name: 'tiktok_comments_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with tiktok-comments.', inputSchema: { type: 'object', properties: {} } },
   { name: 'tiktok_comments_release_session', description: 'Release the tiktok-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
+  {
+    name: 'tkc_daily_progress',
+    description: 'Check today\'s TikTok comment count vs daily target. Queries comment_logs table (platform=tiktok). Shows remaining slots, active hours, whether target is met.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'number', description: 'Daily comment target to compare against', default: 20 },
+      },
+    },
+  },
+  {
+    name: 'tkc_comment_sweep',
+    description: 'Niche-aware batch comment sweep on TikTok. Searches niche keywords, navigates videos, generates AI comments, posts them. 5-minute timeout. Checks tab conflicts first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        niches: {
+          type: 'array',
+          description: 'Niches to sweep. Each: { name, keywords[], maxComments }. Defaults to business niches.',
+          items: { type: 'object' },
+          default: [],
+        },
+        maxTotal: { type: 'number', description: 'Hard cap for total comments in this run', default: 8 },
+        style: { type: 'string', description: 'Comment tone / style', default: 'insightful, practitioner-level, concise — adds genuine value' },
+        dryRun: { type: 'boolean', description: 'Generate comments without posting', default: false },
+      },
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -277,6 +322,63 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
     case 'tiktok_comments_release_session':
       return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
+
+    case 'tkc_daily_progress': {
+      const target = (args.target as number) || 20;
+      const todayCount = await getTodayCommentCount();
+      const remaining = Math.max(0, target - todayCount);
+      const now = new Date();
+      const hour = now.getHours();
+      const activeHoursStart = 8;
+      const activeHoursEnd = 21;
+      const inActiveHours = hour >= activeHoursStart && hour < activeHoursEnd;
+      return { content: [{ type: 'text', text: JSON.stringify({
+        platform: 'tiktok',
+        todayCount,
+        target,
+        remaining,
+        percentComplete: Math.round((todayCount / target) * 100),
+        targetMet: todayCount >= target,
+        inActiveHours,
+        activeHours: `${activeHoursStart}:00–${activeHoursEnd}:00`,
+        timestamp: now.toISOString(),
+      }) }] };
+    }
+
+    case 'tkc_comment_sweep': {
+      const sweepConflict = await checkNavigationConflict();
+      if (sweepConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${sweepConflict.blocker.service}' (:${sweepConflict.blocker.port}). Call tiktok_comments_session_ensure first.`, blocker: sweepConflict.blocker };
+
+      const defaultNiches = [
+        { name: 'ai_automation', keywords: ['aiagents', 'aiautomation', 'artificialintelligence', 'machinelearning'], maxComments: 2 },
+        { name: 'saas_growth', keywords: ['saas', 'saasfounder', 'b2bsaas', 'startupsoftware'], maxComments: 2 },
+        { name: 'content_creation', keywords: ['contentcreator', 'contentmarketing', 'personalbranding'], maxComments: 2 },
+        { name: 'digital_marketing', keywords: ['digitalmarketing', 'marketingautomation', 'growthhacking'], maxComments: 2 },
+      ];
+      const niches = (args.niches as object[] | undefined)?.length ? args.niches : defaultNiches;
+      const maxTotal = (args.maxTotal as number) || 8;
+      const style = (args.style as string) || 'insightful, practitioner-level, concise — adds genuine value to the conversation';
+      const dryRun = !!(args.dryRun as boolean);
+
+      const ctrl = new AbortController();
+      const sweepTimer = setTimeout(() => ctrl.abort(), SWEEP_TIMEOUT_MS);
+      try {
+        const res = await fetch(`${TIKTOK_BASE}/api/tiktok/comment-sweep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(TIKTOK_AUTH ? { 'Authorization': `Bearer ${TIKTOK_AUTH}` } : {}) },
+          body: JSON.stringify({ niches, feedSources: ['foryou'], maxPerNiche: 2, maxPerFeed: 2, maxTotal, style, dryRun }),
+          signal: ctrl.signal,
+        });
+        const data = await res.json() as Record<string, unknown>;
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'AbortError') throw { code: 'SERVICE_DOWN', message: `tkc_comment_sweep timed out after ${SWEEP_TIMEOUT_MS / 1000}s` };
+        throw err;
+      } finally {
+        clearTimeout(sweepTimer);
+      }
+    }
 
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };

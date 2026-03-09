@@ -11,7 +11,7 @@ SERVICES[3003]="packages/twitter-dm/src/api/server.ts"
 SERVICES[3102]="packages/tiktok-dm/src/api/server.ts"
 SERVICES[3105]="packages/linkedin-automation/src/api/server.ts"
 SERVICES[3005]="packages/instagram-comments/src/api/server.ts"
-SERVICES[3107]="packages/upwork-hunter/src/api/server.ts"
+SERVICES[3107]="packages/upwork-automation/src/api/server.ts"
 SERVICES[3006]="packages/tiktok-comments/src/api/server.ts"
 SERVICES[3007]="packages/twitter-comments/src/api/server.ts"
 SERVICES[3004]="packages/threads-comments/src/api/server.ts"
@@ -19,12 +19,12 @@ SERVICES[3106]="packages/market-research/src/api/server.ts"
 SERVICES[7070]="packages/sora-automation/src/api/server.ts"
 SERVICES[3108]="packages/medium-automation/src/api/server.ts"
 SERVICES[3008]="packages/facebook-comments/src/api/server.ts"
-SERVICES[3104]="packages/upwork-automation/src/api/server.ts"
-
 declare -A EXTRA_ENV
 EXTRA_ENV[3007]="SAFARI_RESEARCH_ENABLED=true"
-EXTRA_ENV[3108]="MEDIUM_PORT=3108 SAFARI_AUTOMATION_WINDOW=2"
-EXTRA_ENV[3104]="UPWORK_PORT=3104"
+# SAFARI_AUTOMATION_WINDOW is now set globally in .env (=2, local-2-cloud profile)
+# Do NOT override per-service — all services use window 2
+EXTRA_ENV[3108]="MEDIUM_PORT=3108"
+EXTRA_ENV[3107]="UPWORK_PORT=3107"
 
 ACTP_DIR="/Users/isaiahdupree/Documents/Software/actp-worker"
 
@@ -39,7 +39,7 @@ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Safari watchdog started (includes actp-wo
 
 while true; do
   # ── Safari Node.js services ────────────────────────────────────────────────
-  for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008 3104; do
+  for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do
     result=$(curl -s --max-time 3 "http://localhost:$port/health" 2>/dev/null)
     if [ -z "$result" ]; then
       pkg="${SERVICES[$port]}"

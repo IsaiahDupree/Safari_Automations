@@ -29,6 +29,10 @@ const SERVICE_NAME = 'twitter-comments';
 const SERVICE_PORT = 3007;
 const SESSION_URL_PATTERN = 'x.com';
 const activeCoordinators = new Map<string, TabCoordinator>();
+
+const STABLE_AGENT_ID = 'twitter-comments-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
   if (!tabDriver) tabDriver = new SafariDriver();
@@ -178,7 +182,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
     // Claim exists — pin both drivers to the claimed tab and proceed
@@ -189,14 +193,15 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 
   // No claim — auto-claim now (open new tab if needed)
-  const autoId = `twitter-comments-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({
@@ -430,6 +435,111 @@ app.post('/api/twitter/search', async (req: Request, res: Response) => {
     if (!validateRequired(res, [{ name: 'query', value: query }])) return;
     const result = await getDriver().searchTweets(query, { tab, maxResults, scrolls });
     res.json({ success: true, ...result, count: result.tweets.length });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── Prospect People Search ────────────────────────────────
+// Searches X's "People" tab (f=user) for ICP prospects with bio data.
+// Returns array of { username, display_name, bio, followers_count, profile_url, keyword }
+app.post('/api/prospect/people-search', async (req: Request, res: Response) => {
+  try {
+    const { keywords = [], maxResults = 20 } = req.body as { keywords?: string[]; maxResults?: number };
+    if (!Array.isArray(keywords) || keywords.length === 0) {
+      res.status(400).json({ error: 'keywords array required' });
+      return;
+    }
+
+    const d = getDriver();
+    const prospects: Array<{ username: string; display_name: string; bio: string; followers_count: number; profile_url: string; keyword: string }> = [];
+    const seen = new Set<string>();
+
+    for (const kw of keywords) {
+      const encoded = encodeURIComponent(kw);
+      const url = `https://x.com/search?q=${encoded}&f=user&src=typed_query`;
+      console.log(`[people-search] Navigating: ${url}`);
+      const navOk = await (d as any).navigate(url);
+      if (!navOk) { console.log(`[people-search] Navigate failed for "${kw}"`); continue; }
+
+      // Wait for user cells
+      await new Promise(r => setTimeout(r, 4000));
+
+      // Scroll once to load more
+      await (d as any).executeJS('window.scrollBy(0, window.innerHeight)');
+      await new Promise(r => setTimeout(r, 2000));
+
+      const EXTRACT_JS = `(function(){
+        var users=[];
+        var cells=document.querySelectorAll('[data-testid="UserCell"]');
+        for(var i=0;i<Math.min(cells.length,${maxResults});i++){
+          var cell=cells[i];
+          var handle=''; var name=''; var bio=''; var followers=0;
+          // Find handle from profile link (href="/username" single-segment)
+          var links=cell.querySelectorAll('a[href][role="link"]');
+          for(var j=0;j<links.length;j++){
+            var hr=links[j].getAttribute('href')||'';
+            if(hr.charAt(0)==='/'&&hr.indexOf('/',1)===-1&&hr.length>2&&hr.indexOf('search')===-1&&hr.indexOf('?')===-1){
+              handle=hr.substring(1);
+              // Display name: deepest span inside the link that has actual text
+              var nameSpans=links[j].querySelectorAll('span');
+              for(var k=0;k<nameSpans.length;k++){
+                var t=(nameSpans[k].innerText||'').trim();
+                if(t&&t.length>0&&!t.startsWith('@')&&nameSpans[k].children.length===0){name=t;break;}
+              }
+              break;
+            }
+          }
+          if(!handle)continue;
+          // Bio: look for a span/div that is NOT the name, NOT the @handle, NOT followers text
+          // Collect all leaf text nodes above a threshold length
+          var allEls=cell.querySelectorAll('span,div');
+          for(var e=0;e<allEls.length;e++){
+            var el=allEls[e];
+            if(el.children.length>0)continue; // only leaf nodes
+            var txt=(el.innerText||'').trim();
+            if(!txt||txt.length<8)continue;
+            if(txt===name)continue;
+            if(txt==='@'+handle||txt===handle)continue;
+            if(/^\\d/.test(txt))continue; // skip follower counts, dates
+            if(/^(Follow|Follows you|Following)$/.test(txt))continue;
+            if(/^Followed by/i.test(txt))continue; // X social context, not bio
+            if(/^\d+ Followers/.test(txt)||/^\d+ Following/.test(txt))continue;
+            // Bio text is usually longer and sentence-like
+            if(txt.length>8&&txt.length<300){bio=txt;break;}
+          }
+          // Follower count
+          var cellText=cell.innerText||'';
+          var fm=cellText.match(/(\\d[\\d,.]*)([KMB]?)\\s*Followers/i);
+          if(fm){
+            var raw=parseFloat(fm[1].replace(/,/g,''))*(fm[2]==='K'?1000:fm[2]==='M'?1000000:fm[2]==='B'?1000000000:1);
+            followers=Math.round(raw);
+          }
+          users.push(JSON.stringify({username:handle,display_name:name,bio:bio,followers_count:followers}));
+        }
+        return '['+users.join(',')+']';
+      })()`;
+
+      let extracted: Array<{ username: string; display_name: string; bio: string; followers_count: number }> = [];
+      try {
+        const raw = await (d as any).executeJS(EXTRACT_JS);
+        extracted = JSON.parse(raw || '[]');
+      } catch (e) { console.log(`[people-search] Parse error for "${kw}": ${e}`); }
+
+      console.log(`[people-search] "${kw}" → ${extracted.length} users`);
+      for (const u of extracted) {
+        if (!u.username || seen.has(u.username.toLowerCase())) continue;
+        seen.add(u.username.toLowerCase());
+        prospects.push({
+          ...u,
+          profile_url: `https://x.com/${u.username}`,
+          keyword: kw,
+        });
+      }
+    }
+
+    // Restore to x.com home
+    await (d as any).navigate('https://x.com/home').catch(() => {});
+
+    res.json({ success: true, count: prospects.length, prospects, keywords });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

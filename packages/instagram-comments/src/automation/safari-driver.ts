@@ -244,23 +244,36 @@ export class SafariDriver {
    *
    * Falls back to execCommand insertText if nativeInputValueSetter fails.
    */
-  async typeViaJS(selector: string, text: string): Promise<boolean> {
+    async typeViaJS(selector: string, text: string): Promise<boolean> {
     try {
       const escaped = JSON.stringify(text);
+      const selectorJs = selector
+        ? `document.querySelector(${JSON.stringify(selector)})`
+        : `(document.querySelector('[contenteditable="true"]') || document.querySelector('[role="textbox"]') || document.activeElement)`;
       const js = `
 (function() {
-  var el = document.querySelector(${escaped.replace(/"/g, "'").replace(/^'|'$/g, '"')});
-  if (!el) {
-    // Try to find focused/active element
-    el = document.activeElement;
-  }
+  var el = ${selectorJs};
   if (!el) return false;
-  el.focus();
-  // Try execCommand first (works for contenteditable, no focus steal)
-  var inserted = document.execCommand('selectAll', false, null) &&
-                 document.execCommand('insertText', false, ${escaped});
-  if (inserted) return true;
-  // Fallback: nativeInputValueSetter for <input>/<textarea>
+
+  // Method 1: ClipboardEvent paste — background-safe, React contenteditable compatible
+  try {
+    var dt = new DataTransfer();
+    dt.setData('text/plain', ${escaped});
+    dt.setData('text/html', '<span>' + ${escaped} + '</span>');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    var len = el.textContent ? el.textContent.trim().length : (el.value || '').length;
+    if (len > 0) return 'paste';
+  } catch(e) {}
+
+  // Method 2: execCommand insertText (background-safe for non-React contenteditable)
+  try {
+    el.focus({ preventScroll: true });
+    var ok = document.execCommand('selectAll', false, null) &&
+             document.execCommand('insertText', false, ${escaped});
+    if (ok) return 'execCommand';
+  } catch(e) {}
+
+  // Method 3: nativeInputValueSetter for plain <input>/<textarea>
   try {
     var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
                        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
@@ -268,17 +281,18 @@ export class SafariDriver {
       nativeSetter.set.call(el, ${escaped});
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      return 'nativeSetter';
     }
   } catch(e) {}
-  // Last resort: direct value set
+
+  // Method 4: direct value assignment
   el.value = ${escaped};
   el.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
+  return 'directSet';
 })()
 `.trim();
       const result = await this.executeJS(js.replace(/\n/g, ' '));
-      return result !== 'false';
+      return result !== 'false' && result !== '' && result !== 'null' && result !== 'undefined';
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] typeViaJS error:', error);
       return false;

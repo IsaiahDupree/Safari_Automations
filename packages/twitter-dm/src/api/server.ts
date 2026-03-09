@@ -131,6 +131,10 @@ const SERVICE_PORT = 3003;
 // Active tab coordinators by agentId (in-process map; file is cross-process)
 const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
+const STABLE_AGENT_ID = 'twitter-dm-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
+
 function getDriver(): SafariDriver {
   if (!driver) {
     driver = new SafariDriver({
@@ -210,7 +214,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
     // Claim exists — pin driver to the claimed tab and proceed
@@ -220,13 +224,14 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 
   // No claim — auto-claim now (open new tab if needed)
-  const autoId = `twitter-dm-auto-${Date.now()}`;
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({

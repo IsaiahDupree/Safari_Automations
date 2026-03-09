@@ -49,6 +49,29 @@ BEGIN
     ALTER TABLE upwork_proposals ADD COLUMN github_url TEXT;
   END IF;
 END $$;
+
+-- Submission metadata columns
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS application_url TEXT;
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS submitted_connects_cost INTEGER;
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS submitted_bid_amount TEXT;
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS submitted_form_type TEXT;
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS submitted_files_count INTEGER;
+ALTER TABLE upwork_proposals ADD COLUMN IF NOT EXISTS milestones_json JSONB;
+
+-- All discovered jobs (every scan, not just ones that get proposals)
+CREATE TABLE IF NOT EXISTS upwork_jobs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  job_id TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  description TEXT,
+  budget TEXT,
+  score INTEGER NOT NULL DEFAULT 0,
+  pub_date TEXT,
+  source TEXT DEFAULT 'upwork',
+  first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ DEFAULT NOW()
+);
 `;
 
 export async function applyMigration(): Promise<void> {

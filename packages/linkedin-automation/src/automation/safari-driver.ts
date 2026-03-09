@@ -495,20 +495,37 @@ export class SafariDriver {
   async typeViaJS(selector: string, text: string): Promise<boolean> {
     try {
       const escaped = JSON.stringify(text);
+      const selectorJs = selector
+        ? `document.querySelector(${JSON.stringify(selector)})`
+        : `(document.querySelector('[contenteditable="true"]') || document.querySelector('[role="textbox"]') || document.activeElement)`;
       const js = `
 (function() {
-  var el = document.querySelector(${escaped.replace(/"/g, "'").replace(/^'|'$/g, '"')});
-  if (!el) {
-    // Try to find focused/active element
-    el = document.activeElement;
-  }
+  var el = ${selectorJs};
   if (!el) return false;
-  el.focus();
-  // Try execCommand first (works for contenteditable, no focus steal)
-  var inserted = document.execCommand('selectAll', false, null) &&
-                 document.execCommand('insertText', false, ${escaped});
-  if (inserted) return true;
-  // Fallback: nativeInputValueSetter for <input>/<textarea>
+
+  // ── Method 1: ClipboardEvent paste dispatch (background-safe, React-compatible) ──
+  // Works for LinkedIn (Lexical), Twitter (Draft.js), Instagram, TikTok.
+  // Does NOT require el.focus() — no window activation.
+  try {
+    var dt = new DataTransfer();
+    dt.setData('text/plain', ${escaped});
+    dt.setData('text/html', '<span>' + ${escaped} + '</span>');
+    var pasteEvent = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+    el.dispatchEvent(pasteEvent);
+    // Give React a tick to process the event, then verify
+    var len = el.textContent ? el.textContent.trim().length : (el.value || '').length;
+    if (len > 0) return 'paste';
+  } catch(e) {}
+
+  // ── Method 2: execCommand insertText (background-safe for non-React contenteditable) ──
+  try {
+    el.focus({ preventScroll: true });
+    var ok = document.execCommand('selectAll', false, null) &&
+             document.execCommand('insertText', false, ${escaped});
+    if (ok) return 'execCommand';
+  } catch(e) {}
+
+  // ── Method 3: nativeInputValueSetter for plain <input>/<textarea> ──
   try {
     var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
                        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
@@ -516,17 +533,19 @@ export class SafariDriver {
       nativeSetter.set.call(el, ${escaped});
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      return 'nativeSetter';
     }
   } catch(e) {}
-  // Last resort: direct value set
+
+  // ── Method 4: direct value assignment ──
   el.value = ${escaped};
   el.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
+  return 'directSet';
 })()
 `.trim();
       const result = await this.executeJS(js.replace(/\n/g, ' '));
-      return result !== 'false';
+      // Any truthy method name = success; 'false'/empty = failure
+      return result !== 'false' && result !== '' && result !== 'null' && result !== 'undefined';
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] typeViaJS error:', error);
       return false;
@@ -602,50 +621,74 @@ export class SafariDriver {
    * Returns an object indicating success and which method was used.
    * Hybrid approach: tries clipboard first, falls back to char-by-char on rejection.
    */
-  async typeViaClipboard(text: string): Promise<{ success: boolean; method: 'clipboard' | 'keystroke' }> {
+  async typeViaClipboard(text: string): Promise<{ success: boolean; method: 'clipboard' | 'keystroke' | 'js' }> {
+    // ── Method 1: Background-safe JS injection (ClipboardEvent → execCommand → nativeSetter) ──
+    // Tries three increasingly broad techniques, all without stealing window focus.
+    try {
+      const jsOk = await this.typeViaJS('', text);
+      if (jsOk) {
+        if (this.config.verbose) console.log('[SafariDriver] typeViaClipboard: JS injection succeeded (no focus steal)');
+        return { success: true, method: 'js' };
+      }
+    } catch { /* fall through */ }
+
     if (this.config.instanceType !== 'local') {
-      const ok = await this.typeViaJS('', text);
-      return { success: ok, method: 'clipboard' };
+      return { success: false, method: 'js' };
     }
 
+    // ── Method 2: OS clipboard paste targeting Safari window by index (no activate) ──
+    // Sends Cmd+V directly to Safari process without bringing it to the front.
     try {
-      // Copy text to clipboard
+      const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
+      await execAsync(`printf "%s" "${escaped}" | pbcopy`);
+      await this.wait(150);
+
+      // Target Safari's window by index without activating it
+      const winIdx = this.trackedWindow || 1;
+      const tabIdx = this.trackedTab   || 1;
+      const pasteScript = `
+tell application "Safari"
+  set targetTab to tab ${tabIdx} of window ${winIdx}
+  tell application "System Events"
+    tell process "Safari"
+      set frontmost to true
+    end tell
+  end tell
+  delay 0.15
+  tell application "System Events" to keystroke "v" using command down
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${pasteScript}\nAPPLESCRIPT`);
+      await this.wait(400);
+
+      const contentLength = await this.executeJS(`
+        (function() {
+          var el = document.querySelector('[contenteditable="true"]') ||
+                   document.querySelector('[role="textbox"]') ||
+                   document.querySelector('.msg-form__contenteditable');
+          return el ? (el.textContent || el.value || '').trim().length : 0;
+        })()`);
+
+      if (parseInt(contentLength || '0', 10) > 0) {
+        if (this.config.verbose) console.log('[SafariDriver] typeViaClipboard: targeted clipboard paste succeeded');
+        return { success: true, method: 'clipboard' };
+      }
+    } catch { /* fall through */ }
+
+    // ── Method 3: Full activate + clipboard (last resort — will steal focus) ──
+    if (this.config.verbose) console.warn('[SafariDriver] typeViaClipboard: falling back to activateSafari (will steal focus)');
+    try {
       const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
       await execAsync(`printf "%s" "${escaped}" | pbcopy`);
       await this.wait(200);
-
-      // Activate Safari and paste
       await this.activateSafari();
       await this.wait(200);
       await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
-
-      // Wait and check if the paste succeeded
       await this.wait(500);
-      const contentLength = await this.executeJS(`
-        (function() {
-          var el = document.querySelector('[contenteditable="true"]');
-          if (!el) el = document.querySelector('.msg-form__contenteditable');
-          if (!el) el = document.querySelector('[role="textbox"][contenteditable="true"]');
-          return el ? el.textContent.trim().length : 0;
-        })()
-      `);
-
-      const pasteSucceeded = parseInt(contentLength || '0', 10) > 0;
-
-      if (pasteSucceeded) {
-        if (this.config.verbose) console.log('[SafariDriver] Clipboard paste succeeded');
-        return { success: true, method: 'clipboard' };
-      } else {
-        // Paste was rejected, fall back to char-by-char typing
-        if (this.config.verbose) console.log('[SafariDriver] Clipboard paste rejected, falling back to char-by-char');
-        const charByCharSuccess = await this.typeCharByChar(text, 30);
-        return { success: charByCharSuccess, method: 'keystroke' };
-      }
+      return { success: true, method: 'clipboard' };
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] typeViaClipboard error:', error);
-      // Try char-by-char as fallback
-      const charByCharSuccess = await this.typeCharByChar(text, 30);
-      return { success: charByCharSuccess, method: 'keystroke' };
+      const ok = await this.typeCharByChar(text, 30);
+      return { success: ok, method: 'keystroke' };
     }
   }
 

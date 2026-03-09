@@ -153,6 +153,17 @@ const SERVICE_PORT = parseInt(process.env.PORT || '3100', 10);
 // Active tab coordinators by agentId (in-process map; file is cross-process)
 const activeCoordinators = new Map<string, TabCoordinator>();
 
+// Stable persistent coordinator — one identity, heartbeat keeps claim alive
+const STABLE_AGENT_ID = 'instagram-dm-stable';
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+
+// Heartbeat: refresh claim every 30s so it never hits the 60s TTL
+setInterval(async () => {
+  try {
+    if (stableCoord) await stableCoord.heartbeat();
+  } catch { /* claim gone — next request will re-claim */ }
+}, 30_000);
+
 function getDriver(): SafariDriver {
   if (!driver) {
     driver = new SafariDriver({
@@ -250,23 +261,24 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
+    // Stable claim exists — pin driver to the claimed tab and proceed
     getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
     next();
     return;
   }
 
-  // No claim — auto-claim now (open new tab if needed)
-  const autoId = `instagram-dm-auto-${Date.now()}`;
+  // No claim — create/reuse stable coordinator and claim
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    if (!stableCoord) {
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+    }
+    const claim = await stableCoord.claim();
     getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
     res.status(503).json({
@@ -1549,16 +1561,28 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
     return;
   }
 
-  const agentId = `run-pipeline-${Date.now()}`;
+  // requireTabClaim middleware already pinned the driver to the service claim.
+  // Re-claiming here would create a conflict since the existing instagram-dm claim
+  // occupies the tab and findAvailableTab() filters it out as "taken by another agent".
+  // Reuse the existing service claim; only fall back to a new claim if none exists.
   let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[run-pipeline] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
-  } catch (err) {
-    res.status(503).json({ error: `Tab claim required: ${err}. Open an Instagram tab and retry.` });
-    return;
+  const existingClaims = await TabCoordinator.listClaims();
+  const serviceClaim = existingClaims.find(c => c.service === SERVICE_NAME);
+  if (serviceClaim) {
+    getDriver().setTrackedTab(serviceClaim.windowIndex, serviceClaim.tabIndex, SESSION_URL_PATTERN);
+    console.log(`[run-pipeline] Reusing service claim w=${serviceClaim.windowIndex} t=${serviceClaim.tabIndex}`);
+  } else {
+    // No service claim at all — try auto-claim as last resort
+    try {
+      const agentId = `run-pipeline-${Date.now()}`;
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      const claim = await coord.claim();
+      getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+      console.log(`[run-pipeline] Auto-claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+    } catch (err) {
+      res.status(503).json({ error: `Tab claim required: ${err}. Open an Instagram tab and retry.` });
+      return;
+    }
   }
 
   let discovered = 0;
@@ -1664,6 +1688,8 @@ app.post('/api/prospect/schedule-batch', async (req, res) => {
 
       scheduled.push({
         username,
+        score: prospect.priority ?? 0,
+        message: message,
         message_preview: message.slice(0, 120),
         scheduled_for: scheduledFor,
       });
@@ -1756,6 +1782,202 @@ app.post('/api/debug/eval', requireActiveSession, async (req, res) => {
 });
 
 // ─── Self-Poll Endpoint (SDPA-011) ───────────────────────────────────────────
+// POST /api/prospect/hashtag-search
+// Lightweight hashtag-based prospect discovery using the EXISTING ig-daemon tab claim.
+// No additional tab claim needed — uses getDriver() which is already pinned to w1t1.
+// Instagram now redirects explore/tags/{hashtag}/ to a relevant creator's profile page.
+// We capture the redirect target as a prospect for each keyword.
+app.post('/api/prospect/hashtag-search', async (req: Request, res: Response) => {
+  const { keywords = ['saasfounder', 'buildinpublic', 'aiautomation', 'indiehacker'], scrapedPosts = [] } = req.body as { keywords?: string[]; scrapedPosts?: string[] };
+  const alreadyScraped = new Set<string>(scrapedPosts.map((u: string) => u.split('?')[0]));
+
+  const driver = getDriver();
+
+  // Pin the driver to the Instagram tab before navigating anywhere.
+  // This ensures navigateTo + getCurrentUrl target the correct window+tab.
+  let pinnedUrl = 'https://www.instagram.com/direct/inbox/';
+  try {
+    const session = await ensureInstagramSession();
+    if (!session.ok) {
+      res.status(503).json({ error: 'Instagram Safari session not found — open Safari and navigate to instagram.com' });
+      return;
+    }
+    pinnedUrl = session.url || pinnedUrl;
+    console.log(`[hashtag-search] Pinned to w${session.windowIndex}t${session.tabIndex} (${session.url})`);
+  } catch (err) {
+    res.status(503).json({ error: `Could not find Instagram tab: ${err}` });
+    return;
+  }
+
+  const results: Array<{ username: string; url: string; keyword: string; bio: string }> = [];
+  const scrapedThisCall: string[] = [];
+  const seen = new Set<string>();
+  const SKIP_PATHS = new Set(['explore', 'p', 'reel', 'direct', 'stories', 'accounts', 'reels', 'tv', 'topics', 'audio', 'tags']);
+
+  // Nav links and known non-profile paths to skip
+  const NAV_SKIP = new Set(['reels','explore','direct','stories','accounts','reels','tv','topics','audio','tags','hashtag','search','locations','about','privacy','help','legal','web']);
+  // Also skip our own account
+  const OWN_ACCOUNTS = new Set(['the_isaiah_dupree']);
+
+  // JS to extract all instagram.com/{username} profile links from the current page
+  const EXTRACT_PROFILES_JS = `(function(){
+    var links = Array.from(document.querySelectorAll('a'));
+    var skip = new Set(['reels','explore','direct','stories','accounts','tv','topics','audio','tags','hashtag','search','locations','about','privacy','help','legal','web','lite']);
+    var seen = new Set();
+    var users = [];
+    links.forEach(function(a){
+      var h = a.href || '';
+      var m = h.match(/^https:\\/\\/www\\.instagram\\.com\\/([a-zA-Z0-9_.]{2,30})\\/?(\\?|$)/);
+      if (!m) return;
+      var u = m[1].toLowerCase();
+      if (skip.has(u)) return;
+      if (seen.has(u)) return;
+      seen.add(u);
+      users.push({username: m[1], url: h});
+    });
+    return JSON.stringify(users);
+  })()`;
+
+  // JS to extract /p/ post links from the current page
+  const EXTRACT_POSTS_JS = `(function(){
+    var links = Array.from(document.querySelectorAll('a'));
+    var seen = new Set();
+    var posts = [];
+    links.forEach(function(a){
+      var h = a.href || '';
+      var m = h.match(/instagram\\.com\\/(p|reel)\\/([A-Za-z0-9_-]+)\\/?/);
+      if (!m) return;
+      if (seen.has(m[2])) return;
+      seen.add(m[2]);
+      posts.push(h.split('?')[0]);
+    });
+    return JSON.stringify(posts.slice(0, 3));
+  })()`;
+
+  for (const kw of keywords) {
+    try {
+      const tag = kw.replace(/^#/, '');
+
+      // Step 1: Navigate to Instagram hashtag search page
+      const searchUrl = `https://www.instagram.com/explore/search/keyword/?q=%23${encodeURIComponent(tag)}`;
+      console.log(`[hashtag-search] #${tag} → search page`);
+      await driver.navigateTo(searchUrl); // built-in 2s wait
+      await new Promise(r => setTimeout(r, 4000)); // wait for React to render
+
+      // Step 2: Extract post URLs from the search results page
+      const postsJson = await driver.executeJS(EXTRACT_POSTS_JS);
+      let postUrls: string[] = [];
+      try { postUrls = JSON.parse(postsJson); } catch { /* skip */ }
+      console.log(`[hashtag-search] #${tag} → found ${postUrls.length} posts: ${postUrls.join(', ')}`);
+
+      // Step 3: Visit up to 2 un-scraped posts and extract commenters + author as prospects
+      const postsToVisit = postUrls.filter(u => !alreadyScraped.has(u.split('?')[0])).slice(0, 2);
+      if (postsToVisit.length === 0) {
+        console.log(`[hashtag-search] #${tag} → all ${postUrls.length} posts already scraped, skipping`);
+      } else {
+        for (const postUrl of postsToVisit) {
+          console.log(`[hashtag-search] #${tag} → visiting post ${postUrl}`);
+          await driver.navigateTo(postUrl); // 2s wait
+          await new Promise(r => setTimeout(r, 5000)); // wait for comments to load
+
+          const profilesJson = await driver.executeJS(EXTRACT_PROFILES_JS);
+          let pageUsers: Array<{username: string; url: string}> = [];
+          try { pageUsers = JSON.parse(profilesJson); } catch { /* skip */ }
+
+          let added = 0;
+          for (const pu of pageUsers) {
+            if (NAV_SKIP.has(pu.username.toLowerCase())) continue;
+            if (OWN_ACCOUNTS.has(pu.username.toLowerCase())) continue;
+            if (seen.has(pu.username.toLowerCase())) continue;
+            seen.add(pu.username.toLowerCase());
+            results.push({ username: pu.username, url: `https://www.instagram.com/${pu.username}/`, keyword: kw, bio: '' });
+            added++;
+            console.log(`[hashtag-search] ✓ @${pu.username} from #${tag} post`);
+          }
+          scrapedThisCall.push(postUrl.split('?')[0]);
+          console.log(`[hashtag-search] #${tag} → added ${added} new prospects from ${postUrl}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[hashtag-search] Error on keyword "${kw}": ${err}`);
+    }
+  }
+
+  // Restore the tab to the DM inbox so ig-daemon stays happy
+  try {
+    await driver.navigateTo('https://www.instagram.com/direct/inbox/');
+  } catch { /* non-fatal */ }
+
+  res.json({ success: true, keywords, count: results.length, prospects: results, scrapedPosts: scrapedThisCall });
+});
+
+// POST /api/prospect/fetch-bios
+// Enrichment endpoint: given a list of IG usernames, visit each profile and return bio + follower count.
+// Intended to be called AFTER the main hashtag-search cycle to enrich prospects before DM approval.
+// Uses the existing pinned Instagram tab — no new claim needed.
+app.post('/api/prospect/fetch-bios', async (req: Request, res: Response) => {
+  const { usernames = [] } = req.body as { usernames?: string[] };
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    res.json({ success: true, profiles: [] });
+    return;
+  }
+  // Limit to 5 at a time to stay within 60s
+  const batch = usernames.slice(0, 5);
+
+  const driver = getDriver();
+  try {
+    const session = await ensureInstagramSession();
+    if (!session.ok) {
+      res.status(503).json({ error: 'Instagram Safari session not found' });
+      return;
+    }
+  } catch (err) {
+    res.status(503).json({ error: `Session not found: ${err}` });
+    return;
+  }
+
+  const profiles: Array<{ username: string; bio: string; followers: number; fullName: string }> = [];
+  for (const username of batch) {
+    try {
+      await driver.navigateTo(`https://www.instagram.com/${username}/`);
+      await new Promise(r => setTimeout(r, 3000));
+
+      const raw = await driver.executeJS(`(function(){
+        var desc = document.querySelector('meta[name="description"]');
+        var bio = desc ? (desc.getAttribute('content') || '') : '';
+        // Follower count is in meta og:description or in page text
+        var ogDesc = document.querySelector('meta[property="og:description"]');
+        var ogText = ogDesc ? (ogDesc.getAttribute('content') || '') : '';
+        // Try to extract follower count from og:description: "1,234 Followers, ..."
+        var followMatch = ogText.match(/([\\d,\\.]+[KkMm]?)\\s*Followers/i);
+        var followers = 0;
+        if (followMatch) {
+          var raw = followMatch[1].replace(/,/g,'');
+          if (/[Kk]$/.test(raw)) followers = Math.round(parseFloat(raw) * 1000);
+          else if (/[Mm]$/.test(raw)) followers = Math.round(parseFloat(raw) * 1000000);
+          else followers = parseInt(raw, 10) || 0;
+        }
+        // Full name from og:title: "Username (@handle) • Instagram"
+        var titleEl = document.querySelector('title');
+        var fullName = titleEl ? titleEl.innerText.split('(')[0].trim().replace(/\\s*•.*$/, '').trim() : '';
+        return JSON.stringify({ bio: bio.slice(0, 400), followers, fullName });
+      })()`);
+
+      const data = JSON.parse(raw);
+      profiles.push({ username, bio: data.bio || '', followers: data.followers || 0, fullName: data.fullName || '' });
+      console.log(`[fetch-bios] @${username}: followers=${data.followers}, bio=${data.bio.slice(0,60)}`);
+    } catch (err) {
+      console.warn(`[fetch-bios] Error for @${username}: ${err}`);
+      profiles.push({ username, bio: '', followers: 0, fullName: '' });
+    }
+  }
+
+  // Restore tab to DM inbox
+  try { await driver.navigateTo('https://www.instagram.com/direct/inbox/'); } catch { /* ok */ }
+
+  res.json({ success: true, profiles });
+});
+
 // POST /api/instagram/self-poll
 // Called by cron-manager. Fetches DM conversations + unread notifications
 // and writes results to safari_platform_cache for cloud-sync to consume.

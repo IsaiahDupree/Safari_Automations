@@ -358,6 +358,38 @@ export class SafariDriver {
   }
 
   /**
+   * Press Enter via OS-level AppleScript key code 36.
+   * More reliable than JS dispatchEvent for React-based inputs (Instagram, TikTok).
+   */
+  async pressEnterViaSafari(): Promise<boolean> {
+    try {
+      const w = this.trackedWindow || 1;
+      const t = this.trackedTab || 1;
+      // Re-activate the tracked window+tab before pressing Enter.
+      // typeViaClipboard restores the previous app after pasting, so we must
+      // bring Safari back to the foreground to ensure key code 36 lands in the
+      // message input rather than the address bar or another element.
+      const script = `
+tell application "Safari"
+  activate
+  set index of window ${w} to 1
+  set current tab of window ${w} to tab ${t} of window ${w}
+  delay 0.2
+end tell
+tell application "System Events"
+  tell process "Safari"
+    key code 36
+  end tell
+end tell`;
+      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      return true;
+    } catch (error) {
+      if (this.config?.verbose) console.error('[SafariDriver] pressEnterViaSafari error:', error);
+      return false;
+    }
+  }
+
+  /**
    * Find a Safari tab by URL pattern across all windows.
    * Returns the first matching window+tab indices.
    */

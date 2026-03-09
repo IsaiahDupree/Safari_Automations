@@ -245,12 +245,55 @@ export class SafariDriver {
    * Type text into the active/focused element using document.execCommand.
    * Background-safe — no window activation required.
    */
-  async typeViaJS(selector: string, text: string): Promise<boolean> {
+    async typeViaJS(selector: string, text: string): Promise<boolean> {
     try {
       const escaped = JSON.stringify(text);
-      const js = `(function() { var el = document.querySelector(${JSON.stringify(selector)}) || document.activeElement; if (!el) return false; el.focus(); var inserted = document.execCommand('selectAll', false, null) && document.execCommand('insertText', false, ${escaped}); if (inserted) return true; try { var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value'); if (ns && ns.set) { ns.set.call(el, ${escaped}); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } catch(e) {} el.value = ${escaped}; el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`;
-      const result = await this.executeJS(js);
-      return result !== 'false';
+      const selectorJs = selector
+        ? `document.querySelector(${JSON.stringify(selector)})`
+        : `(document.querySelector('[contenteditable="true"]') || document.querySelector('[role="textbox"]') || document.activeElement)`;
+      const js = `
+(function() {
+  var el = ${selectorJs};
+  if (!el) return false;
+
+  // Method 1: ClipboardEvent paste — background-safe, React contenteditable compatible
+  try {
+    var dt = new DataTransfer();
+    dt.setData('text/plain', ${escaped});
+    dt.setData('text/html', '<span>' + ${escaped} + '</span>');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    var len = el.textContent ? el.textContent.trim().length : (el.value || '').length;
+    if (len > 0) return 'paste';
+  } catch(e) {}
+
+  // Method 2: execCommand insertText (background-safe for non-React contenteditable)
+  try {
+    el.focus({ preventScroll: true });
+    var ok = document.execCommand('selectAll', false, null) &&
+             document.execCommand('insertText', false, ${escaped});
+    if (ok) return 'execCommand';
+  } catch(e) {}
+
+  // Method 3: nativeInputValueSetter for plain <input>/<textarea>
+  try {
+    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+    if (nativeSetter && nativeSetter.set) {
+      nativeSetter.set.call(el, ${escaped});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'nativeSetter';
+    }
+  } catch(e) {}
+
+  // Method 4: direct value assignment
+  el.value = ${escaped};
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  return 'directSet';
+})()
+`.trim();
+      const result = await this.executeJS(js.replace(/\n/g, ' '));
+      return result !== 'false' && result !== '' && result !== 'null' && result !== 'undefined';
     } catch (error) {
       if (this.config.verbose) console.error('[SafariDriver] typeViaJS error:', error);
       return false;

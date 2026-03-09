@@ -421,6 +421,7 @@ export async function insertProspectSuggestion(
       lane: 'prospect',
       message: bio.slice(0, 500),
       personalized_message: '',
+      icp_score: icpScore,
       priority: icpScore,
       phase: 'prospecting',
       status: 'suggested',

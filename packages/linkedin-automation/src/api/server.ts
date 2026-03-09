@@ -221,33 +221,46 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // ── Tab claim enforcement ─────────────────────────────────────────────────────
 // Every automation route MUST have an active tab claim before it runs.
-// On first request: auto-claims an existing tab OR opens a new one.
-// Subsequent requests: validates the claim is still alive.
+// Uses a single STABLE agentId so the same tab is reused across all requests,
+// rather than creating a new auto-ID on each request which would race with other tabs.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
 const OPEN_URL = 'https://www.linkedin.com/messaging/';
 const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const STABLE_AGENT_ID = 'linkedin-automation-stable';
+
+// Module-level stable coordinator — persists across requests, renewed every 30s
+let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+
+// Heartbeat loop: keeps the claim alive so it never expires (TTL=60s, heartbeat=30s)
+setInterval(async () => {
+  try {
+    if (stableCoord) await stableCoord.heartbeat();
+  } catch { /* claim gone, next request will re-claim */ }
+}, 30_000);
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
 
+  // Check if our stable claim is still registered in the shared registry
   const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME_TAB);
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
 
   if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
+    // Reuse existing stable claim — no new tab gets grabbed
     getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
     next();
     return;
   }
 
-  // No claim — auto-claim now (open new tab if needed)
-  const autoId = `linkedin-automation-auto-${Date.now()}`;
+  // No stable claim — create or re-use the stable coordinator and claim now
+  if (!stableCoord) {
+    stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN);
+    activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+  }
   try {
-    const coord = new TabCoordinator(autoId, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN);
-    activeCoordinators.set(autoId, coord);
-    const claim = await coord.claim();
+    const claim = await stableCoord.claim();
     getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
+    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
     next();
   } catch (err) {
     res.status(503).json({
@@ -1546,6 +1559,8 @@ app.post('/api/linkedin/sessions/:id/extend', (req: Request, res: Response) => {
 // ─── Reply Watcher ───────────────────────────────────────────
 
 async function checkForNewReplies(): Promise<void> {
+  // Skip if no stable tab claim — avoids executing JS in wrong window (front document)
+  if (!stableCoord) return;
   try {
     const conversations = await listConversations();
     const now = new Date().toISOString();
@@ -1645,6 +1660,8 @@ app.delete('/api/linkedin/replies/unread', (_req: Request, res: Response) => {
 // ─── Session Health Monitor ──────────────────────────────────
 
 async function checkSessionHealth(): Promise<void> {
+  // Skip if no stable tab claim — avoids executing JS in wrong window (front document)
+  if (!stableCoord) return;
   try {
     const d = getDefaultDriver();
     const loggedIn = await d.isLoggedInToLinkedIn();

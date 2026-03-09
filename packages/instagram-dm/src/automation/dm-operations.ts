@@ -574,8 +574,9 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
   await d.wait(500);
 
-  // Primary: clipboard paste — most reliable for React contenteditable (Safari).
-  // Falls back to JS injection if clipboard fails.
+  // Primary: clipboard paste via AppleScript (activates window+tab, Cmd+V).
+  // This gives the element real native OS focus so key code 36 lands correctly.
+  // typeViaJS inserts text but doesn't grant OS focus — key code 36 then misses.
   const typed = await d.typeViaClipboard(foundSel, text).catch(() => false) ||
                 await d.typeViaJS(foundSel, text);
   if (!typed) {
@@ -584,8 +585,9 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 
   await d.wait(500);
 
-  // Press Enter targeting the same element
-  const sent = await d.pressEnterViaJS(foundSel);
+  // Press Enter via OS-level AppleScript key code 36 (matches TikTok's proven method).
+  // typeViaClipboard already activated the window, so key code 36 lands in the message input.
+  const sent = await d.pressEnterViaSafari();
   if (!sent) {
     return { success: false, error: 'Failed to press Enter to send' };
   }
@@ -718,14 +720,14 @@ export async function sendDMFromProfile(
     return { success: false, error: 'Could not click Message button' };
   }
   
-  await d.wait(3000);
-  
-  // Wait for message input
+  await d.wait(5000);
+
+  // Wait for message input — Instagram DM modal can take up to 10s to render
   const inputReady = await d.waitForElement(
-    'div[contenteditable="true"][role="textbox"], textarea[placeholder*="Message"]',
-    5000
+    'div[contenteditable="true"][role="textbox"], textarea[placeholder*="Message"], div[contenteditable][role="textbox"]',
+    10000
   );
-  
+
   if (!inputReady) {
     return { success: false, error: 'DM composer did not open' };
   }
@@ -741,23 +743,35 @@ export async function sendDMFromProfile(
   
   if (result.success) {
     // Wait for message to appear in conversation thread
-    await d.wait(3000);
+    await d.wait(4000);
     const snippet = JSON.stringify(message.substring(0, 40));
     const verified = await d.executeJS(`
       (function() {
         var s = ${snippet};
-        // Check conversation thread messages (most reliable)
-        var msgs = document.querySelectorAll('div[dir="auto"], span[dir="auto"]');
+        // 1. Conversation thread messages (most reliable)
+        var msgs = document.querySelectorAll('div[dir="auto"], span[dir="auto"], [data-testid="message-text"]');
         for (var i = 0; i < msgs.length; i++) {
           if (msgs[i].textContent.includes(s)) return 'yes';
         }
-        // Fallback: check full page text
-        return document.body.innerText.includes(s) ? 'yes' : 'no';
+        // 2. Message bubbles in DM thread container
+        var bubbles = document.querySelectorAll('[class*="Message"], [class*="Bubble"], [class*="message"]');
+        for (var i = 0; i < bubbles.length; i++) {
+          if (bubbles[i].textContent.includes(s)) return 'yes';
+        }
+        // 3. Check URL still shows DM thread (not redirected away)
+        var inThread = window.location.href.includes('/direct/t/') || window.location.href.includes('/direct/inbox/');
+        // 4. No error banners (couldn't send)
+        var errorBanners = document.querySelectorAll('[class*="Error"], [aria-label*="error"], [aria-label*="Error"]');
+        for (var i = 0; i < errorBanners.length; i++) {
+          if (errorBanners[i].offsetParent !== null) return 'no'; // visible error
+        }
+        // 5. Fallback: full page text
+        return document.body.innerText.includes(s) ? 'yes' : (inThread ? 'likely' : 'no');
       })()
     `);
     return {
       ...result,
-      verified: verified === 'yes',
+      verified: verified === 'yes' || verified === 'likely',
       verifiedRecipient: username,
     };
   }

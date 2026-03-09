@@ -1,5 +1,6 @@
 import * as https from 'https';
 import * as http from 'http';
+import { existsSync } from 'fs';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
 import type { UpworkProposal } from '../types/index.js';
 import { generateClientAssets } from './asset-generator.js';
@@ -8,12 +9,33 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 const UPWORK_AUTOMATION_URL = process.env.UPWORK_AUTOMATION_URL || 'http://localhost:3104';
 
-// Example work snippets shown in approval message — update as wins accumulate
-const EXAMPLE_WORK = [
+// Static fallback portfolio — shown when no real submitted/won proposals exist yet
+const EXAMPLE_WORK_FALLBACK = [
   '✅ Built N8n → Supabase CRM sync for SaaS founder (saved 4hr/wk)',
   '✅ Claude API + Safari automation → auto-DM pipeline (300 prospects/day)',
   '✅ Zapier → custom webhook bridge for $3.2M ARR B2B SaaS',
 ];
+
+// Dynamic portfolio: pull from real submitted/won proposals in Supabase
+async function getPortfolioExamples(): Promise<string[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data } = await getSupabaseClient()
+        .from('upwork_proposals')
+        .select('job_title, budget, status')
+        .in('status', ['won', 'submitted'])
+        .order('submitted_at', { ascending: false })
+        .limit(3);
+      if (data && data.length > 0) {
+        return data.map((p: { job_title: string; budget: string | null; status: string }) => {
+          const icon = p.status === 'won' ? '🏆' : '✅';
+          return `${icon} ${p.job_title}${p.budget ? ` (${p.budget})` : ''}`;
+        });
+      }
+    } catch { /* fall through to static */ }
+  }
+  return EXAMPLE_WORK_FALLBACK;
+}
 
 export function isTelegramConfigured(): boolean {
   return !!(BOT_TOKEN && CHAT_ID);
@@ -174,19 +196,33 @@ async function submitApprovedProposal(jobId: string): Promise<void> {
   // Submit proposal via upwork-automation
   await telegramPost('sendMessage', { chat_id: CHAT_ID, text: `🚀 Submitting proposal for "${proposal.job_title}"...` });
 
+  // Standard portfolio attachment (if exists)
+  const portfolioPath = '/Users/isaiahdupree/Documents/Software/portfolio.pdf';
+  const attachments = existsSync(portfolioPath) ? [portfolioPath] : [];
+
   try {
     const raw = await httpPost(`${UPWORK_AUTOMATION_URL}/api/upwork/proposals/submit`, {
       jobUrl: proposal.job_url,
       coverLetter: proposal.proposal_text,
       dryRun: false,
+      attachments,
     }, 60000);
 
-    const result = JSON.parse(raw) as { success?: boolean; error?: string; connectsUsed?: number; applicationUrl?: string };
+    const result = JSON.parse(raw) as { success?: boolean; error?: string; connectsUsed?: number; applicationUrl?: string; connectsCost?: number; bidAmount?: string; formType?: string; filesAttached?: number };
 
     if (result.success) {
       await supabase
         .from('upwork_proposals')
-        .update({ status: 'submitted', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .update({
+          status: 'submitted',
+          submitted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          application_url: result.applicationUrl || null,
+          submitted_connects_cost: result.connectsCost || null,
+          submitted_bid_amount: result.bidAmount || null,
+          submitted_form_type: result.formType || null,
+          submitted_files_count: result.filesAttached || null,
+        })
         .eq('job_id', jobId);
 
       // Generate preliminary client assets on successful approval
@@ -204,13 +240,17 @@ async function submitApprovedProposal(jobId: string): Promise<void> {
         ? `📁 Assets: ${assetResult.filesCreated.length} files → ${assetResult.passportPath ? 'Passport ✅' : 'local only'}\n<code>${assetResult.passportPath || assetResult.localPath}</code>`
         : `📁 Assets: generation failed (${assetResult.error?.slice(0, 60)})`;
 
+      const connectsUsed = result.connectsCost ?? connects?.cost;
+      const connectsRemaining = connects ? connects.available - (connectsUsed ?? 0) : null;
+
       await telegramPost('sendMessage', {
         chat_id: CHAT_ID,
         text:
-          `✅ <b>Proposal submitted!</b>\n` +
-          `Job: ${escHtml(proposal.job_title)}\n` +
-          `${connects ? `Connects used: ~${connects.cost} (${connects.available - connects.cost} remaining)\n` : ''}` +
-          `${result.applicationUrl ? `Application: ${escHtml(result.applicationUrl)}\n` : ''}` +
+          `✅ <b>Proposal Submitted!</b>\n` +
+          `📋 Job: ${escHtml(proposal.job_title)}\n` +
+          `${result.bidAmount ? `💰 Bid: ${escHtml(result.bidAmount)}\n` : ''}` +
+          `${connectsUsed != null ? `⚡ Connects used: ${connectsUsed}${connectsRemaining != null ? ` (${connectsRemaining} remaining)` : ''}\n` : ''}` +
+          `${result.applicationUrl ? `🔗 Application: ${escHtml(result.applicationUrl)}\n` : ''}` +
           assetLine,
         parse_mode: 'HTML',
       });
@@ -256,7 +296,8 @@ export async function sendProposalToTelegram(proposal: UpworkProposal): Promise<
 
   const proposalPreview = escHtml((proposal.proposal_text || '').slice(0, 600));
   const truncated = (proposal.proposal_text || '').length > 600 ? `\n[/view_${proposal.job_id} for full]` : '';
-  const exampleBlock = EXAMPLE_WORK.join('\n');
+  const examples = await getPortfolioExamples();
+  const exampleBlock = examples.join('\n');
 
   const text =
     `🎯 <b>NEW UPWORK JOB</b> — ${scoreTier} (${proposal.score}/100)\n` +
@@ -266,7 +307,7 @@ export async function sendProposalToTelegram(proposal: UpworkProposal): Promise<
     `🔗 ${escHtml(proposal.job_url)}\n\n` +
     `<b>PROPOSAL:</b>\n${proposalPreview}${truncated}\n\n` +
     `<b>EXAMPLE WORK:</b>\n${exampleBlock}\n\n` +
-    `▶️ /approve_${proposal.job_id}   ❌ /reject_${proposal.job_id}   📄 /view_${proposal.job_id}`;
+    `▶️ /approve_${proposal.job_id}   ❌ /reject_${proposal.job_id}   📄 /view_${proposal.job_id}   🏆 /won_${proposal.job_id}`;
 
   try {
     const result = (await telegramPost('sendMessage', {
@@ -308,10 +349,11 @@ async function processUpdate(update: {
   const text = update.message?.text || '';
 
   const approveMatch = /^\/approve_([a-f0-9]+)/i.exec(text);
-  const rejectMatch = /^\/reject_([a-f0-9]+)/i.exec(text);
-  const viewMatch = /^\/view_([a-f0-9]+)/i.exec(text);
-  const statusMatch = /^\/upwork_status/i.exec(text);
-  const scanMatch = /^\/upwork_scan/i.exec(text);
+  const rejectMatch  = /^\/reject_([a-f0-9]+)/i.exec(text);
+  const viewMatch    = /^\/view_([a-f0-9]+)/i.exec(text);
+  const wonMatch     = /^\/won_([a-f0-9]+)/i.exec(text);
+  const statusMatch  = /^\/upwork_status/i.exec(text);
+  const scanMatch    = /^\/upwork_scan/i.exec(text);
 
   if (!isSupabaseConfigured() && !approveMatch && !statusMatch && !scanMatch) return;
 
@@ -355,6 +397,31 @@ async function processUpdate(update: {
       }
     }
 
+  } else if (wonMatch) {
+    const jobId = wonMatch[1];
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabaseClient();
+      const { data: proposal } = await supabase
+        .from('upwork_proposals')
+        .select('job_title, budget, score')
+        .eq('job_id', jobId)
+        .single();
+      await supabase
+        .from('upwork_proposals')
+        .update({ status: 'won', updated_at: new Date().toISOString() })
+        .eq('job_id', jobId);
+      const title = proposal?.job_title ?? jobId;
+      const budget = proposal?.budget ? ` (${proposal.budget})` : '';
+      await telegramPost('sendMessage', {
+        chat_id: CHAT_ID,
+        text: `🏆 <b>WON!</b> "${escHtml(title)}"${escHtml(budget)} — marked as won. Great work!`,
+        parse_mode: 'HTML',
+      });
+    } else {
+      await telegramPost('sendMessage', { chat_id: CHAT_ID, text: `⚠️ Supabase not configured — cannot mark won` });
+    }
+    console.log(`[telegram-gate] Marked won job_id=${jobId}`);
+
   } else if (statusMatch) {
     // Quick status: pending proposals count + connects balance
     const supabase = isSupabaseConfigured() ? getSupabaseClient() : null;
@@ -393,6 +460,16 @@ async function processUpdate(update: {
     } catch (err) {
       await telegramPost('sendMessage', { chat_id: CHAT_ID, text: `❌ Scan failed: ${err instanceof Error ? err.message : String(err)}` });
     }
+  }
+}
+
+/** Called by upwork-hunter's HTTP /api/telegram-command endpoint instead of polling */
+export async function handleTelegramCommand(text: string): Promise<string> {
+  try {
+    await processUpdate({ update_id: 0, message: { text } });
+    return 'ok';
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 

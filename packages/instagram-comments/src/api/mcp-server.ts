@@ -38,10 +38,13 @@ async function checkNavigationConflict(): Promise<{ conflict: false } | { confli
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'instagram-comments-mcp';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 const COMMENTS_BASE = process.env.INSTAGRAM_COMMENTS_URL || 'http://localhost:3005';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ivhfuhxorppptyuofbgq.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const API_TOKEN = process.env.INSTAGRAM_API_TOKEN || 'test-token';
 const TIMEOUT_MS = 30_000;
+const SWEEP_TIMEOUT_MS = 300_000; // 5 min — batch sweeps navigate many posts
 
 // ─── Error Helpers ────────────────────────────────────────────────────────────
 
@@ -111,6 +114,33 @@ async function api(
     if (e.code === 'ECONNREFUSED' || e.cause?.code === 'ECONNREFUSED') throw { code: 'SERVICE_DOWN', message: `${COMMENTS_BASE} is not running — start it with: npm run --prefix packages/instagram-comments start:server`, base: COMMENTS_BASE };
     throw err;
   } finally { clearTimeout(t); }
+}
+
+// ─── Supabase Helper (for daily progress queries) ────────────────────────────
+
+async function supabaseGet(path: string): Promise<unknown> {
+  if (!SUPABASE_KEY) return null;
+  const res = await fetch(`${SUPABASE_URL}${path}`, {
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    signal: AbortSignal.timeout(8000),
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function getCommentsTodayCount(): Promise<number> {
+  const today = new Date().toISOString().split('T')[0];
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/comment_logs?platform=eq.instagram&success=eq.true&created_at=gte.${today}T00:00:00&select=id`,
+    {
+      method: 'HEAD',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: 'count=exact' },
+      signal: AbortSignal.timeout(8000),
+    }
+  ).catch(() => null);
+  if (!res) return -1;
+  const cr = res.headers.get('content-range') || '';
+  return parseInt(cr.split('/')[1] || '-1', 10);
 }
 
 // ─── Tool Definitions ─────────────────────────────────────────────────────────
@@ -262,6 +292,47 @@ const TOOLS = [
     description: 'Release the instagram-comments tab claim so the Safari tab is freed for user browsing or other services.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'igc_daily_progress',
+    description: 'Show today\'s Instagram comment count vs daily target, daemon status, and whether active hours are in effect. Call this before triggering a sweep to see how many slots remain.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'igc_comment_sweep',
+    description: 'Run a batch Instagram comment sweep: scans home feed + niche hashtags, generates AI comments, and posts them. Uses a 5-minute timeout. Set dryRun=true to preview without posting.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        maxTotal: { type: 'number', description: 'Max comments to post in this sweep (default 8, max 15)', default: 8 },
+        niches: {
+          type: 'array',
+          description: 'Niche configs [{name, keywords[], maxComments}]. Defaults to business niches (ai_automation, saas_growth, content_creation, digital_marketing).',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              keywords: { type: 'array', items: { type: 'string' } },
+              maxComments: { type: 'number' },
+            },
+          },
+        },
+        style: { type: 'string', description: 'Comment style prompt (default: insightful, practitioner-level, concise)' },
+        dryRun: { type: 'boolean', description: 'Preview without posting (default false)', default: false },
+      },
+    },
+  },
+  {
+    name: 'igc_engage_multi',
+    description: 'Engage with multiple Instagram posts from the home feed: navigate to each, generate AI comment, post it, optionally like. Uses a 5-minute timeout.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        count: { type: 'number', description: 'Number of posts to engage with (default 5)', default: 5 },
+        delayBetween: { type: 'number', description: 'Delay between posts in ms (default 30000)', default: 30000 },
+        useAI: { type: 'boolean', description: 'Use AI to generate comments (default true)', default: true },
+      },
+    },
+  },
 ];
 
 // ─── Tool Execution ───────────────────────────────────────────────────────────
@@ -395,6 +466,95 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'igc_release_session':
       result = await api('POST', '/api/session/clear', {});
       break;
+
+    case 'igc_daily_progress': {
+      const [todayCount, rateLimits] = await Promise.all([
+        getCommentsTodayCount(),
+        api('GET', '/api/instagram/comments/rate-limits').catch(() => null),
+      ]);
+      const dailyTarget = parseInt(process.env.COMMENT_DAILY_TARGET || '30', 10);
+      const hour = new Date().getHours();
+      const activeStart = parseInt(process.env.COMMENT_ACTIVE_HOURS_START || '8', 10);
+      const activeEnd = parseInt(process.env.COMMENT_ACTIVE_HOURS_END || '21', 10);
+      const inActiveHours = hour >= activeStart && hour < activeEnd;
+      const remaining = Math.max(0, dailyTarget - (todayCount >= 0 ? todayCount : 0));
+      result = {
+        today_count: todayCount >= 0 ? todayCount : 'unavailable',
+        daily_target: dailyTarget,
+        remaining,
+        percent_complete: todayCount >= 0 ? Math.round((todayCount / dailyTarget) * 100) : 0,
+        in_active_hours: inActiveHours,
+        active_hours: `${activeStart}:00–${activeEnd}:00`,
+        rate_limits: rateLimits,
+        note: remaining === 0 ? 'Daily target reached!' : inActiveHours ? `${remaining} comments remain — daemon will auto-sweep` : `Outside active hours — daemon paused until ${activeStart}:00`,
+      };
+      break;
+    }
+
+    case 'igc_comment_sweep': {
+      const maxTotal = Math.min((args.maxTotal as number) ?? 8, 15);
+      const style = (args.style as string) ?? 'insightful, practitioner-level, concise — adds genuine value to the conversation';
+      const dryRun = (args.dryRun as boolean) ?? false;
+      const defaultNiches = [
+        { name: 'ai_automation', keywords: ['aiagents', 'aiautomation', 'artificialintelligence', 'machinelearning', 'llm'], maxComments: 3 },
+        { name: 'saas_growth', keywords: ['saas', 'saasfounder', 'b2bsaas', 'startupsoftware'], maxComments: 3 },
+        { name: 'content_creation', keywords: ['contentcreator', 'contentmarketing', 'personalbranding'], maxComments: 2 },
+        { name: 'digital_marketing', keywords: ['digitalmarketing', 'marketingautomation', 'growthhacking'], maxComments: 2 },
+      ];
+      const niches = (args.niches as typeof defaultNiches | undefined) ?? defaultNiches;
+
+      // Tab conflict check before sweep
+      const sweepConflict = await checkNavigationConflict();
+      if (sweepConflict.conflict) {
+        throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${sweepConflict.blocker.service}' (port ${sweepConflict.blocker.port}). Cannot run sweep while another service owns the tab.`, blocker: sweepConflict.blocker };
+      }
+
+      // Use extended timeout for batch sweep
+      const ctrl = new AbortController();
+      const sweepTimer = setTimeout(() => ctrl.abort(), SWEEP_TIMEOUT_MS);
+      try {
+        const res = await fetch(`${COMMENTS_BASE}/api/instagram/comment-sweep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_TOKEN}` },
+          body: JSON.stringify({ niches, feedSources: ['home'], maxPerFeed: Math.min(3, maxTotal), maxPerNiche: Math.min(4, maxTotal), maxTotal, style, dryRun }),
+          signal: ctrl.signal,
+        });
+        const text = await res.text();
+        if (!res.ok) structuredError(res.status, text, 'instagram');
+        result = JSON.parse(text);
+      } finally {
+        clearTimeout(sweepTimer);
+      }
+      break;
+    }
+
+    case 'igc_engage_multi': {
+      const count = (args.count as number) ?? 5;
+      const delayBetween = (args.delayBetween as number) ?? 30000;
+      const useAI = (args.useAI as boolean) ?? true;
+
+      const engageConflict = await checkNavigationConflict();
+      if (engageConflict.conflict) {
+        throw { code: 'TAB_CONFLICT', message: `Safari tab is claimed by '${engageConflict.blocker.service}' (port ${engageConflict.blocker.port}). Cannot engage while another service owns the tab.`, blocker: engageConflict.blocker };
+      }
+
+      const ctrl = new AbortController();
+      const engageTimer = setTimeout(() => ctrl.abort(), SWEEP_TIMEOUT_MS);
+      try {
+        const res = await fetch(`${COMMENTS_BASE}/api/instagram/engage/multi`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_TOKEN}` },
+          body: JSON.stringify({ count, delayBetween, useAI }),
+          signal: ctrl.signal,
+        });
+        const text = await res.text();
+        if (!res.ok) structuredError(res.status, text, 'instagram');
+        result = JSON.parse(text);
+      } finally {
+        clearTimeout(engageTimer);
+      }
+      break;
+    }
 
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };

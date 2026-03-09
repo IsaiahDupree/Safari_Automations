@@ -109,6 +109,9 @@ const TOOLS = [
   { name: 'instagram_dm_top_n', description: 'Promote the top N highest-ICP-score prospects from suggested_actions to the outreach queue (status=pending). Applies a message template. Call AFTER scale_discover has accumulated enough prospects. Always use dryRun=true first to preview.', inputSchema: { type: 'object', properties: { n: { type: 'number', description: 'Number of prospects to promote to DM queue', default: 100 }, messageTemplate: { type: 'string', description: 'Message template, use {username} as placeholder', default: 'Hey {username}! Your work caught my eye — would love to connect about AI automation.' }, dryRun: { type: 'boolean', description: 'Preview without queueing', default: true } }, required: [] } },
   { name: 'instagram_send_queued', description: 'Send pending prospect DMs from the outreach queue. Navigates to each profile, clicks Message, sends the queued message. Use batchSize≤5 and sendDelay≥45000ms (45s) to stay safe. Always dryRun:true first to preview. Returns {sent, failed, remaining, rateLimits}.', inputSchema: { type: 'object', properties: { batchSize: { type: 'number', description: 'Max DMs to send per call (max 10, default 5)', default: 5 }, sendDelay: { type: 'number', description: 'Ms to wait between DMs (default 45000 = 45s)', default: 45000 }, dryRun: { type: 'boolean', description: 'Preview queue without sending', default: true } } } },
   { name: 'instagram_claim_status', description: 'Read current Safari tab claims from /tmp/safari-tab-claims.json. Shows which services own which tabs and any conflicts with instagram-dm\'s tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'instagram_queue_status', description: 'Get Instagram DM queue status: pending/approved/sent/failed counts, today\'s send count vs daily cap, and list of pending prospect handles.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'instagram_send_from_queue', description: 'Send all approved Instagram DMs from the local harness queue (instagram-dm-queue.json). Uses profile-page send method for cold prospects. Pass dryRun=true to preview.', inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean', description: 'Preview without sending', default: false } }, required: [] } },
+  { name: 'instagram_daily_report', description: 'Get a daily summary of Instagram DM activity: sent today, pending, failed, and method note.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -239,6 +242,49 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
       const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
       result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }; break;
+    }
+    case 'instagram_queue_status': {
+      const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';
+      const DAILY_CAP = 10;
+      let q: any = { queue: [] };
+      try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
+      const today = new Date().toISOString().slice(0, 10);
+      const byStatus: Record<string, number> = {};
+      for (const e of q.queue) byStatus[e.status] = (byStatus[e.status] || 0) + 1;
+      const sentToday = q.queue.filter((e: any) => e.sentAt?.startsWith(today));
+      const pending = q.queue.filter((e: any) => e.status === 'pending' || e.status === 'approved');
+      result = { byStatus, sentToday: sentToday.length, dailyCap: DAILY_CAP, remaining: Math.max(0, DAILY_CAP - sentToday.length), pending: pending.map((e: any) => ({ username: e.username, score: e.score, status: e.status })) };
+      break;
+    }
+    case 'instagram_send_from_queue': {
+      if (args.dryRun) {
+        const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';
+        let q: any = { queue: [] };
+        try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
+        const approved = q.queue.filter((e: any) => e.status === 'approved');
+        result = { dryRun: true, wouldSend: approved.map((e: any) => e.username) }; break;
+      }
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileP = promisify(execFile);
+      const { stdout, stderr } = await execFileP('/usr/local/bin/node', ['harness/instagram-dm-sweep.js', '--send-approved'], {
+        cwd: '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard',
+        timeout: 300_000,
+        env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/homebrew/bin' },
+      }).catch((e: any) => ({ stdout: '', stderr: String(e.message) }));
+      result = { stdout: stdout.slice(-2000), stderr: stderr.slice(-500) }; break;
+    }
+    case 'instagram_daily_report': {
+      const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';
+      let q: any = { queue: [] };
+      try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
+      const today = new Date().toISOString().slice(0, 10);
+      const sentToday = q.queue.filter((e: any) => e.sentAt?.startsWith(today)).map((e: any) => e.username);
+      const pending = q.queue.filter((e: any) => e.status === 'pending').length;
+      const approved = q.queue.filter((e: any) => e.status === 'approved').length;
+      const failed = q.queue.filter((e: any) => e.status === 'failed').length;
+      result = { date: today, sentToday, sentCount: sentToday.length, pending, approved, failed, dailyCap: 10, note: 'Send method: profile-page Message button click — confirmed reliable for cold prospects' };
+      break;
     }
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }

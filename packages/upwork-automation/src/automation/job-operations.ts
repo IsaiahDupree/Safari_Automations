@@ -1033,9 +1033,10 @@ export interface ConnectsBalance {
 export async function getConnectsBalance(driver?: SafariDriver): Promise<ConnectsBalance> {
   const d = driver || getDefaultDriver();
 
-  // Navigate to Upwork homepage to ensure we're on the site
+  // Navigate to find-work so the connects balance is visible in the nav
   const currentUrl = await d.getCurrentUrl();
-  if (!currentUrl.includes('upwork.com')) {
+  const onFindWork = currentUrl.includes('/nx/find-work') || currentUrl.includes('/nx/jobs');
+  if (!onFindWork) {
     await d.navigateTo('https://www.upwork.com/nx/find-work/');
     await d.wait(2000);
   }
@@ -1046,26 +1047,27 @@ export async function getConnectsBalance(driver?: SafariDriver): Promise<Connect
       // Try multiple selectors for connects count
       var selectors = [
         '[data-test="connects-count"]',
-        '[class*="connects"]',
-        '[aria-label*="connects"]',
-        'div:contains("Connects")',
-        'span:contains("Connects")'
+        '[class*="connects-balance"]',
+        '[aria-label*="connects"]'
       ];
 
       for (var selector of selectors) {
-        var el = document.querySelector(selector);
-        if (el) {
-          var text = el.innerText || el.textContent || '';
-          // Extract number from text like "120 Connects" or "Connects: 120"
-          var match = text.match(/\\d+/);
-          if (match) return match[0];
-        }
+        try {
+          var el = document.querySelector(selector);
+          if (el) {
+            var text = el.innerText || el.textContent || '';
+            var match = text.match(/\\d+/);
+            if (match) return match[0];
+          }
+        } catch (e) {}
       }
 
-      // Fallback: search for text containing number and "connect"
+      // Fallback: search body text for "Connects: 280" or "280 Connects"
       var allText = document.body.innerText || '';
-      var connectMatch = allText.match(/(\\d+)\\s*(?:Connects?|available)/i);
-      if (connectMatch) return connectMatch[1];
+      var m1 = allText.match(/Connects?:\\s*(\\d+)/i);
+      if (m1) return m1[1];
+      var m2 = allText.match(/(\\d+)\\s*Connects?/i);
+      if (m2) return m2[1];
 
       return '0';
     })()
@@ -1086,7 +1088,8 @@ export interface ProposalSubmission {
   coverLetter: string;
   hourlyRate?: number;           // e.g. 75 for $75/hr (hourly jobs only)
   fixedPrice?: number;           // e.g. 1200 for $1200 (fixed-price jobs only)
-  milestoneDescription?: string; // e.g. "Complete project deliverables"
+  milestoneDescription?: string;  // backward compat — single milestone text
+  milestones?: Array<{ amount: number; description: string; deadline?: string }>;
   projectDuration?: string;      // e.g. "Less than a month", "1 to 3 months"
   paymentMode?: 'milestone' | 'project'; // "milestone" = by milestone, "project" = by project (one lump)
   screeningAnswers?: string[];   // answers in order of questions shown
@@ -1107,6 +1110,7 @@ export interface ProposalResult {
   formType: 'hourly' | 'fixed' | 'unknown';
   error?: string;
   dryRun: boolean;
+  applicationUrl?: string;
 }
 
 /**
@@ -1363,6 +1367,28 @@ export async function submitProposal(
         `);
         console.log(`[Upwork] Milestone description: ${descInput}`);
         await d.wait(500);
+
+        // Structured milestones: if submission.milestones array provided, fill each milestone row
+        if (submission.milestones && submission.milestones.length > 0) {
+          for (let mi = 0; mi < submission.milestones.length; mi++) {
+            const ms = submission.milestones[mi];
+            // Fill description for each milestone
+            const msDescResult = await d.executeJS(`
+              (function() {
+                var inputs = document.querySelectorAll('[class*="milestone"] input[type="text"], [class*="milestone"] textarea');
+                if (!inputs[${mi}]) return 'not_found_${mi}';
+                var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set ||
+                                Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                nativeSet.call(inputs[${mi}], '${escapeForJS(ms.description)}');
+                inputs[${mi}].dispatchEvent(new Event('input', { bubbles: true }));
+                inputs[${mi}].dispatchEvent(new Event('change', { bubbles: true }));
+                return 'filled_${mi}';
+              })()
+            `);
+            console.log(`[Upwork] Structured milestone[${mi}] desc: ${msDescResult}`);
+            await d.wait(300);
+          }
+        }
       }
 
       // 4c: Set total price / milestone amount via OS-level keystroke typing
@@ -1786,6 +1812,17 @@ export async function submitProposal(
     if (verification.startsWith('success')) {
       result.success = true;
       result.submitted = true;
+      // Capture application URL from success page redirect
+      try {
+        const finalUrl = await d.getCurrentUrl();
+        if (finalUrl.includes('/proposals/') || finalUrl.includes('submit-proposal/success')) {
+          result.applicationUrl = finalUrl;
+        } else {
+          // Try to get it from the proposals list page
+          const appliedUrl = `https://www.upwork.com/nx/proposals`;
+          result.applicationUrl = appliedUrl;
+        }
+      } catch { /* non-fatal */ }
     } else {
       result.error = `Verification: ${verification}`;
       result.submitted = true;

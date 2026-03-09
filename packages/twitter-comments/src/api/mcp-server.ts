@@ -28,6 +28,7 @@ async function checkNavigationConflict(): Promise<{ conflict: false } | { confli
 const TWITTER_BASE = 'http://localhost:3007';
 const TWITTER_AUTH = process.env.TWITTER_AUTH_TOKEN || process.env.API_TOKEN || 'test-token-12345';
 const TIMEOUT_MS = 30_000;
+const SWEEP_TIMEOUT_MS = 300_000; // 5 min — batch sweeps can take 1-5 min
 
 // ═══════════════════════════════════════════════════════════════
 // Structured error codes
@@ -87,7 +88,7 @@ async function api(method: 'GET' | 'POST' | 'PUT', path: string, body?: Record<s
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'twitter-comments-safari-automation';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 
 // ═══════════════════════════════════════════════════════════════
 // Tool definitions
@@ -198,6 +199,24 @@ const TOOLS = [
   { name: 'twitter_comments_session_ensure', description: 'Ensure the twitter-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
   { name: 'twitter_comments_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with twitter-comments.', inputSchema: { type: 'object', properties: {} } },
   { name: 'twitter_comments_release_session', description: 'Release the twitter-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
+  {
+    name: 'twitter_comments_sweep',
+    description: 'Niche-aware batch comment sweep on Twitter/X. Searches each niche\'s keywords, generates AI replies, and posts them. Has 5-minute timeout — batch ops can take several minutes. Checks for tab conflicts first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        niches: {
+          type: 'array',
+          description: 'Niches to sweep. Each: { name, keywords[], maxComments }',
+          items: { type: 'object' },
+          default: [],
+        },
+        maxTotal: { type: 'number', description: 'Hard cap for total comments in this run', default: 10 },
+        style: { type: 'string', description: 'Reply tone / style', default: 'insightful, concise, authentic — adds real value' },
+        dryRun: { type: 'boolean', description: 'Generate replies without posting', default: false },
+      },
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -302,6 +321,41 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
     case 'twitter_comments_release_session':
       return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
+
+    case 'twitter_comments_sweep': {
+      const sweepConflict = await checkNavigationConflict();
+      if (sweepConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${sweepConflict.blocker.service}' (:${sweepConflict.blocker.port}). Call twitter_comments_session_ensure first.`, blocker: sweepConflict.blocker };
+
+      const defaultNiches = [
+        { name: 'ai_automation', keywords: ['aiagents', 'aiautomation', 'artificialintelligence', 'machinelearning', 'llm'], maxComments: 3 },
+        { name: 'saas_growth', keywords: ['saas', 'saasfounder', 'b2bsaas', 'startupsoftware'], maxComments: 3 },
+        { name: 'content_creation', keywords: ['contentcreator', 'contentmarketing', 'personalbranding'], maxComments: 2 },
+        { name: 'digital_marketing', keywords: ['digitalmarketing', 'marketingautomation', 'growthhacking'], maxComments: 2 },
+      ];
+      const niches = (args.niches as object[] | undefined)?.length ? args.niches : defaultNiches;
+      const maxTotal = (args.maxTotal as number) || 10;
+      const style = (args.style as string) || 'insightful, concise, authentic — adds real value to the conversation';
+      const dryRun = !!(args.dryRun as boolean);
+
+      const ctrl = new AbortController();
+      const sweepTimer = setTimeout(() => ctrl.abort(), SWEEP_TIMEOUT_MS);
+      try {
+        const res = await fetch(`${TWITTER_BASE}/api/twitter/comment-sweep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TWITTER_AUTH}` },
+          body: JSON.stringify({ niches, feedSources: ['search'], maxPerNiche: 5, maxPerFeed: 3, maxTotal, style, dryRun }),
+          signal: ctrl.signal,
+        });
+        const data = await res.json() as Record<string, unknown>;
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'AbortError') throw { code: 'SERVICE_DOWN', message: `comment-sweep timed out after ${SWEEP_TIMEOUT_MS / 1000}s` };
+        throw err;
+      } finally {
+        clearTimeout(sweepTimer);
+      }
+    }
 
     default:
       throw { code: -32601, message: `Unknown tool: ${name}` };
