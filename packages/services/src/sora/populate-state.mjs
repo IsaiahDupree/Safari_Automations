@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const SUPABASE_URL = 'https://ivhfuhxorppptyuofbgq.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2aGZ1aHhvcnBwcHR5dW9mYmdxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUzODk5NywiZXhwIjoyMDg3MTE0OTk3fQ.iGefA7ArDMwQSg0diAw20h4rjLgDP_EWQa3khCIHkmA';
-const BLOTATO_KEY = 'blt_LwwTS0Syws9jriila9i3PVXneUAWio0RXK++Wv/T8mY=';
+const BLOTATO_KEY = process.env.BLOTATO_API_KEY || '';
 const YOUTUBE_ACCOUNT_ID = '228';
 const STATE_PATH = join(__dirname, 'sora-mcp-state.json');
 const PASSPORT_RAW = '/Volumes/My Passport/Sora Videos/raw';
