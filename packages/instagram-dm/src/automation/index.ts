@@ -1,3 +1,13 @@
 export * from './types.js';
 export * from './safari-driver.js';
-export * from './dm-operations.js';
+export {
+  navigateToInbox,
+  listConversations,
+  listAllConversations,
+  switchTab,
+  openConversation,
+  readMessages,
+  sendMessage,
+  startNewConversation,
+  getAllConversations,
+} from './dm-operations.js';

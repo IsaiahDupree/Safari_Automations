@@ -38,50 +38,142 @@ export async function navigateToInbox(driver?: SafariDriver): Promise<Navigation
 }
 
 /**
- * List conversations from current inbox view.
+ * List conversations from current inbox view with full metadata.
  */
 export async function listConversations(driver?: SafariDriver): Promise<DMConversation[]> {
   const d = driver || getDefaultDriver();
   
-  const result = await d.executeJS(`
+  const rawResult = await d.executeJS(`
     (function() {
-      var conversations = [];
-      var imgs = document.querySelectorAll('img[alt*="profile picture"]');
+      var convos = [];
+      var text = document.body.innerText;
+      var lines = text.split(String.fromCharCode(10));
+      var skip = ['Primary','General','Requests','Messages','Note','Search','Unread','Active',
+        'Your note','Your messages','Send message','Hidden','Decide','Message requests',
+        'Mon ','Tue ','Wed ','Thu ','Fri ','Sat ','Sun ','AM','PM','Today','Yesterday',
+        'Delete','Block','Accept','View','Open a chat','YouTube debut','got it','Looking',
+        'forward','collab','Hopefully','Call center','hope that','courses'];
+      var seen = {};
+      var current = null;
+      var nextIsUnread = false;
       
-      imgs.forEach(function(img) {
-        var alt = img.getAttribute('alt') || '';
-        var username = alt.replace("'s profile picture", '').trim();
-        if (username && username.length > 1) {
-          var container = img.closest('div[role="button"]') || img.closest('a');
-          var textEl = container ? container.querySelector('span') : null;
-          var lastMsg = '';
-          if (textEl) {
-            var spans = container.querySelectorAll('span');
-            for (var i = 0; i < spans.length; i++) {
-              var text = spans[i].innerText || '';
-              if (text.length > 10 && text !== username) {
-                lastMsg = text;
-                break;
-              }
-            }
-          }
-          conversations.push(JSON.stringify({
-            username: username,
-            lastMessage: lastMsg.substring(0, 100)
-          }));
+      for (var i = 0; i < lines.length; i++) {
+        var l = lines[i].trim();
+        if (!l) continue;
+        
+        // Check for Unread marker
+        if (l === 'Unread') {
+          nextIsUnread = true;
+          continue;
         }
-      });
+        
+        var isSkip = false;
+        for (var j = 0; j < skip.length; j++) {
+          if (l === skip[j] || l.indexOf(skip[j]) === 0) { isSkip = true; break; }
+        }
+        if (isSkip) continue;
+        
+        // Skip message content patterns
+        if (l.indexOf(' sent ') !== -1) continue;
+        if (l.indexOf('You:') !== -1) continue;
+        if (l.indexOf('http') !== -1) continue;
+        if (l.indexOf('!') !== -1 && l.length > 20) continue;
+        if (l.indexOf('?') !== -1 && l.length > 20) continue;
+        if (/^[0-9]+[wdhmy]$/.test(l)) {
+          if (current) current.time = l;
+          continue;
+        }
+        
+        // Check if this is a contact name
+        if (/^[A-Z]/.test(l) && l.length > 2 && l.length < 45) {
+          if (current && current.name && !seen[current.name]) {
+            seen[current.name] = true;
+            convos.push(current);
+          }
+          
+          var name = l.split('|')[0].trim();
+          current = { name: name, msg: '', time: '', unread: nextIsUnread };
+          nextIsUnread = false;
+        }
+      }
       
-      return '[' + conversations.slice(0, 30).join(',') + ']';
+      if (current && current.name && !seen[current.name]) {
+        convos.push(current);
+      }
+      
+      return JSON.stringify(convos.slice(0, 50));
     })()
   `);
   
   try {
-    const parsed = JSON.parse(result || '[]');
-    return parsed as DMConversation[];
-  } catch {
+    const parsed = JSON.parse(rawResult || '[]') as { name: string; msg: string; time: string; unread: boolean }[];
+    return parsed.map(c => ({
+      username: c.name,
+      lastMessage: c.msg,
+      lastMessageAt: c.time,
+      unreadCount: c.unread ? 1 : 0,
+    }));
+  } catch (e) {
+    console.error('[listConversations] Parse error:', e);
     return [];
   }
+}
+
+/**
+ * Scroll conversation list and collect all conversations.
+ */
+export async function listAllConversations(maxScrolls = 20, driver?: SafariDriver): Promise<DMConversation[]> {
+  const d = driver || getDefaultDriver();
+  const allConvos: DMConversation[] = [];
+  const seen = new Set<string>();
+  
+  for (let i = 0; i < maxScrolls; i++) {
+    const convos = await listConversations(d);
+    
+    for (const c of convos) {
+      if (!seen.has(c.username)) {
+        seen.add(c.username);
+        allConvos.push(c);
+      }
+    }
+    
+    // Scroll the DM conversation list container
+    await d.executeJS(`
+      (function() {
+        // Instagram's conversation list container
+        var container = document.querySelector('div.xb57i2i.x1q594ok.x5lxg6s');
+        if (container) {
+          container.scrollTop += 500;
+          return 'scrolled:' + container.scrollTop + '/' + container.scrollHeight;
+        }
+        // Fallback selectors
+        var containers = document.querySelectorAll('div[style*="overflow-y"]');
+        for (var i = 0; i < containers.length; i++) {
+          if (containers[i].scrollHeight > containers[i].clientHeight + 100) {
+            containers[i].scrollTop += 500;
+            return 'fallback';
+          }
+        }
+        return 'none';
+      })()
+    `);
+    
+    await d.wait(1500);
+    
+    // Check if we found new ones
+    const newConvos = await listConversations(d);
+    let foundNew = false;
+    for (const c of newConvos) {
+      if (!seen.has(c.username)) {
+        foundNew = true;
+        break;
+      }
+    }
+    
+    if (!foundNew && i > 3) break;
+  }
+  
+  return allConvos;
 }
 
 /**

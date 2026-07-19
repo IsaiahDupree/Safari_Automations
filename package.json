@@ -21,11 +21,17 @@
     "analytics": "npx tsx scripts/pipeline-analytics.ts",
     "outreach": "npx tsx scripts/automated-outreach.ts",
     "sync": "npx tsx scripts/sync-instagram-dm-to-crm.ts",
-    "dm": "npx tsx scripts/instagram-dm-cli.ts"
+    "dm": "npx tsx scripts/instagram-dm-cli.ts",
+    "social": "npx tsx ../Safari\\ Automation/packages/social-cli/src/cli.ts",
+    "twitter": "npx tsx scripts/twitter-api.ts",
+    "twitter:server": "npx tsx ../Safari\\ Automation/packages/twitter-dm/src/api/server.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "@safari-automation/crm-core": "file:../Safari Automation/packages/crm-core",
+    "@safari-automation/twitter-dm": "file:../Safari Automation/packages/twitter-dm",
+    "@safari-automation/unified-client": "file:../Safari Automation/packages/unified-client"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
