@@ -79,9 +79,14 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
   }
 }
 import cors from 'cors';
-import { TabCoordinator } from '../automation/tab-coordinator.js';
 import {
-  SafariDriver,
+  ChromeDriver,
+  getDefaultDriver as getChromeDriver,
+  getPage as getChromePage,
+  ensureInstagramTab,
+  type SessionInfo,
+} from '../automation/chrome-driver.js';
+import {
   navigateToInbox,
   listConversations,
   switchTab,
@@ -142,49 +147,32 @@ let lastHourReset = _rl.hourStart;
 let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 
-// Safari driver instance
-let driver: SafariDriver | null = null;
-
-// URL pattern that identifies the Instagram DM Safari session
+// URL pattern that identifies the Instagram session
 const SESSION_URL_PATTERN = 'instagram.com';
 const SERVICE_NAME = 'instagram-dm';
 const SERVICE_PORT = parseInt(process.env.PORT || '3100', 10);
 
-// Active tab coordinators by agentId (in-process map; file is cross-process)
-const activeCoordinators = new Map<string, TabCoordinator>();
-
-// Stable persistent coordinator — one identity, heartbeat keeps claim alive
-const STABLE_AGENT_ID = 'instagram-dm-stable';
-let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
-
-// Heartbeat: refresh claim every 30s so it never hits the 60s TTL
-setInterval(async () => {
-  try {
-    if (stableCoord) await stableCoord.heartbeat();
-  } catch { /* claim gone — next request will re-claim */ }
-}, 30_000);
-
-function getDriver(): SafariDriver {
-  if (!driver) {
-    driver = new SafariDriver({
-      verbose: process.env.VERBOSE === 'true',
-    });
-  }
-  return driver;
+// ChromeDriver singleton — replaces the old Safari driver
+function getDriver(): ChromeDriver {
+  return getChromeDriver();
 }
 
 /**
- * Ensure the Instagram Safari tab is the active/front tab before any operation.
- * Scans all Safari windows, finds the instagram.com tab, and activates it.
- * Falls back to navigating if not found.
+ * Ensure the Instagram Chrome tab is open and reachable.
+ * Connects to Chrome via CDP and finds/opens an instagram.com tab.
  */
 async function ensureInstagramSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
-  const info = await getDriver().ensureActiveSession(SESSION_URL_PATTERN);
-  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+  try {
+    const info = await getDriver().ensureActiveSession(SESSION_URL_PATTERN);
+    return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+  } catch (err) {
+    console.error('[ensureInstagramSession] Failed:', err);
+    return { ok: false, windowIndex: 0, tabIndex: 0, url: '' };
+  }
 }
 
 /**
- * Express middleware: activate the correct Instagram Safari tab before the request handler runs.
+ * Express middleware: ensure Chrome is connected and an Instagram tab is open.
  * Skips for non-automating routes (health, rate-limits, session status).
  */
 async function requireActiveSession(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -192,8 +180,8 @@ async function requireActiveSession(req: Request, res: Response, next: NextFunct
     const info = await ensureInstagramSession();
     if (!info.ok) {
       res.status(503).json({
-        error: 'Instagram Safari session not found',
-        fix: 'Open Safari and navigate to instagram.com, then retry',
+        error: 'Instagram Chrome session not found',
+        fix: 'Start Chrome with --remote-debugging-port=9222 and navigate to instagram.com, then retry',
         session: info,
       });
       return;
@@ -246,60 +234,30 @@ function checkRateLimit(req: Request, res: Response, next: NextFunction): void {
 
 // === ROUTES ===
 
-// Health check
-app.get('/health', (req, res) => {
-
-// ── Tab claim enforcement ─────────────────────────────────────────────────────
-// Every automation route MUST have an active tab claim before it runs.
-// On first request: auto-claims an existing tab OR opens a new one.
-// Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
-const OPEN_URL = 'https://www.instagram.com/direct/inbox/';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
-
-async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-  if (myClaim) {
-    // Stable claim exists — pin driver to the claimed tab and proceed
-    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    next();
-    return;
-  }
-
-  // No claim — create/reuse stable coordinator and claim
+// Health check — includes Chrome CDP connection status
+app.get('/health', async (_req, res) => {
+  let chromeStatus = 'unknown';
+  let chromeUrl = '';
   try {
-    if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
-    }
-    const claim = await stableCoord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
-    next();
-  } catch (err) {
-    res.status(503).json({
-      error: 'No Safari tab available for instagram-dm',
-      detail: String(err),
-      fix: `Open Safari and navigate to https://www.instagram.com/direct/inbox/, or POST /api/tabs/claim with { agentId, openUrl: "https://www.instagram.com/direct/inbox/" }`,
-    });
+    const p = await getChromePage();
+    chromeUrl = p.url();
+    chromeStatus = chromeUrl.includes('instagram.com') ? 'connected_instagram' : 'connected_other';
+  } catch {
+    chromeStatus = 'not_connected';
   }
-}
 
-app.use(requireTabClaim);
-// ─────────────────────────────────────────────────────────────────────────────
-
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
+    browser: 'chrome',
+    cdpUrl: process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222',
+    chromeStatus,
+    chromeCurrentUrl: chromeUrl,
     rateLimits: {
       messagesSentToday,
       messagesSentThisHour,
       limits: rateLimits,
-    }
+    },
   });
 });
 
@@ -364,99 +322,61 @@ app.post('/api/session/clear', (req, res) => {
   res.json({ ok: true, message: 'Tracked session cleared' });
 });
 
-// ─── Tab Coordination API ──────────────────────────────────────────────────
-// Cross-agent tab claim registry. Agents call these to register ownership
-// of a specific Safari window+tab, preventing other agents from interfering.
+// ─── Tab Coordination API (Chrome stub) ────────────────────────────────────
+// These endpoints kept for API compatibility with external callers.
+// With Chrome/Puppeteer there is no Safari window+tab claim system —
+// Chrome always has exactly one Instagram page that all operations share.
 
-// GET /api/tabs/claims — list all live tab claims across all services
+// GET /api/tabs/claims — returns a synthetic "claim" representing the Chrome page
 app.get('/api/tabs/claims', async (_req, res) => {
   try {
-    const claims = await TabCoordinator.listClaims();
-    res.json({ claims, count: claims.length });
+    let url = '';
+    try { url = (await getChromePage()).url(); } catch { /* not connected */ }
+    const claims = url ? [{
+      agentId: 'instagram-dm-stable',
+      service: SERVICE_NAME,
+      port: SERVICE_PORT,
+      urlPattern: SESSION_URL_PATTERN,
+      windowIndex: 1,
+      tabIndex: 1,
+      tabUrl: url,
+      pid: process.pid,
+      claimedAt: Date.now(),
+      heartbeat: Date.now(),
+    }] : [];
+    res.json({ claims, count: claims.length, note: 'Chrome/Puppeteer — no Safari tab registry needed' });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
 });
 
-// POST /api/tabs/claim — agent claims a Safari tab for this service
-// Body: { agentId: string, windowIndex?: number, tabIndex?: number }
-// If windowIndex/tabIndex omitted, auto-discovers first available instagram.com tab.
+// POST /api/tabs/claim — no-op for Chrome; always succeeds
 app.post('/api/tabs/claim', async (req, res) => {
-  const { agentId, windowIndex, tabIndex } = req.body as {
-    agentId: string;
-    windowIndex?: number;
-    tabIndex?: number;
-  };
-
-  if (!agentId) {
-    res.status(400).json({ error: 'agentId required' });
-    return;
-  }
-
+  const { agentId } = req.body as { agentId?: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
   try {
-    // Reuse or create coordinator
-    let coord = activeCoordinators.get(agentId);
-    if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-      activeCoordinators.set(agentId, coord);
-    }
-
-    const claim = await coord.claim(windowIndex, tabIndex);
-
-    // Pin the SafariDriver to this window+tab so all JS runs there
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-
+    const p = await ensureInstagramTab();
     res.json({
       ok: true,
-      claim,
-      message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'`,
+      claim: { agentId, service: SERVICE_NAME, port: SERVICE_PORT, urlPattern: SESSION_URL_PATTERN, windowIndex: 1, tabIndex: 1, tabUrl: p.url(), pid: process.pid, claimedAt: Date.now(), heartbeat: Date.now() },
+      message: `Chrome Instagram tab active for '${agentId}'`,
     });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
 });
 
-// POST /api/tabs/release — agent releases its tab claim
-// Body: { agentId: string }
-app.post('/api/tabs/release', async (req, res) => {
-  const { agentId } = req.body as { agentId: string };
-  if (!agentId) {
-    res.status(400).json({ error: 'agentId required' });
-    return;
-  }
-
-  try {
-    const coord = activeCoordinators.get(agentId);
-    if (coord) {
-      await coord.release();
-      activeCoordinators.delete(agentId);
-    }
-    res.json({ ok: true, message: `Claim released for '${agentId}'` });
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
+// POST /api/tabs/release — no-op for Chrome
+app.post('/api/tabs/release', (req, res) => {
+  const { agentId } = req.body as { agentId?: string };
+  res.json({ ok: true, message: `No-op: Chrome/Puppeteer does not use tab claims (${agentId})` });
 });
 
-// POST /api/tabs/heartbeat — refresh claim TTL to prevent expiry
-// Body: { agentId: string }
-app.post('/api/tabs/heartbeat', async (req, res) => {
-  const { agentId } = req.body as { agentId: string };
-  if (!agentId) {
-    res.status(400).json({ error: 'agentId required' });
-    return;
-  }
-
-  try {
-    const coord = activeCoordinators.get(agentId);
-    if (!coord?.activeClaim) {
-      res.status(404).json({ error: `No active claim for '${agentId}'` });
-      return;
-    }
-    await coord.heartbeat();
-    res.json({ ok: true, heartbeat: Date.now() });
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
+// POST /api/tabs/heartbeat — no-op for Chrome
+app.post('/api/tabs/heartbeat', (req, res) => {
+  const { agentId } = req.body as { agentId?: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  res.json({ ok: true, heartbeat: Date.now(), note: 'Chrome/Puppeteer does not expire tab claims' });
 });
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -1059,7 +979,7 @@ app.get('/api/outreach/stats', async (req, res) => {
 // Claims the Safari tab for the duration of the run so no other request
 // navigates the same tab mid-discovery. Releases on completion or error.
 app.post('/api/prospect/discover', async (req, res) => {
-  const params = req.body as DiscoverParams;
+  const params: DiscoverParams = { selfUsername: 'the_isaiah_dupree', ...req.body };
 
   if (params.dryRun) {
     const result = await discoverProspects(params, undefined);
@@ -1067,30 +987,27 @@ app.post('/api/prospect/discover', async (req, res) => {
     return;
   }
 
-  // Claim the instagram.com tab so discovery owns it for the full run
-  const agentId = `prospect-discovery-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[prospect-discover] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex} (${agentId})`);
-  } catch (err) {
-    // No matching Instagram tab open — still attempt with whatever tab the driver has
-    console.warn(`[prospect-discover] Tab claim failed (will use current tracked tab): ${err}`);
-    coord = null;
-  }
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page directly
+  const discoverDriver = getDriver();
+  console.log(`[prospect-discover] Using Chrome CDP driver for discovery`);
 
   try {
-    const result = await discoverProspects(params, getDriver());
-    res.json(result);
+    const result = await discoverProspects(params, discoverDriver);
+    // Store qualifying candidates in suggested_actions (dedup'd)
+    let stored = 0;
+    for (const c of result.candidates) {
+      try {
+        const alreadyStored = await isAlreadySuggested(c.username, 'instagram');
+        if (!alreadyStored) {
+          await insertProspectSuggestion(c.username, c.priority, c.bio ?? '', 'instagram');
+          stored++;
+        }
+      } catch { /* skip individual insert errors */ }
+    }
+    console.log(`[prospect-discover] Stored ${stored}/${result.candidates.length} new prospects in suggested_actions`);
+    res.json({ ...result, discovered: result.candidates.length, stored, skipped_duplicate: result.candidates.length - stored, skipped_low_score: result.skippedLowScore, top_prospects: result.candidates.slice(0, 5).map(c => ({ username: c.username, score: c.icpScore })) });
   } catch (error) {
     res.status(500).json({ error: String(error) });
-  } finally {
-    if (coord) {
-      try { await coord.release(); } catch { /* ignore */ }
-      console.log(`[prospect-discover] Tab claim released (${agentId})`);
-    }
   }
 });
 
@@ -1147,16 +1064,7 @@ app.post('/api/prospect/scale-discover', async (req, res) => {
     return;
   }
 
-  const agentId = `scale-discover-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-  } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
-  }
-
+  // Chrome/Puppeteer: no tab claim needed
   let newFound = 0;
   try {
     const result = await discoverProspects({
@@ -1175,8 +1083,8 @@ app.post('/api/prospect/scale-discover', async (req, res) => {
         newFound++;
       }
     }
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  } catch (err) {
+    throw err;
   }
 
   const updatedTotal = await countSuggestedProspects('instagram');
@@ -1216,16 +1124,7 @@ app.post('/api/prospect/discover-from-top-posts', async (req, res) => {
 
   console.log(`[discover-top-posts] Starting pipeline: keywords=[${keywords.join(', ')}] maxPostsPerKeyword=${maxPostsPerKeyword} maxTopCreators=${maxTopCreators} minScore=${minScore} selfUsername=@${selfUsername}`);
 
-  const agentId = `top-posts-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-  } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
-  }
-
+  // Chrome/Puppeteer: no tab claim needed
   try {
     // Step 1 + 2: find top posts, rank creators by post engagement
     console.log('[discover-top-posts] Step 1/3: Scraping top posts from hashtag pages...');
@@ -1237,7 +1136,7 @@ app.post('/api/prospect/discover-from-top-posts', async (req, res) => {
     const creatorUsernames = topCreators.slice(0, maxTopCreators).map(c => c.username);
 
     if (creatorUsernames.length === 0) {
-      console.warn('[discover-top-posts] No top creators found — check that Safari is logged into Instagram and hashtag pages are accessible');
+      console.warn('[discover-top-posts] No top creators found — check that Chrome is logged into Instagram and hashtag pages are accessible');
     } else {
       console.log(`[discover-top-posts] Top ${creatorUsernames.length} creators: ${creatorUsernames.map(u => '@' + u).join(', ')}`);
     }
@@ -1277,8 +1176,8 @@ app.post('/api/prospect/discover-from-top-posts', async (req, res) => {
       enrichedCount: result.enrichedCount,
       skippedLowScore: result.skippedLowScore,
     });
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
   }
 });
 
@@ -1345,17 +1244,8 @@ app.post('/api/prospect/send-queued', async (req, res) => {
     return;
   }
 
-  const agentId = `send-queued-${Date.now()}`;
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    const claim = await coord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[send-queued] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
-  } catch (err) {
-    throw new Error(`Tab claim required but failed: ${err}`);
-  }
-
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page
+  console.log(`[send-queued] Using Chrome CDP driver`);
   const results: { username: string; success: boolean; error?: string }[] = [];
   try {
     for (let i = 0; i < actions.length; i++) {
@@ -1408,8 +1298,8 @@ app.post('/api/prospect/send-queued', async (req, res) => {
         await new Promise(r => setTimeout(r, sendDelay));
       }
     }
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
+  } catch (err) {
+    console.error('[send-queued] Unexpected error:', err);
   }
 
   const sent = results.filter(r => r.success).length;
@@ -1563,27 +1453,8 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
 
   // requireTabClaim middleware already pinned the driver to the service claim.
   // Re-claiming here would create a conflict since the existing instagram-dm claim
-  // occupies the tab and findAvailableTab() filters it out as "taken by another agent".
-  // Reuse the existing service claim; only fall back to a new claim if none exists.
-  let coord: InstanceType<typeof TabCoordinator> | null = null;
-  const existingClaims = await TabCoordinator.listClaims();
-  const serviceClaim = existingClaims.find(c => c.service === SERVICE_NAME);
-  if (serviceClaim) {
-    getDriver().setTrackedTab(serviceClaim.windowIndex, serviceClaim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[run-pipeline] Reusing service claim w=${serviceClaim.windowIndex} t=${serviceClaim.tabIndex}`);
-  } else {
-    // No service claim at all — try auto-claim as last resort
-    try {
-      const agentId = `run-pipeline-${Date.now()}`;
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-      const claim = await coord.claim();
-      getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-      console.log(`[run-pipeline] Auto-claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
-    } catch (err) {
-      res.status(503).json({ error: `Tab claim required: ${err}. Open an Instagram tab and retry.` });
-      return;
-    }
-  }
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page directly
+  console.log(`[run-pipeline] Using Chrome CDP driver`);
 
   let discovered = 0;
   let stored = 0;
@@ -1628,8 +1499,6 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
   } catch (error) {
     console.error(`[run-pipeline] Error: ${error}`);
     res.json({ discovered, stored, skipped_low_score, skipped_duplicate, top_prospects: [], error: String(error) });
-  } finally {
-    if (coord) { try { await coord.release(); } catch { /* ignore */ } }
   }
 });
 
@@ -2014,18 +1883,11 @@ app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
 const PORT = parseInt(process.env.PORT || '3100');
 
 export function startServer(port: number = PORT): void {
-  TabCoordinator.listClaims().then(claims => {
-    const stale = claims.filter(c => c.service === SERVICE_NAME);
-    if (stale.length > 0) {
-      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
-      import('fs/promises').then(fsp => {
-        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
-      });
-    }
-  }).catch(() => {});
+  // Chrome/Puppeteer: no stale Safari tab claims to clear
+  console.log(`[startup] Instagram DM service using Chrome CDP at ${process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222'}`);
 
   app.listen(port, () => {
-    console.log(`\n🚀 Instagram DM API Server running on http://localhost:${port}`);
+    console.log(`\n🚀 Instagram DM API Server (Chrome) running on http://localhost:${port}`);
     console.log(`\nEndpoints:`);
     console.log(`  GET  /health              - Health check`);
     console.log(`  GET  /api/status          - Check Instagram login status`);

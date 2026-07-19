@@ -26,11 +26,13 @@
 
 // Automation
 export {
-  // Driver
-  SafariDriver,
+  // Driver (Chrome/Puppeteer)
+  ChromeDriver,
   getDefaultDriver,
   setDefaultDriver,
-  
+  getPage,
+  ensureInstagramTab,
+
   // Operations
   navigateToInbox,
   listConversations,
@@ -40,7 +42,7 @@ export {
   sendMessage,
   startNewConversation,
   getAllConversations,
-  
+
   // Types
   type DMConversation,
   type DMMessage,

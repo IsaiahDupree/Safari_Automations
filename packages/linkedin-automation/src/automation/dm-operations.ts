@@ -14,6 +14,24 @@ import { LINKEDIN_SELECTORS as SEL } from './types.js';
 
 const LINKEDIN_MESSAGING = 'https://www.linkedin.com/messaging/';
 
+// ─── Helpers ─────────────────────────────────────────────────
+
+// LinkedIn sometimes shows a "Grow Your Business with Premium" upsell modal
+// (.modal-upsell) that blocks the messaging UI. Dismiss it if present.
+async function dismissPremiumModal(d: SafariDriver): Promise<void> {
+  await d.executeJS(`
+    (function(){
+      var modal = document.querySelector('.modal-upsell, [data-test-modal].artdeco-modal');
+      if (!modal) return;
+      var closeBtn = modal.querySelector('button[data-test-modal-close-btn]')
+                  || modal.querySelector('button[aria-label]')
+                  || modal.querySelector('button');
+      if (closeBtn) closeBtn.click();
+    })()
+  `);
+  await d.wait(300);
+}
+
 // ─── Navigation ──────────────────────────────────────────────
 
 export async function navigateToMessaging(driver?: SafariDriver): Promise<NavigationResult> {
@@ -21,9 +39,9 @@ export async function navigateToMessaging(driver?: SafariDriver): Promise<Naviga
   const success = await d.navigateTo(LINKEDIN_MESSAGING);
   if (!success) return { success: false, error: 'Failed to navigate to messaging' };
 
-  // Wait for messaging UI to load
+  // Wait for messaging UI to load (app-loader--default may persist — check for actual UI elements)
   const ready = await d.waitForCondition(
-    `(function(){return document.querySelector('.msg-overlay-list-bubble, .messaging-inbox')?'ready':'';})()`,
+    `(function(){return document.querySelector('.msg-overlay-list-bubble, .scaffold-layout__aside, .msg-conversations-container')?'ready':'';})()`,
     10000
   );
   if (!ready) return { success: false, error: 'Messaging page did not load' };
@@ -317,6 +335,10 @@ export async function sendMessage(text: string, driver?: SafariDriver): Promise<
 // LinkedIn Feb 2026 FIX: The Message button is an <a> linking to /messaging/compose/?interop=msgOverlay
 // KEEP interop=msgOverlay — stripping it causes redirects to home.
 // Use NATIVE clickAtViewportPosition() instead of JS .click() to trigger SPA routing.
+//
+// Multi-strategy button detection: scrollIntoView before measuring rect to handle
+// buttons that are in the viewport but below initial fold.
+// Falls back to messaging inbox if the profile Message button is not found.
 
 export async function sendMessageToProfile(
   profileUrl: string,
@@ -326,38 +348,113 @@ export async function sendMessageToProfile(
   const d = driver || getDefaultDriver();
   const log = (msg: string) => console.log(`[DM] ${msg}`);
 
-  // ── Step 1: Navigate to profile page ──
+  // ── Step 1: Activate the LinkedIn tab so it's visible ──
+  // LinkedIn detects document.hidden and throttles React rendering when in background.
+  // The tab MUST be the active, frontmost tab before navigating.
+  const session = await d.ensureActiveSession('linkedin.com').catch(() => null);
+  if (session) {
+    await d.activateTab(session.windowIndex, session.tabIndex);
+    await d.wait(300);
+  }
+
+  // ── Step 2: Navigate to profile page ──
   const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
   log(`Navigating to profile: ${url}`);
   await d.navigateTo(url);
 
-  // Wait for main element to load
-  const mainReady = await d.waitForSelector('main', 10000);
-
-  if (!mainReady) {
-    return { success: false, error: 'Profile page did not load (no main element)' };
+  // Wait for profile page: first check main mounts, then wait for action buttons.
+  // NOTE: LinkedIn keeps app-loader--default on <html> even after content loads — do NOT check it.
+  const appReady = await d.waitForCondition(
+    `(function(){
+      // Need both <main> AND at least one action button to be rendered
+      var hasMain = !!document.querySelector('main');
+      if (!hasMain) return '';
+      var scope = document.querySelector('main section.artdeco-card') || document.querySelector('main section') || document.querySelector('main');
+      if (!scope) return '';
+      var hasButtons = scope.querySelectorAll('button, a[href*="messaging"], a[href*="connect"]').length > 0;
+      return hasButtons ? 'ready' : '';
+    })()`,
+    20000
+  );
+  if (!appReady) {
+    return { success: false, error: 'Profile page did not fully load' };
   }
 
-  // ── Step 2: Find Message anchor with interop=msgOverlay ──
+  // Extra wait for SPA to fully hydrate action buttons
+  await d.wait(800);
+
+  // Scroll to top so action section is visible
+  await d.executeJS('window.scrollTo(0, 0)');
+  await d.wait(300);
+
+  // ── Step 2a: Detect profile button state and persist to Supabase ──
+  const btnState = await detectProfileButtons(url, d);
+  log(`Profile buttons — Message:${btnState.hasMessage} Connect:${btnState.hasConnect} Follow:${btnState.hasFollow} degree:${btnState.connectionDegree || '?'} raw:[${btnState.rawButtons.join(', ')}]`);
+  // Premium-wall check will be done after attempting the Message button click (see Step 4).
+  // Save now without premium_wall flag (will upsert again if wall is detected).
+  saveProfileButtonState(btnState, false).catch(() => {});
+
+  // ── Step 2b: Find Message button — scoped to profile card only ──
+  // IMPORTANT: search within main > section only — LinkedIn's fixed top nav also has
+  // a[href*="interop=msgOverlay"] (the compose icon) which is at y≈27 and must be excluded.
   const messageAnchorInfo = await d.executeJS(`
     (function() {
-      var anchors = document.querySelectorAll('a[href*="interop=msgOverlay"], button[aria-label*="Message"], a[data-control-name*="message"]');
-      for (var i = 0; i < anchors.length; i++) {
-        var href = anchors[i].href || '';
-        var ariaLabel = (anchors[i].getAttribute('aria-label') || '').toLowerCase();
-        if (href.includes('interop=msgOverlay') || ariaLabel.includes('message')) {
-          var rect = anchors[i].getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            return JSON.stringify({
-              found: true,
-              x: Math.round(rect.x + rect.width / 2),
-              y: Math.round(rect.y + rect.height / 2),
-              href: href
-            });
+      // Scope to the profile card section — first artdeco-card inside main
+      var scope = document.querySelector('main section.artdeco-card')
+               || document.querySelector('main section')
+               || document.querySelector('main');
+      if (!scope) return JSON.stringify({found: false, connStatus: 'no_main'});
+
+      // Strategy 1: interop=msgOverlay href inside profile card
+      var s1 = scope.querySelectorAll('a[href*="interop=msgOverlay"]');
+      for (var i = 0; i < s1.length; i++) {
+        s1[i].scrollIntoView({block: 'center', behavior: 'instant'});
+        var r = s1[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.y > 60) {
+          return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), href: s1[i].href, strategy: 1});
+        }
+      }
+
+      // Strategy 2: aria-label containing "message" inside profile card
+      var s2 = scope.querySelectorAll('button[aria-label*="essage" i], a[aria-label*="essage" i]');
+      for (var i = 0; i < s2.length; i++) {
+        var lbl = (s2[i].getAttribute('aria-label') || '').toLowerCase();
+        if (!lbl.includes('message') || lbl.includes('see all') || lbl.includes('inbox')) continue;
+        s2[i].scrollIntoView({block: 'center', behavior: 'instant'});
+        var r = s2[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.y > 60) {
+          return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), href: s2[i].href || '', strategy: 2});
+        }
+      }
+
+      // Strategy 3: button text exactly "Message" inside profile card
+      var btns = scope.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].innerText.trim() === 'Message') {
+          btns[i].scrollIntoView({block: 'center', behavior: 'instant'});
+          var r = btns[i].getBoundingClientRect();
+          if (r.width > 0 && r.height > 0 && r.y > 60) {
+            return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), href: '', strategy: 3});
           }
         }
       }
-      return JSON.stringify({found: false, error: 'Message button not found or not visible'});
+
+      // Strategy 4: data-control-name contains "message" inside profile card
+      var s4 = scope.querySelectorAll('[data-control-name*="message"]');
+      for (var i = 0; i < s4.length; i++) {
+        s4[i].scrollIntoView({block: 'center', behavior: 'instant'});
+        var r = s4[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.y > 60) {
+          return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), href: s4[i].getAttribute('href') || '', strategy: 4});
+        }
+      }
+
+      // Detect connection status for better error message
+      var bodyText = scope.innerText.toLowerCase();
+      var connStatus = bodyText.includes('pending') ? 'pending'
+        : (bodyText.includes('connect') && !bodyText.includes('message')) ? 'not_connected'
+        : 'unknown';
+      return JSON.stringify({found: false, connStatus: connStatus});
     })()
   `);
 
@@ -367,35 +464,76 @@ export async function sendMessageToProfile(
   }
 
   if (!anchorInfo.found) {
-    log(`Message button not found: ${anchorInfo.error}`);
-    return { success: false, error: 'Message button not found — may not be connected' };
+    const connStatus = anchorInfo.connStatus || 'unknown';
+    log(`Message button not found (connection status: ${connStatus})`);
+
+    if (connStatus === 'pending') {
+      return { success: false, error: 'Connection request pending — cannot message yet' };
+    }
+    if (connStatus === 'not_connected') {
+      return { success: false, error: 'Not connected — cannot message (not 1st degree)' };
+    }
+
+    // Fallback: search messaging inbox (handles existing conversations)
+    log('Falling back to messaging inbox search...');
+    return _sendViaMessagingInbox(text, profileUrl, d);
   }
 
-  log(`Found Message button at viewport (${anchorInfo.x}, ${anchorInfo.y})`);
+  log(`Found Message button via strategy ${anchorInfo.strategy} at viewport (${anchorInfo.x}, ${anchorInfo.y})`);
 
-  // ── Step 3: Native click on Message button ──
-  const clicked = await d.clickAtViewportPosition(anchorInfo.x, anchorInfo.y);
-  if (!clicked) {
-    return { success: false, error: 'Failed to click Message button' };
+  // ── Step 3: Navigate to the compose URL directly ──
+  // Native AppleScript clicks don't reliably trigger LinkedIn's SPA event handler,
+  // so instead we navigate directly to the href (includes interop=msgOverlay).
+  // LinkedIn's router handles this URL and pre-opens the compose overlay on load.
+  if (anchorInfo.href && anchorInfo.href.includes('messaging')) {
+    log(`Navigating to compose URL: ${anchorInfo.href.substring(0, 80)}...`);
+    await d.navigateTo(anchorInfo.href);
+  } else {
+    // No valid href — fall back to native click
+    log('No compose href — falling back to native click');
+    const clicked = await d.clickAtViewportPosition(anchorInfo.x, anchorInfo.y);
+    if (!clicked) {
+      return { success: false, error: 'Failed to click Message button' };
+    }
+    log('Clicked Message button with native click');
   }
 
-  log('Clicked Message button with native click');
-
-  // ── Step 4: Wait for message input overlay ──
+  // ── Step 4: Wait for message input ──
+  // Works for both the overlay bubble and full compose page
   const inputReady = await d.waitForCondition(
-    `(function(){var el=document.querySelector('.msg-form__contenteditable,[role="textbox"][contenteditable="true"]');return(el&&el.offsetParent!==null)?'ready':'';})()`,
-    8000
+    `(function(){
+      var el = document.querySelector('.msg-form__contenteditable, [role="textbox"][contenteditable="true"], .msg-convo-wrapper [contenteditable="true"], [contenteditable="true"]');
+      return (el && el.offsetParent !== null) ? 'ready' : '';
+    })()`,
+    12000
   );
 
   if (!inputReady) {
-    return { success: false, error: 'Message input did not appear after clicking Message button' };
+    // Check for LinkedIn Premium paywall prompt before falling back
+    const isWall = await detectPremiumWall(profileUrl, d);
+    if (isWall) {
+      log('LinkedIn Premium paywall detected — saving to Supabase');
+      await saveProfileButtonState({ ...btnState, profileUrl: url }, true);
+      return { success: false, error: 'LinkedIn Premium required to message this contact' };
+    }
+
+    // Fallback: use openNewCompose (messaging inbox → compose button → search name → send)
+    log('Compose URL did not show input — falling back to openNewCompose...');
+    const slug = profileUrl.split('/in/')[1]?.replace(/\/$/, '') || '';
+    const recipientName = slug.replace(/-/g, ' ');
+    return openNewCompose(recipientName, text, d);
   }
 
   // Focus the input
   await d.executeJS(`
-    (function(){var el=document.querySelector('.msg-form__contenteditable');if(!el)el=document.querySelector('[role="textbox"][contenteditable="true"]');if(el){el.focus();el.click();}})()
+    (function(){
+      var el = document.querySelector('.msg-form__contenteditable')
+            || document.querySelector('[role="textbox"][contenteditable="true"]')
+            || document.querySelector('[contenteditable="true"]');
+      if (el) { el.focus(); el.click(); }
+    })()
   `);
-  await d.wait(300);
+  await d.wait(400);
 
   // ── Step 5: Type message via clipboard ──
   const typeResult = await d.typeViaClipboard(text);
@@ -403,54 +541,248 @@ export async function sendMessageToProfile(
   log(`Typed message using method: ${typeResult.method}`);
   await d.wait(1000);
 
-  // ── Step 6: Wait for Send to enable and click ──
-  const sendReady = await d.waitForCondition(
-    `(function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled)return 'ready';}return '';})()`,
-    5000
-  );
+  // ── Step 6: Click Send ──
+  // Try class-based selector first, then innerText scan, then Enter fallback
+  const sendAttempt = await d.executeJS(`
+    (function(){
+      var btn = document.querySelector('.msg-form__send-button:not([disabled])');
+      if (btn) { btn.click(); return 'class'; }
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].innerText.trim() === 'Send' && !btns[i].disabled) { btns[i].click(); return 'text'; }
+      }
+      return 'not_found';
+    })()
+  `);
 
-  if (!sendReady) {
-    // Fallback: try the class-based selector
-    const fallbackSent = await d.executeJS(`
-      (function(){var btn=document.querySelector('.msg-form__send-button');if(btn&&!btn.disabled){btn.click();return 'sent';}return 'not_found';})()
-    `);
-    if (fallbackSent !== 'sent') {
+  if (sendAttempt === 'not_found') {
+    // Button may still be disabled — wait for it
+    const sendEnabled = await d.waitForCondition(
+      `(function(){
+        var btn = document.querySelector('.msg-form__send-button:not([disabled])');
+        if (btn) return 'ready';
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].innerText.trim() === 'Send' && !btns[i].disabled) return 'ready';
+        }
+        return '';
+      })()`,
+      5000
+    );
+    if (sendEnabled) {
+      await d.executeJS(`
+        (function(){
+          var btn = document.querySelector('.msg-form__send-button:not([disabled])');
+          if (btn) { btn.click(); return; }
+          var btns = document.querySelectorAll('button');
+          for (var i = 0; i < btns.length; i++) {
+            if (btns[i].innerText.trim() === 'Send' && !btns[i].disabled) { btns[i].click(); return; }
+          }
+        })()
+      `);
+      log('Clicked Send (after wait)');
+    } else {
       await d.pressEnter();
       log('Send button not found — pressed Enter as fallback');
     }
   } else {
-    await d.executeJS(`
-      (function(){var btns=document.querySelectorAll('button');for(var i=0;i<btns.length;i++){if(btns[i].innerText.trim()==='Send'&&!btns[i].disabled){btns[i].click();return 'sent';}}return 'miss';})()
-    `);
-    log('Clicked Send');
+    log(`Clicked Send (${sendAttempt})`);
   }
 
   await d.wait(2000);
 
   // ── Step 7: Verify message appeared ──
-  const checkText = text.substring(0, 30).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  // Use JSON.stringify for the check text to safely escape all special chars
+  const checkText = text.substring(0, 20);
   const verification = await d.executeJS(`
     (function() {
+      var check = ${JSON.stringify(checkText)};
       var msgs = document.querySelectorAll('.msg-s-event-listitem__body, .msg-s-message-group__text');
-      var last = msgs.length > 0 ? msgs[msgs.length - 1].innerText.trim() : '';
-      var verified = last.includes('${checkText}');
+      var verified = false;
+      for (var i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
+        if (msgs[i].innerText.trim().indexOf(check) >= 0) { verified = true; break; }
+      }
       var recipient = '';
       var nameEl = document.querySelector('.msg-thread__link-to-profile, .msg-entity-lockup__entity-title, h2.msg-overlay-bubble-header__title');
       if (nameEl) recipient = nameEl.innerText.trim();
-      return JSON.stringify({verified: verified, recipient: recipient, lastMsg: last.substring(0, 60)});
+      return JSON.stringify({verified: verified, recipient: recipient});
     })()
   `);
 
   let result: any = {};
   try { result = JSON.parse(verification); } catch {}
 
-  log(`Verified: ${result.verified}, Recipient: ${result.recipient || 'unknown'}, Last: ${result.lastMsg || ''}`);
+  log(`Verified: ${result.verified}, Recipient: ${result.recipient || 'unknown'}`);
 
   return {
     success: true,
     verified: result.verified === true,
     verifiedRecipient: result.recipient || undefined,
   };
+}
+
+// ─── Profile Button State Detection ─────────────────────────
+// Scans a loaded LinkedIn profile page for action buttons (Message/Connect/Follow/More)
+// and detects whether clicking Message triggers a LinkedIn Premium paywall prompt.
+// Results are persisted to the linkedin_profile_buttons Supabase table.
+
+export interface ProfileButtonState {
+  profileUrl:        string;
+  name?:             string;
+  hasMessage:        boolean;
+  hasConnect:        boolean;
+  hasFollow:         boolean;
+  hasMore:           boolean;
+  connectionDegree?: string;   // '1st', '2nd', '3rd', 'out_of_network'
+  rawButtons:        string[];
+}
+
+export async function detectProfileButtons(
+  profileUrl: string,
+  driver?: SafariDriver
+): Promise<ProfileButtonState> {
+  const d = driver || getDefaultDriver();
+
+  const raw = await d.executeJS(`
+    (function() {
+      var scope = document.querySelector('main section.artdeco-card')
+               || document.querySelector('main section')
+               || document.querySelector('main');
+      if (!scope) return JSON.stringify({error: 'no_main'});
+
+      // Collect all visible button / anchor texts in the profile action row
+      var labels = [];
+      var btns = scope.querySelectorAll('button, a[role="button"]');
+      for (var i = 0; i < btns.length; i++) {
+        var r = btns[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.y > 60 && r.y < 600) {
+          var lbl = (btns[i].getAttribute('aria-label') || btns[i].innerText || '').trim();
+          if (lbl) labels.push(lbl);
+        }
+      }
+
+      // Connection degree
+      var degEl = document.querySelector('.dist-value, [class*="distance"]');
+      var degree = degEl ? degEl.innerText.trim() : '';
+      // Also check profile headline area for "• 1st •" pattern
+      if (!degree) {
+        var bodyText = (scope.innerText || '');
+        var m = bodyText.match(/\\b(1st|2nd|3rd)\\b/);
+        if (m) degree = m[1];
+      }
+
+      var lower = labels.map(function(l) { return l.toLowerCase(); });
+      return JSON.stringify({
+        labels: labels,
+        hasMessage: lower.some(function(l) { return l === 'message' || l.includes('send a message'); }),
+        hasConnect: lower.some(function(l) { return l === 'connect' || l.includes('connect with'); }),
+        hasFollow:  lower.some(function(l) { return l === 'follow' || l === 'unfollow'; }),
+        hasMore:    lower.some(function(l) { return l === 'more' || l === '…'; }),
+        degree: degree,
+      });
+    })()
+  `);
+
+  let parsed: any = {};
+  try { parsed = JSON.parse(raw); } catch { /* ignore */ }
+
+  return {
+    profileUrl,
+    hasMessage:        !!parsed.hasMessage,
+    hasConnect:        !!parsed.hasConnect,
+    hasFollow:         !!parsed.hasFollow,
+    hasMore:           !!parsed.hasMore,
+    connectionDegree:  parsed.degree || undefined,
+    rawButtons:        parsed.labels || [],
+  };
+}
+
+export async function detectPremiumWall(
+  profileUrl: string,
+  driver?: SafariDriver
+): Promise<boolean> {
+  const d = driver || getDefaultDriver();
+  // After clicking Message, LinkedIn may show a modal asking to upgrade to Premium.
+  // We check for this within 3 seconds — if found, the contact requires Premium to message.
+  const wall = await d.waitForCondition(
+    `(function(){
+      var modal = document.querySelector('[data-test-modal], [role="dialog"]');
+      if (!modal) return '';
+      var txt = modal.innerText.toLowerCase();
+      return (txt.includes('premium') || txt.includes('upgrade') || txt.includes('inmailcredit')) ? 'wall' : '';
+    })()`,
+    3000
+  );
+  return wall === 'wall';
+}
+
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ivhfuhxorppptyuofbgq.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+
+export async function saveProfileButtonState(
+  state: ProfileButtonState,
+  premiumWall: boolean
+): Promise<void> {
+  if (!SUPABASE_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/linkedin_profile_buttons`, {
+      method: 'POST',
+      headers: {
+        'Content-Type':    'application/json',
+        'apikey':          SUPABASE_KEY,
+        'Authorization':   `Bearer ${SUPABASE_KEY}`,
+        'Prefer':          'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({
+        profile_url:       state.profileUrl,
+        name:              state.name || null,
+        checked_at:        new Date().toISOString(),
+        has_message:       state.hasMessage,
+        has_connect:       state.hasConnect,
+        has_follow:        state.hasFollow,
+        has_more:          state.hasMore,
+        premium_wall:      premiumWall,
+        premium_wall_checked_at: premiumWall ? new Date().toISOString() : null,
+        connection_degree: state.connectionDegree || null,
+        raw_buttons:       state.rawButtons,
+      }),
+    });
+  } catch { /* non-fatal */ }
+}
+
+// ─── Fallback: send via messaging inbox ──────────────────────
+// Used when the profile page Message button isn't found (e.g. existing conversation
+// or LinkedIn rendered a different profile layout).
+
+async function _sendViaMessagingInbox(
+  text: string,
+  profileUrl: string,
+  d: SafariDriver
+): Promise<SendMessageResult> {
+  const log = (msg: string) => console.log(`[DM:inbox] ${msg}`);
+  const slug = profileUrl.split('/in/')[1]?.replace(/\/$/, '') || '';
+  const searchName = slug.replace(/-/g, ' ');
+
+  log(`Searching inbox for: ${searchName}`);
+  await d.navigateTo('https://www.linkedin.com/messaging/');
+
+  const inboxReady = await d.waitForCondition(
+    `(function(){return document.querySelector('.msg-overlay-list-bubble, .scaffold-layout__aside, .msg-conversations-container')?'ready':'';})()`,
+    10000
+  );
+  if (!inboxReady) {
+    return { success: false, error: 'Messaging inbox did not load' };
+  }
+
+  await dismissPremiumModal(d);
+
+  const found = await openConversation(searchName, d);
+  if (!found) {
+    return { success: false, error: `No conversation found for ${searchName} — not connected or no prior messages` };
+  }
+
+  await d.wait(500);
+  return sendMessage(text, d);
 }
 
 // ─── Open New Compose (First-Contact DMs) ───────────────────
@@ -466,31 +798,70 @@ export async function openNewCompose(
   const d = driver || getDefaultDriver();
   const log = (msg: string) => console.log(`[NewCompose] ${msg}`);
 
-  // ── Step 1: Navigate to messaging page ──
+  // ── Step 1: Activate tab + navigate to messaging page ──
+  // LinkedIn throttles rendering when the tab is in background (document.hidden)
+  const sess = await d.ensureActiveSession('linkedin.com').catch(() => null);
+  if (sess) {
+    await d.activateTab(sess.windowIndex, sess.tabIndex);
+    await d.wait(300);
+  }
+
   log(`Navigating to messaging...`);
   await d.navigateTo('https://www.linkedin.com/messaging/');
 
+  // Wait for LinkedIn messaging UI to mount.
+  // NOTE: LinkedIn often keeps app-loader--default on <html> even after the page is fully loaded
+  // (known LinkedIn SPA quirk). We check for the actual UI elements instead.
   const messagingReady = await d.waitForCondition(
-    `(function(){var el=document.querySelector('.msg-overlay-list-bubble, .scaffold-layout__aside');return el?'ready':'';})()`,
-    10000
+    `(function(){
+      var el = document.querySelector('.msg-overlay-list-bubble, .scaffold-layout__aside, .msg-conversations-container');
+      return el ? 'ready' : '';
+    })()`,
+    15000
   );
 
   if (!messagingReady) {
     return { success: false, error: 'Messaging page did not load' };
   }
 
+  // Dismiss any Premium upsell modal that may be blocking the UI
+  await dismissPremiumModal(d);
+
   // ── Step 2: Find and click compose button ──
   const composeButtonInfo = await d.executeJS(`
     (function() {
-      var btns = document.querySelectorAll('[data-control-name=compose], button[aria-label*="Compose"]');
+      // Strategy 1: data-control-name or aria-label
+      var btns = document.querySelectorAll('[data-control-name=compose], button[aria-label*="Compose"], a[aria-label*="Compose"]');
       for (var i = 0; i < btns.length; i++) {
         var rect = btns[i].getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          return JSON.stringify({
-            found: true,
-            x: Math.round(rect.x + rect.width / 2),
-            y: Math.round(rect.y + rect.height / 2)
-          });
+          return JSON.stringify({found: true, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), strategy: 1});
+        }
+      }
+      // Strategy 2: innerText contains "compose" (LinkedIn renders pencil button with text, no aria-label)
+      var allBtns = document.querySelectorAll('button, a[role="button"]');
+      for (var i = 0; i < allBtns.length; i++) {
+        var txt = allBtns[i].innerText.trim().toLowerCase();
+        if (txt.includes('compose')) {
+          var rect = allBtns[i].getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            return JSON.stringify({found: true, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), strategy: 2, text: allBtns[i].innerText.trim().substring(0, 30)});
+          }
+        }
+      }
+      // Strategy 3: SVG pencil icon buttons in the messaging aside panel
+      var asidePanel = document.querySelector('.scaffold-layout__aside, .msg-overlay-list-bubble');
+      if (asidePanel) {
+        var panelBtns = asidePanel.querySelectorAll('button');
+        for (var i = 0; i < panelBtns.length; i++) {
+          var rect = panelBtns[i].getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0 && rect.width < 60 && rect.height < 60) {
+            // Small icon buttons in the panel are typically compose/filter
+            var lbl = panelBtns[i].getAttribute('aria-label') || '';
+            if (lbl.toLowerCase().includes('compos') || lbl.toLowerCase().includes('new')) {
+              return JSON.stringify({found: true, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), strategy: 3, label: lbl});
+            }
+          }
         }
       }
       return JSON.stringify({found: false});

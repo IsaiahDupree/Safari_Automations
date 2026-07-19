@@ -14,6 +14,7 @@ import { InstagramAICommentGenerator, isInappropriateContent } from '../automati
 import { CommentLogger } from '../db/comment-logger.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { SafariDriver } from '../automation/safari-driver.js';
+import * as ChromeDriver from '../automation/chrome-driver.js';
 
 const app = express();
 
@@ -205,12 +206,16 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): v
 app.use(rateLimitMiddleware);
 
 // ─── Request Timeout ─────────────────────────────────────────────────
+// comment-sweep and engage/multi can take 2-5 min; all others get 30s
+const LONG_RUNNING_ROUTES = /\/(comment-sweep|engage\/multi)/;
 app.use((req: Request, res: Response, next: NextFunction) => {
+  const timeoutMs = LONG_RUNNING_ROUTES.test(req.path) ? 300000 : 30000;
+  const label = timeoutMs === 300000 ? '5 minutes' : '30 seconds';
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
-      res.status(504).json({ error: 'Gateway Timeout', message: 'Request timed out after 30 seconds' });
+      res.status(504).json({ error: 'Gateway Timeout', message: `Request timed out after ${label}` });
     }
-  }, 30000);
+  }, timeoutMs);
 
   res.on('finish', () => clearTimeout(timeout));
   next();
@@ -298,8 +303,9 @@ setInterval(() => {
 //   HEALTH ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════
 
-app.get('/health', (_req: Request, res: Response) => {
+app.get('/health', async (_req: Request, res: Response) => {
   const uptimeMs = Date.now() - startTime;
+  const cdp = await ChromeDriver.getCDPStatus();
   res.json({
     status: 'ok',
     service: SERVICE_NAME,
@@ -309,6 +315,13 @@ app.get('/health', (_req: Request, res: Response) => {
     uptime: uptimeMs,
     uptime_human: `${Math.floor(uptimeMs / 1000)}s`,
     timestamp: new Date().toISOString(),
+    chrome: {
+      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9222',
+      connected: cdp.connected,
+      has_instagram_tab: cdp.hasInstagramTab,
+      tab_url: cdp.url,
+      error: cdp.error,
+    },
   });
 });
 
@@ -1352,8 +1365,11 @@ app.post('/api/instagram/comment-sweep', wrapAsync(async (req, res) => {
     seenUrls = [] as string[],
   } = req.body;
 
-  if (!Array.isArray(niches) || niches.length === 0) {
-    res.status(400).json({ error: 'Bad Request', message: 'niches array is required and must not be empty' });
+  // Require at least one source: either niches or feedSources must be non-empty
+  const hasNiches = Array.isArray(niches) && niches.length > 0;
+  const hasFeedSources = Array.isArray(feedSources) && feedSources.length > 0;
+  if (!hasNiches && !hasFeedSources) {
+    res.status(400).json({ error: 'Bad Request', message: 'At least one of niches or feedSources must be non-empty' });
     return;
   }
 
@@ -1394,34 +1410,43 @@ app.post('/api/instagram/comment-sweep', wrapAsync(async (req, res) => {
       await d.navigateToPost('https://www.instagram.com/');
       await humanDelay(3000, 5000);
 
-      const feedPosts = await d.findPosts(feedMax * 4);
+      // Use getFeedPosts() to read captions in-place (avoids SPA redirect on post navigation)
+      const feedPosts = await d.getFeedPosts(feedMax * 4);
       let feedCount = 0;
 
       for (const post of feedPosts) {
         if (feedCount >= feedMax || totalCommented >= maxTotal) break;
         if (!post.url) continue;
         if (seenSet.has(post.url)) continue;
+        if (!post.caption || post.caption.length < 20) continue;
 
-        await d.navigateToPost(post.url);
-        await humanDelay(2000, 3500);
-
-        const metrics = await d.getPostMetrics();
-        if (!metrics.caption || metrics.caption.length < 20) continue;
-
-        const reply = await generateComment(metrics.caption, metrics.username || post.username || '');
+        const reply = await generateComment(post.caption, post.username || '');
         if (!reply) continue;
 
         if (!dryRun) {
-          const result = await d.postComment(reply);
-          if (!result.success) continue;
+          // Comment inline — click the comment button on the feed article (no navigation)
+          const ok = await d.commentOnFeedPostByIndex(post.articleIndex, reply);
+          if (!ok) continue;
           await humanDelay(4000, 8000);
         }
 
         seenSet.add(post.url);
         newlyCommentedUrls.push(post.url);
-        feedResults.push({ postUrl: post.url, author: metrics.username || post.username || '', reply, dryRun });
+        feedResults.push({ postUrl: post.url, author: post.username || '', reply, dryRun });
         feedCount++;
         totalCommented++;
+
+        // Log to Supabase comment_logs
+        if (!dryRun) {
+          getCommentLogger().logComment({
+            platform: 'instagram',
+            username: post.username || '',
+            postUrl: post.url,
+            commentText: reply,
+            success: true,
+            sessionId: `sweep_feed_${Date.now()}`,
+          }).catch(err => console.error('[comment-sweep] log failed:', err));
+        }
       }
     } catch (err) {
       console.error(`[comment-sweep] Feed sweep error (${feedSource}):`, err);
@@ -1451,26 +1476,46 @@ app.post('/api/instagram/comment-sweep', wrapAsync(async (req, res) => {
         for (const post of searchPosts) {
           if (result.commented.length >= nicheMax || totalCommented >= maxTotal) break;
           if (!post.url) { result.skipped.push('no-url'); continue; }
-          if (seenSet.has(post.url)) { result.skipped.push(post.url); continue; }
+
+          // searchByKeyword returns profile URLs (not /p/ or /reel/ post URLs).
+          // Navigate to the profile, use getFeedPosts() to read captions in-place,
+          // then use commentOnFeedPostByIndex() to avoid SPA redirect on post URLs.
+          const isProfileUrl = !post.url.includes('/p/') && !post.url.includes('/reel/');
+          if (!isProfileUrl) { result.skipped.push(post.url); continue; }
 
           await d.navigateToPost(post.url);
-          await humanDelay(2000, 3500);
+          await humanDelay(2000, 3000);
 
-          const metrics = await d.getPostMetrics();
-          if (!metrics.caption || metrics.caption.length < 20) { result.skipped.push(post.url); continue; }
+          // Read posts from the profile grid in-place (no further navigation)
+          const profilePosts = await d.getFeedPosts(3);
+          if (profilePosts.length === 0) { result.skipped.push(post.url); continue; }
 
-          const reply = await generateComment(metrics.caption, metrics.username || post.username || '');
-          if (!reply) { result.skipped.push(post.url); continue; }
+          const firstPost = profilePosts[0];
+          if (seenSet.has(firstPost.url)) { result.skipped.push(firstPost.url); continue; }
+          if (!firstPost.caption || firstPost.caption.length < 20) { result.skipped.push(firstPost.url); continue; }
+
+          const reply = await generateComment(firstPost.caption, firstPost.username || post.username || '');
+          if (!reply) { result.skipped.push(firstPost.url); continue; }
 
           if (!dryRun) {
-            const postResult = await d.postComment(reply);
-            if (!postResult.success) { result.errors.push(`${post.url}: ${postResult.error}`); continue; }
+            const ok = await d.commentOnFeedPostByIndex(firstPost.articleIndex, reply);
+            if (!ok) { result.errors.push(`${firstPost.url}: inline comment failed`); continue; }
             await humanDelay(10000, 25000); // conservative IG pace
+
+            // Log to Supabase
+            getCommentLogger().logComment({
+              platform: 'instagram',
+              username: firstPost.username || post.username || '',
+              postUrl: firstPost.url,
+              commentText: reply,
+              success: true,
+              sessionId: `sweep_niche_${niche.name}_${Date.now()}`,
+            }).catch(err => console.error('[comment-sweep] niche log failed:', err));
           }
 
-          seenSet.add(post.url);
-          newlyCommentedUrls.push(post.url);
-          result.commented.push({ url: post.url, author: metrics.username || post.username || '', reply });
+          seenSet.add(firstPost.url);
+          newlyCommentedUrls.push(firstPost.url);
+          result.commented.push({ url: firstPost.url, author: firstPost.username || post.username || '', reply });
           totalCommented++;
         }
       } catch (err) {

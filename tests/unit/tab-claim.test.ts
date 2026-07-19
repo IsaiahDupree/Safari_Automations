@@ -162,7 +162,9 @@ describe('TabCoordinator.listClaims()', () => {
 
 describe('TabCoordinator.claim() — window enforcement', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks (not clearAllMocks) to flush unconsumed mockResolvedValueOnce queues
+    // between tests — prevents queue bleed when earlier tests throw before consuming mocks.
+    vi.resetAllMocks();
     mockWriteOk();
   });
 

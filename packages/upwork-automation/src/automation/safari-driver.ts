@@ -142,7 +142,16 @@ export class SafariDriver {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        if (this.trackedWindow && this.trackedTab) {
+        // ── Use JS navigation (window.location.href) for same-origin Upwork URLs ──
+        // AppleScript `set URL of tab` triggers Cloudflare bot detection.
+        // JS navigation inside the existing session doesn't.
+        const isUpworkUrl = url.includes('upwork.com');
+        if (isUpworkUrl && (this.trackedWindow && this.trackedTab)) {
+          await execAsync(
+            `osascript -e 'tell application "Safari" to do JavaScript "window.location.href = \\"${safeUrl}\\"" in tab ${this.trackedTab} of window ${this.trackedWindow}'`,
+            { timeout: this.config.timeout }
+          );
+        } else if (this.trackedWindow && this.trackedTab) {
           await execAsync(
             `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
             { timeout: this.config.timeout }
@@ -497,6 +506,25 @@ export class SafariDriver {
     if (this.config.instanceType !== 'local') {
       return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
     }
+
+    // ── Controller bridge (preferred) ────────────────────────────────────────
+    const controllerUrl = process.env.SAFARI_CONTROLLER_URL || 'http://localhost:3110';
+    try {
+      const res = await fetch(`${controllerUrl}/bridge/find-tab`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urlPattern, port: parseInt(process.env.PORT || '3104', 10) }),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = await res.json() as { found: boolean; windowIndex?: number; tabIndex?: number; url?: string };
+        if (data.found && data.windowIndex != null && data.tabIndex != null) {
+          return { found: true, windowIndex: data.windowIndex, tabIndex: data.tabIndex, url: data.url ?? '' };
+        }
+      }
+    } catch { /* controller unavailable — fall through to legacy scan */ }
+
+    // ── Legacy fallback: SAFARI_AUTOMATION_WINDOW scan ───────────────────────
     try {
       const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
     const script = `
@@ -743,18 +771,75 @@ end tell`;
   async clickAtViewportPosition(x: number, y: number): Promise<boolean> {
     if (this.config.instanceType !== 'local') return false;
     try {
-      await this.activateSafari();
-      await this.wait(200);
-      // Get Safari window position to convert viewport coords to screen coords
-      const { stdout: posInfo } = await execAsync(
-        `osascript -e 'tell application "Safari" to get bounds of front window'`
-      );
+      // ── Step 1: resolve the correct window via the controller bridge ─────────
+      // Use window ID (stable) not index (drifts) to bring the right profile to front.
+      const controllerUrl = process.env.SAFARI_CONTROLLER_URL || 'http://localhost:3110';
+      let windowId: number | null = null;
+      try {
+        const res = await fetch(`${controllerUrl}/bridge/find-tab`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urlPattern: 'upwork.com', port: parseInt(process.env.PORT || '3104', 10) }),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (res.ok) {
+          const data = await res.json() as { found: boolean; windowId?: number };
+          if (data.found && data.windowId) windowId = data.windowId;
+        }
+      } catch { /* fall through */ }
+
+      // ── Step 2: bring the Upwork window to front by stable window ID ─────────
+      if (windowId) {
+        await execAsync(`osascript -e 'tell application "Safari" to activate' -e 'tell application "Safari" to set index of window id ${windowId} to 1'`);
+      } else {
+        await this.activateSafari();
+      }
+      await this.wait(300);
+
+      // ── Step 3: verify focus — the front window must be the Upwork window ────
+      const { stdout: frontCheck } = await execAsync(
+        `osascript -e 'tell application "Safari" to get URL of current tab of front window'`
+      ).catch(() => ({ stdout: '' }));
+      if (!frontCheck.includes('upwork.com')) {
+        // Wrong window in front — force it again with a longer wait
+        if (windowId) {
+          await execAsync(`osascript -e 'tell application "Safari" to set index of window id ${windowId} to 1'`);
+        }
+        await this.wait(500);
+      }
+
+      // ── Step 4: get bounds + measure actual toolbar height ───────────────────
+      // Measure toolbar height dynamically via Accessibility API so clicks land
+      // in the viewport regardless of tab count or display scaling.
+      const winScript = windowId
+        ? `tell application "Safari" to get bounds of window id ${windowId}`
+        : `tell application "Safari" to get bounds of front window`;
+      const { stdout: posInfo } = await execAsync(`osascript -e '${winScript}'`);
       const bounds = posInfo.trim().split(',').map((s: string) => parseInt(s.trim()));
       const winX = bounds[0] || 0;
       const winY = bounds[1] || 0;
-      const TOOLBAR_OFFSET = 92; // Safari URL bar + tab bar height
+      const winW = (bounds[2] || 0) - winX;
+      const winH = (bounds[3] || 0) - winY;
+
+      // Measure toolbar height: inject JS to get window.innerHeight, compare to window height
+      let toolbarOffset = 92; // fallback
+      try {
+        const jsCmd = windowId
+          ? `osascript -e 'tell application "Safari" to do JavaScript "window.innerHeight + \\"||\\" + window.innerWidth" in current tab of window id ${windowId}'`
+          : `osascript -e 'tell application "Safari" to do JavaScript "window.innerHeight + \\"||\\" + window.innerWidth" in current tab of front window'`;
+        const { stdout: jsOut } = await execAsync(jsCmd);
+        const parts = jsOut.trim().split('||');
+        const innerH = parseInt(parts[0], 10);
+        if (!isNaN(innerH) && winH > 0 && innerH > 0 && innerH < winH) {
+          toolbarOffset = winH - innerH;
+        }
+      } catch { /* keep fallback */ }
+
       const screenX = winX + x;
-      const screenY = winY + TOOLBAR_OFFSET + y;
+      const screenY = winY + toolbarOffset + y;
+      if (this.config.verbose) {
+        console.log(`[SafariDriver] click: viewport(${x},${y}) → screen(${screenX},${screenY}) toolbar=${toolbarOffset}px window=${winW}x${winH}`);
+      }
 
       // Use cliclick for precise OS-level clicking
       try {

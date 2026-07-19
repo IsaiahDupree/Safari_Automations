@@ -80,13 +80,71 @@ export async function navigateToMyJobs(driver?: SafariDriver): Promise<Navigatio
 export async function navigateToJob(jobUrl: string, driver?: SafariDriver): Promise<NavigationResult> {
   const d = driver || getDefaultDriver();
   const url = jobUrl.startsWith('http') ? jobUrl : `https://www.upwork.com/jobs/${jobUrl}`;
+
+  // ── Strategy: React-router link click (only safe approach on Upwork) ──────
+  // Cloudflare blocks ALL direct URL navigations (AppleScript set URL, window.location.href).
+  // The only method that bypasses it: click an <a> tag on the page, which triggers
+  // React Router pushState — no HTTP request Cloudflare can intercept.
+  // Flow: ensure we're on best-matches → find job link → .click() it.
+  const idMatch = url.match(/~(\d+)\/?$/);
+  const jobId = idMatch ? idMatch[1] : null;
+
+  if (jobId) {
+    // Step 1: Ensure we're on best-matches (where job links are listed)
+    const currentUrl = await d.getCurrentUrl();
+    if (!currentUrl.includes('find-work') && !currentUrl.includes('best-matches')) {
+      // Navigate to best-matches using the same JS approach (relative URL, less CF risk)
+      await d.executeJS(`window.location.href = '/nx/find-work/best-matches'`);
+      await d.wait(5000);
+    }
+
+    // Step 2: Find the job link on the page by job ID in href and click it
+    const clickResult = await d.executeJS(`
+      (function() {
+        var a = [...document.querySelectorAll('a[href*="${jobId}"]')]
+          .find(el => el.href.includes('/jobs/') || el.href.includes('/details/'));
+        if (a) {
+          a.scrollIntoView({ block: 'center' });
+          a.click();
+          return 'clicked:' + a.href.slice(0, 80);
+        }
+        return 'not_found';
+      })()
+    `);
+
+    if (clickResult && clickResult.startsWith('clicked')) {
+      await d.wait(4000);
+      const afterUrl = await d.getCurrentUrl();
+      const title = await d.executeJS(`document.title`);
+      if (!String(title).toLowerCase().includes('moment')) {
+        return { success: true, currentUrl: afterUrl };
+      }
+      // "Just a moment" — wait for CF to clear (it usually resolves within 10s when already logged in)
+      await d.wait(8000);
+      const title2 = await d.executeJS(`document.title`);
+      if (!String(title2).toLowerCase().includes('moment')) {
+        return { success: true, currentUrl: await d.getCurrentUrl() };
+      }
+    }
+
+    // Step 3: job not in list — it may need a search; use details URL as fallback
+    // The details panel URL is a React route, still safer than full /jobs/ URL
+    await d.executeJS(`window.location.href = '/nx/find-work/best-matches/details/~${jobId}'`);
+    await d.wait(5000);
+    const afterUrl = await d.getCurrentUrl();
+    const title = await d.executeJS(`document.title`);
+    if (!String(title).toLowerCase().includes('moment')) {
+      return { success: true, currentUrl: afterUrl };
+    }
+  }
+
+  // Final fallback (non-Upwork URLs or no job ID)
   const success = await d.navigateTo(url);
   if (!success) return { success: false, error: 'Failed to navigate to job' };
   await d.wait(3000);
-  // Handle Cloudflare CAPTCHA if present
   await d.handleCaptchaIfPresent();
-  const currentUrl = await d.getCurrentUrl();
-  return { success: true, currentUrl };
+  const finalUrl = await d.getCurrentUrl();
+  return { success: true, currentUrl: finalUrl };
 }
 
 // ─── Build Search URL with ALL Filters ───────────────────────

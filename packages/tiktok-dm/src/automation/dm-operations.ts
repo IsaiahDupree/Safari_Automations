@@ -3,7 +3,7 @@
  * High-level DM automation functions
  */
 
-import { SafariDriver } from './safari-driver.js';
+import { ChromeDriver as SafariDriver } from './chrome-driver.js';
 import {
   DMConversation,
   DMMessage,

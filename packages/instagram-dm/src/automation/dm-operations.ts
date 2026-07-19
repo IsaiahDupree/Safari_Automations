@@ -3,7 +3,7 @@
  * High-level functions for DM interactions.
  */
 
-import { SafariDriver, getDefaultDriver } from './safari-driver.js';
+import { ChromeDriver as SafariDriver, getDefaultDriver } from './chrome-driver.js';
 import type {
   DMConversation,
   DMMessage,

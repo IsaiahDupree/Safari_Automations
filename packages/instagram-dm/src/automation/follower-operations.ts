@@ -3,7 +3,34 @@
  * PAP-002: Extract followers from a creator's profile
  */
 
-import { execSafari } from './safari-driver.js';
+import { getPage } from './chrome-driver.js';
+
+/**
+ * Chrome/Puppeteer shim for the old AppleScript execSafari calls.
+ * Navigates the Chrome Instagram page and runs JS via page.evaluate().
+ */
+async function execSafariNav(url: string): Promise<string> {
+  const p = await getPage();
+  await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await new Promise(r => setTimeout(r, 3000));
+  return p.url();
+}
+
+async function execSafariJS(js: string): Promise<string> {
+  const p = await getPage();
+  const result = await p.evaluate((code: string) => {
+    try {
+      // eslint-disable-next-line no-eval
+      const val = eval(code);
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    } catch (e) {
+      return JSON.stringify({ error: (e as Error).message });
+    }
+  }, js);
+  return String(result ?? '');
+}
 
 export interface FollowerProfile {
   handle: string;
@@ -34,18 +61,7 @@ export async function extractFollowers(
     // Navigate to profile
     const profileUrl = `https://www.instagram.com/${handle}/`;
 
-    const navResult = await execSafari(
-      `
-      tell application "Safari"
-        tell front window
-          set current tab's URL to "${profileUrl}"
-          delay 3
-          return URL of current tab
-        end tell
-      end tell
-      `,
-      30000
-    );
+    const navResult = await execSafariNav(profileUrl);
 
     if (!navResult.includes('instagram.com')) {
       return {
@@ -57,30 +73,16 @@ export async function extractFollowers(
     }
 
     // Wait for page load and click followers link
-    const clickResult = await execSafari(
-      `
-      tell application "Safari"
-        tell front window
-          -- Wait for profile page to load
-          delay 2
-
-          -- Click followers link (using AppleScript to find and click)
-          do JavaScript "
-            (function() {
-              // Find followers link by href pattern
-              const followersLink = document.querySelector('a[href*=\\"/followers/\\"]');
-              if (followersLink) {
-                followersLink.click();
-                return 'clicked';
-              }
-              return 'not_found';
-            })()
-          " in current tab
-        end tell
-      end tell
-      `,
-      10000
-    );
+    const clickResult = await execSafariJS(`
+      (function() {
+        const followersLink = document.querySelector('a[href*="/followers/"]');
+        if (followersLink) {
+          followersLink.click();
+          return 'clicked';
+        }
+        return 'not_found';
+      })()
+    `);
 
     if (clickResult !== 'clicked') {
       return {
@@ -195,16 +197,7 @@ export async function extractFollowers(
       })()
     `;
 
-    const result = await execSafari(
-      `
-      tell application "Safari"
-        tell front window
-          do JavaScript "${extractScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}" in current tab
-        end tell
-      end tell
-      `,
-      60000
-    );
+    const result = await execSafariJS(extractScript);
 
     const parsed = JSON.parse(result);
 

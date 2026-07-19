@@ -23,6 +23,7 @@ import { CommentLogger } from '../db/comment-logger.js';
 import { discoverProspects, scoreICP, ICP_KEYWORDS } from './prospect-discovery.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { SafariDriver } from '../automation/safari-driver.js';
+import * as ChromeDriver from '../automation/chrome-driver.js';
 
 const app = express();
 
@@ -399,7 +400,8 @@ function wrapAsync(fn: (req: Request, res: Response) => Promise<void>) {
 // HEALTH (no auth required - handled above)
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/health', (_req: Request, res: Response) => {
+app.get('/health', async (_req: Request, res: Response) => {
+  const cdp = await ChromeDriver.getCDPStatus();
   res.json({
     status: 'ok',
     service: 'threads-comments',
@@ -408,6 +410,13 @@ app.get('/health', (_req: Request, res: Response) => {
     started_at: startedAt,
     uptime: Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000),
     timestamp: new Date().toISOString(),
+    chrome: {
+      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9225',
+      connected: cdp.connected,
+      has_threads_tab: cdp.hasThreadsTab,
+      tab_url: cdp.url,
+      error: cdp.error,
+    },
   });
 });
 

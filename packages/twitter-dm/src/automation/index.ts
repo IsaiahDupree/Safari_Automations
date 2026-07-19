@@ -3,10 +3,11 @@
  */
 
 export {
-  SafariDriver,
+  ChromeDriver as SafariDriver,
+  ChromeDriver,
   getDefaultDriver,
   setDefaultDriver,
-} from './safari-driver.js';
+} from './chrome-driver.js';
 
 export {
   navigateToInbox,

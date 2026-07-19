@@ -26,6 +26,8 @@ import {
   sendMessage,
   sendMessageToProfile,
   openNewCompose,
+  detectProfileButtons,
+  saveProfileButtonState,
   getUnreadCount,
   runProspectingPipeline,
   searchAndScore,
@@ -940,6 +942,50 @@ app.post('/api/linkedin/messages/send-to', async (req: Request, res: Response) =
       }
     }
     res.json(result);
+  });
+});
+
+// ─── Profile Button State Scanner ────────────────────────────
+// Navigates to a profile, scrapes which action buttons are visible (Message/Connect/Follow),
+// and persists results to the linkedin_profile_buttons Supabase table.
+app.post('/api/linkedin/profile/button-scan', async (req: Request, res: Response) => {
+  const { profileUrl } = req.body;
+  if (!profileUrl) return res.status(400).json({ error: 'profileUrl required' });
+  await withSafariLock(res, 'profile/button-scan', async () => {
+    const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
+    const { getDefaultDriver } = await import('../automation/safari-driver.js');
+    await getDefaultDriver().navigateTo(url);
+    await new Promise(r => setTimeout(r, 2000));
+    const state = await detectProfileButtons(url);
+    await saveProfileButtonState(state, false);
+    res.json({ success: true, ...state });
+  });
+});
+
+// Scan multiple profiles in batch (sequential, acquires Safari lock once)
+app.post('/api/linkedin/profile/button-scan-batch', async (req: Request, res: Response) => {
+  const { profileUrls } = req.body;
+  if (!Array.isArray(profileUrls) || profileUrls.length === 0) {
+    return res.status(400).json({ error: 'profileUrls array required' });
+  }
+  await withSafariLock(res, 'profile/button-scan-batch', async () => {
+    const results: any[] = [];
+    const { getDefaultDriver } = await import('../automation/safari-driver.js');
+    const d = getDefaultDriver();
+    for (const profileUrl of profileUrls.slice(0, 20)) {
+      try {
+        const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
+        await d.navigateTo(url);
+        await new Promise(r => setTimeout(r, 2000));
+        const state = await detectProfileButtons(url);
+        await saveProfileButtonState(state, false);
+        results.push({ profileUrl, ...state });
+      } catch (e: any) {
+        results.push({ profileUrl, error: e.message });
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    res.json({ success: true, results });
   });
 });
 

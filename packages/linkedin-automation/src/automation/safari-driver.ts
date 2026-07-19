@@ -164,13 +164,33 @@ export class SafariDriver {
    */
   async navigateTo(url: string): Promise<boolean> {
     try {
+      // Suppress "Leave Page?" dialogs before navigating.
+      // LinkedIn registers a beforeunload listener on compose pages; nulling it prevents the dialog.
+      await this.executeJS(
+        'try { window.onbeforeunload = null; } catch(e) {}'
+      ).catch(() => {});
+
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
+        const winNum = this.trackedWindow || parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+
         if (this.trackedWindow && this.trackedTab) {
-          await execAsync(
-            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
-            { timeout: this.config.timeout }
-          );
+          // Navigate + handle any "Leave Page?" sheet via System Events
+          const script = `
+tell application "Safari"
+  set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"
+end tell
+delay 0.4
+tell application "System Events"
+  tell process "Safari"
+    try
+      if exists (button "Leave" of sheet 1 of window ${winNum}) then
+        click button "Leave" of sheet 1 of window ${winNum}
+      end if
+    end try
+  end tell
+end tell`;
+          await execAsync(`osascript << 'APSCRIPT'\n${script}\nAPSCRIPT`, { timeout: this.config.timeout });
         } else {
           await execAsync(
             `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
@@ -644,7 +664,8 @@ export class SafariDriver {
       await this.wait(150);
 
       // Target Safari's window by index without activating it
-      const winIdx = this.trackedWindow || 1;
+      const defaultWin = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+      const winIdx = this.trackedWindow || defaultWin;
       const tabIdx = this.trackedTab   || 1;
       const pasteScript = `
 tell application "Safari"
@@ -702,14 +723,42 @@ end tell`;
   }
 
   /**
-   * Find a Safari tab by URL pattern — restricted to SAFARI_AUTOMATION_WINDOW only.
-   * Never scans the personal profile window. Returns the first matching tab.
+   * Find a Safari tab by URL pattern.
+   * First queries Safari Controller (port 3110) for a stable window-ID-based lookup,
+   * then falls back to the SAFARI_AUTOMATION_WINDOW scan.
    */
   async findTabByUrl(urlPattern: string): Promise<SessionInfo> {
     if (this.config.instanceType !== 'local') {
       return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
     }
-    // Phase A: only search within the designated automation window
+
+    // ── Priority: Safari Controller bridge (immune to z-order changes) ──────────
+    // The controller maps port 3105 → "Linkedin" profile → stable windowId → live windowIndex.
+    const CONTROLLER_PORT = parseInt(process.env.SAFARI_CONTROLLER_PORT || '3110', 10);
+    const SERVICE_PORT    = parseInt(process.env.PORT || '3105', 10);
+    try {
+      const ctrlRes = await fetch(`http://localhost:${CONTROLLER_PORT}/bridge/find-tab`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: SERVICE_PORT, urlPattern }),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (ctrlRes.ok) {
+        const data: any = await ctrlRes.json();
+        if (data.found && data.windowIndex && data.tabIndex) {
+          if (this.config.verbose) {
+            console.log(`[SafariDriver] Controller resolved: w=${data.windowIndex} t=${data.tabIndex} url=${data.url}`);
+          }
+          return { found: true, windowIndex: data.windowIndex, tabIndex: data.tabIndex, url: data.url || '' };
+        }
+        // Controller found the profile window but no matching tab — open the URL
+        if (!data.found && data.windowIndex && urlPattern.includes('linkedin.com')) {
+          return { found: false, windowIndex: data.windowIndex, tabIndex: 1, url: '' };
+        }
+      }
+    } catch { /* controller not running — fall through to legacy scan */ }
+
+    // ── Fallback: SAFARI_AUTOMATION_WINDOW scan (legacy) ─────────────────────────
     const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
     try {
       const script = `
@@ -984,8 +1033,12 @@ end tell`;
     try {
       const vpJson = await this.executeJS('JSON.stringify({w:window.innerWidth,h:window.innerHeight})');
       const vp = JSON.parse(vpJson || '{"w":1200,"h":800}');
+      // Use tracked window; fall back to SAFARI_AUTOMATION_WINDOW env var (default 2, not 1)
+      // Window 1 fallback is wrong when the automation profile runs in Window 2.
+      const defaultWin = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+      const winIdx = this.trackedWindow || defaultWin;
       const winInfo = await execAsync(
-        `osascript -e 'tell application "Safari" to get bounds of front window'`,
+        `osascript -e 'tell application "Safari" to get bounds of window ${winIdx}'`,
         { timeout: 5000 }
       );
       const bounds = winInfo.stdout.trim().split(', ').map(Number);
@@ -995,7 +1048,8 @@ end tell`;
       const toolbarOffset = winH - vp.h;
       const screenX = winX + x;
       const screenY = winY + toolbarOffset + y;
-      await this.activateSafari();
+      // Bring the specific automation window to front before clicking
+      await this.activateTab(winIdx, this.trackedTab || 1);
       await this.wait(200);
       const clickScript = `tell application "System Events"\n  click at {${screenX}, ${screenY}}\nend tell`;
       await execAsync(`osascript -e '${clickScript.replace(/'/g, "'\"'\"'")}'`, { timeout: 5000 });

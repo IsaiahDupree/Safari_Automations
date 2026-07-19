@@ -120,7 +120,7 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
 }
 import cors from 'cors';
 import {
-  SafariDriver,
+  ChromeDriver,
   checkAndRetryError,
   hasErrorState,
   detectTikTokRateLimit,
@@ -137,7 +137,6 @@ import {
   DEFAULT_RATE_LIMITS,
   RateLimitConfig,
 } from '../automation/index.js';
-import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { isWithinActiveHours, getRandomDelay } from '../utils/index.js';
 import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
 import { initScoringService, recalculateScore, recalculateAllScores, getTopContacts } from '../utils/scoring-service.js';
@@ -237,92 +236,56 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): v
 
 app.use(rateLimitMiddleware);
 
-// Create Safari driver
-const driver = new SafariDriver({ verbose: VERBOSE });
+// Create Chrome/Puppeteer driver (connects to Chrome CDP port 9224)
+const driver = new ChromeDriver({ verbose: VERBOSE });
 
-// URL pattern that identifies the TikTok Safari session
+// URL pattern that identifies the TikTok Chrome session
 const SESSION_URL_PATTERN = 'tiktok.com';
 
-// Service identity for tab coordination
-const SERVICE_NAME = 'tiktok-dm';
-const SERVICE_PORT = 3102;
-
-// Active tab coordinators by agentId (in-process map; file is cross-process)
-const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
-
-const STABLE_AGENT_ID = 'tiktok-dm-stable';
-let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
-setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
-
 /**
- * Ensure the TikTok Safari tab is the active/front tab before any operation.
- * Scans all Safari windows, finds the tiktok.com tab, and activates it.
+ * Ensure the TikTok Chrome tab is available before any operation.
+ * Chrome driver connects via CDP — no Safari/AppleScript tab claim needed.
  */
 async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
   const info = await driver.ensureActiveSession(SESSION_URL_PATTERN);
   return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
 }
 
-// ── Tab claim enforcement ─────────────────────────────────────────────────────
-// Every automation route MUST have an active tab claim before it runs.
-// On first request: auto-claims an existing tiktok.com tab OR opens one.
-// Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/session/*, /api/*/status, /api/*/rate-limits
-const OPEN_URL = 'https://www.tiktok.com/messages';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^/]+\/status$|^\/api\/[^/]+\/rate-limits/;
-
-async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
+// Health check
+app.get('/health', async (_req: Request, res: Response) => {
+  const cdpUrl = process.env.TIKTOK_CDP_URL || 'http://localhost:9224';
+  let chromeConnected = false;
   try {
-    const claims = await TabCoordinator.listClaims();
-    const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-    if (myClaim) {
-      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-      next();
-      return;
-    }
-
-    // No claim — auto-claim existing tiktok.com tab only (never opens a new window)
-    if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
-      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
-    }
-    const claim = await stableCoord.claim();
-    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
-    next();
-  } catch (err) {
-    res.status(503).json({
-      ok: false,
-      error: 'No Safari tab available for tiktok-dm',
-      detail: String(err),
-      fix: 'Open Safari and navigate to https://www.tiktok.com/messages',
-    });
-  }
-}
-
-app.use(requireTabClaim);
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Health check (exempt from tab claim)
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'tiktok-dm', platform: 'tiktok', port: PORT });
+    const b = await driver.getBrowser();
+    chromeConnected = b.connected;
+  } catch { /* not yet connected */ }
+  res.json({
+    status: 'ok',
+    service: 'tiktok-dm',
+    platform: 'tiktok',
+    driver: 'chrome-puppeteer',
+    cdpUrl,
+    chromeConnected,
+    port: PORT,
+  });
 });
 
 // === SESSION MANAGEMENT ===
 
-app.get('/api/session/status', (_req: Request, res: Response) => {
-  const info = driver.getSessionInfo();
-  res.json({
-    tracked: !!info.windowIndex,
-    windowIndex: info.windowIndex,
-    tabIndex: info.tabIndex,
-    urlPattern: info.urlPattern,
-    lastVerifiedMs: info.lastVerified ? Date.now() - info.lastVerified : null,
-    sessionUrlPattern: SESSION_URL_PATTERN,
-  });
+app.get('/api/session/status', async (_req: Request, res: Response) => {
+  try {
+    const url = await driver.getCurrentUrl();
+    const connected = url !== '';
+    res.json({
+      tracked: connected,
+      driver: 'chrome-puppeteer',
+      cdpUrl: process.env.TIKTOK_CDP_URL || 'http://localhost:9224',
+      currentUrl: url,
+      sessionUrlPattern: SESSION_URL_PATTERN,
+    });
+  } catch {
+    res.json({ tracked: false, driver: 'chrome-puppeteer', sessionUrlPattern: SESSION_URL_PATTERN });
+  }
 });
 
 app.post('/api/session/ensure', async (_req: Request, res: Response) => {
@@ -330,27 +293,20 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
     const info = await ensureTikTokSession();
     res.json({
       ok: info.ok,
-      windowIndex: info.windowIndex,
-      tabIndex: info.tabIndex,
       url: info.url,
       message: info.ok
-        ? `TikTok session active at window ${info.windowIndex}, tab ${info.tabIndex}`
-        : 'TikTok tab not found — open Safari and navigate to tiktok.com',
+        ? `TikTok Chrome session active: ${info.url.slice(0, 80)}`
+        : 'TikTok Chrome session not found — start Chrome with --remote-debugging-port=9224 and navigate to tiktok.com',
     });
   } catch (error) {
-    // No TikTok tab found — return ok:false rather than a 500 so callers can handle gracefully
     const msg = String(error);
-    if (msg.includes('No') && msg.includes('tab found')) {
-      res.json({ ok: false, message: 'TikTok tab not found — open Safari and navigate to tiktok.com' });
-    } else {
-      res.status(500).json({ ok: false, error: msg });
-    }
+    res.json({ ok: false, message: msg });
   }
 });
 
 app.post('/api/session/clear', (_req: Request, res: Response) => {
   driver.clearTrackedSession();
-  res.json({ ok: true, message: 'Tracked session cleared' });
+  res.json({ ok: true, message: 'Chrome session state cleared' });
 });
 
 // Get TikTok status
@@ -1337,50 +1293,35 @@ app.post('/api/prospect/discover', async (req: Request, res: Response) => {
 });
 
 // === TAB MANAGEMENT ===
+// Chrome/Puppeteer driver: no Safari tab-claim file needed.
+// These endpoints are kept for API compatibility with callers that check /api/tabs/claims.
 
-// GET /api/tabs/claims — list all live tab claims across all services
 app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
-  const claims = await TabCoordinator.listClaims();
-  res.json({ claims, count: claims.length });
-});
-
-// POST /api/tabs/claim — claim a Safari tab for this service
-app.post('/api/tabs/claim', async (req: Request, res: Response) => {
-  const { agentId, windowIndex, tabIndex } = req.body as {
-    agentId: string; windowIndex?: number; tabIndex?: number;
-  };
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  // Chrome driver: return the single active Chrome session as a pseudo-claim
   try {
-    let coord = activeCoordinators.get(agentId);
-    if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-      activeCoordinators.set(agentId, coord);
-    }
-    const claim = await coord.claim(windowIndex, tabIndex);
-    driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    res.json({ ok: true, claim, message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'` });
-  } catch (error) {
-    res.status(409).json({ ok: false, error: String(error) });
+    const url = await driver.getCurrentUrl();
+    const claims = url.includes('tiktok.com')
+      ? [{ agentId: 'tiktok-dm-chrome', service: 'tiktok-dm', driver: 'chrome', url }]
+      : [];
+    res.json({ claims, count: claims.length });
+  } catch {
+    res.json({ claims: [], count: 0 });
   }
 });
 
-// POST /api/tabs/release — release a tab claim
-app.post('/api/tabs/release', async (req: Request, res: Response) => {
-  const { agentId } = req.body as { agentId: string };
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  const coord = activeCoordinators.get(agentId);
-  if (coord) { await coord.release(); activeCoordinators.delete(agentId); }
-  res.json({ ok: true, message: `Claim released for '${agentId}'` });
+// POST /api/tabs/claim — no-op for Chrome driver (no tab claim file)
+app.post('/api/tabs/claim', (_req: Request, res: Response) => {
+  res.json({ ok: true, message: 'Chrome driver: no tab claim needed', driver: 'chrome-puppeteer' });
 });
 
-// POST /api/tabs/heartbeat — refresh claim TTL
-app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
-  const { agentId } = req.body as { agentId: string };
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  const coord = activeCoordinators.get(agentId);
-  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
-  await coord.heartbeat();
-  res.json({ ok: true, heartbeat: Date.now() });
+// POST /api/tabs/release — no-op
+app.post('/api/tabs/release', (_req: Request, res: Response) => {
+  res.json({ ok: true, message: 'Chrome driver: no tab release needed' });
+});
+
+// POST /api/tabs/heartbeat — no-op
+app.post('/api/tabs/heartbeat', (_req: Request, res: Response) => {
+  res.json({ ok: true, heartbeat: Date.now(), driver: 'chrome-puppeteer' });
 });
 
 // POST /api/debug/eval — execute JS in the tracked Safari tab (debugging only)
@@ -1414,38 +1355,23 @@ function syncToCRMLite(username: string, message: string): void {
 
 // Start server
 export function startServer(port: number = PORT): void {
-  // On startup: evict any stale claims left by a previous process for this service.
-  // This prevents the new process from inheriting a dead window/tab reference.
-  TabCoordinator.listClaims().then(claims => {
-    const myStale = claims.filter(c => c.service === SERVICE_NAME);
-    if (myStale.length > 0) {
-      console.log(`[startup] Clearing ${myStale.length} stale tiktok-dm claim(s) from previous process`);
-      // Write back claims without our service's entries
-      import('fs/promises').then(fsp => {
-        const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-        const remaining = claims.filter(c => c.service !== SERVICE_NAME);
-        fsp.writeFile(CLAIMS_FILE, JSON.stringify(remaining, null, 2)).catch(() => {});
-      });
-    }
-  }).catch(() => {});
+  const cdpUrl = process.env.TIKTOK_CDP_URL || 'http://localhost:9224';
 
   app.listen(port, () => {
-    console.log(`🎵 TikTok DM API server running on http://localhost:${port}`);
+    console.log(`TikTok DM API server (Chrome/Puppeteer) running on http://localhost:${port}`);
+    console.log(`   CDP: ${cdpUrl}`);
     console.log(`   Health: GET /health`);
     console.log(`   Status: GET /api/tiktok/status`);
     console.log(`   Send DM: POST /api/tiktok/messages/send-to`);
   });
 
-  // Refresh all active tab claim heartbeats every 30s
-  setInterval(async () => {
-    for (const [agentId, coord] of activeCoordinators) {
-      try {
-        await coord.heartbeat();
-      } catch {
-        activeCoordinators.delete(agentId);
-      }
-    }
-  }, 30_000);
+  // Warm up the Chrome connection on startup (non-fatal if Chrome isn't running yet)
+  driver.getBrowser().then(() => {
+    if (VERBOSE) console.log('[startup] Chrome CDP connection established');
+  }).catch((err) => {
+    console.warn(`[startup] Chrome not yet available at ${cdpUrl}: ${(err as Error).message}`);
+    console.warn(`[startup] Start Chrome: open -a 'Google Chrome' --args --remote-debugging-port=9224 --profile-directory='Automation-TikTok' --user-data-dir=${process.env.CHROME_USER_DATA_DIR || '~/.chrome-automation-profiles/tiktok'}`);
+  });
 }
 
 // Auto-start if run directly

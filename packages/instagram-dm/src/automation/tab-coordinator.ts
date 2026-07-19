@@ -97,9 +97,39 @@ export class TabCoordinator {
   /**
    * Scan all open Safari tabs via AppleScript, return those matching urlPattern.
    * Filters out tabs already claimed by other agents.
+   *
+   * PATCHED: Queries Safari Controller (:3110) first for stable window-ID-based
+   * resolution. Falls back to the original SAFARI_AUTOMATION_WINDOW scan if the
+   * controller is unavailable, preserving backward compatibility.
    */
   async findAvailableTab(): Promise<{ windowIndex: number; tabIndex: number; url: string } | null> {
-    // Phase A: only scan the designated automation window
+    // ── Controller bridge (preferred) ────────────────────────────────────────
+    const controllerUrl = process.env.SAFARI_CONTROLLER_URL || 'http://localhost:3110';
+    try {
+      const res = await fetch(`${controllerUrl}/bridge/find-tab`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urlPattern: this.urlPattern, port: this.port }),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = await res.json() as { found: boolean; windowIndex?: number; tabIndex?: number; url?: string };
+        if (data.found && data.windowIndex != null && data.tabIndex != null) {
+          // Controller resolved via stable window ID — check claim conflicts as usual
+          const claims = await TabCoordinator.listClaims();
+          const taken = new Set(
+            claims.filter(c => c.agentId !== this.agentId).map(c => `${c.windowIndex}:${c.tabIndex}`)
+          );
+          if (!taken.has(`${data.windowIndex}:${data.tabIndex}`)) {
+            return { windowIndex: data.windowIndex, tabIndex: data.tabIndex, url: data.url ?? '' };
+          }
+        }
+      }
+    } catch {
+      // Controller unavailable — fall through to legacy scan below
+    }
+
+    // ── Legacy fallback: SAFARI_AUTOMATION_WINDOW scan ───────────────────────
     const script = `
 tell application "Safari"
   set tabList to {}
@@ -122,7 +152,6 @@ end tell`;
         `osascript << 'ASEOF'\n${script}\nASEOF`,
         { timeout: 10000 }
       );
-      // AppleScript list items come back comma-separated
       const items = stdout.trim().split(', ').filter(Boolean);
       for (const item of items) {
         const parts = item.split('||');
@@ -135,13 +164,11 @@ end tell`;
         }
       }
     } catch {
-      // Safari not running or AppleScript permissions not granted
       return null;
     }
 
     if (matches.length === 0) return null;
 
-    // Filter out tabs already claimed by other agents
     const claims = await TabCoordinator.listClaims();
     const takenKeys = new Set(
       claims
@@ -163,8 +190,16 @@ end tell`;
     let url = '';
 
     if (windowIndex != null && tabIndex != null) {
-      // Phase A: enforce automation window
-      if (windowIndex !== getAutomationWindow()) {
+      // Allow any window when controller bridge is active (bridge already validated the profile).
+      // Only enforce SAFARI_AUTOMATION_WINDOW when running without the controller.
+      const controllerUrl = process.env.SAFARI_CONTROLLER_URL || 'http://localhost:3110';
+      let controllerActive = false;
+      try {
+        const r = await fetch(`${controllerUrl}/health`, { signal: AbortSignal.timeout(1000) });
+        controllerActive = r.ok;
+      } catch { /* unavailable */ }
+
+      if (!controllerActive && windowIndex !== getAutomationWindow()) {
         throw new Error(
           `Refusing to claim tab ${windowIndex}:${tabIndex} — not in automation window ` +
           `(SAFARI_AUTOMATION_WINDOW=${getAutomationWindow()}). ` +

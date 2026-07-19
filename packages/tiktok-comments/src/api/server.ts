@@ -8,6 +8,7 @@ import cors from 'cors';
 import { TikTokDriver, type TikTokConfig } from '../automation/tiktok-driver.js';
 import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { CommentLogger } from '../db/comment-logger.js';
+import * as ChromeDriver from '../automation/chrome-driver.js';
 
 const commentLogger = new CommentLogger();
 
@@ -152,7 +153,22 @@ async function generateAIComment(postContent: string, username: string): Promise
 let driver: TikTokDriver | null = null;
 function getDriver(): TikTokDriver { if (!driver) driver = new TikTokDriver(); return driver; }
 
-app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', service: 'tiktok-comments', port: PORT, timestamp: new Date().toISOString() }));
+app.get('/health', async (_req: Request, res: Response) => {
+  const cdp = await ChromeDriver.getCDPStatus();
+  res.json({
+    status: 'ok',
+    service: 'tiktok-comments',
+    port: PORT,
+    timestamp: new Date().toISOString(),
+    chrome: {
+      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9224',
+      connected: cdp.connected,
+      has_tiktok_tab: cdp.hasTikTokTab,
+      tab_url: cdp.url,
+      error: cdp.error,
+    },
+  });
+});
 
 // ── Cross-agent tab claim registry ──────────────────────────────────────────
 // All Safari services share /tmp/safari-tab-claims.json.

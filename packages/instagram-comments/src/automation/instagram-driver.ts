@@ -972,4 +972,131 @@ end tell`;
       return { caption: '', hashtags: [], mentions: [] };
     }
   }
+
+  /**
+   * Get posts visible in the current feed page WITHOUT navigating away.
+   * Extracts caption, URL, and username from article elements in-place.
+   * Works around Instagram SPA redirect issue when navigating to /p/ URLs.
+   */
+  async getFeedPosts(limit: number = 10): Promise<Array<{ url: string; username: string; caption: string; articleIndex: number }>> {
+    const result = await this.executeJS(`
+      (function() {
+        var articles = document.querySelectorAll('article');
+        var posts = [];
+        for (var i = 0; i < articles.length && posts.length < ${limit}; i++) {
+          var a = articles[i];
+          // Get post URL
+          var link = a.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+          if (!link) continue;
+          var url = link.href;
+          // Get username from user profile link
+          var userLink = a.querySelector('a[href^="/"]:not([href*="/p/"]):not([href*="/reel/"])');
+          var username = userLink ? userLink.getAttribute('href').replace(/\\//g, '') : '';
+          // Get caption — look for longest text span in the article
+          var spans = a.querySelectorAll('span');
+          var caption = '';
+          for (var s = 0; s < spans.length; s++) {
+            var txt = (spans[s].textContent || '').trim();
+            if (txt.length > caption.length && txt.length > 15 && !spans[s].querySelector('span')) {
+              caption = txt;
+            }
+          }
+          posts.push({ url: url, username: username, caption: caption, articleIndex: i });
+        }
+        return JSON.stringify(posts);
+      })();
+    `);
+    try {
+      return JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Click the comment button on a feed post by its article index (no navigation).
+   * Opens the inline comment box, types the comment, and submits.
+   * Returns true if comment was posted successfully.
+   */
+  async commentOnFeedPostByIndex(articleIndex: number, commentText: string): Promise<boolean> {
+    // Step 1: Click the Comment SVG button to open the inline comment box
+    const clicked = await this.executeJS(`
+      (function() {
+        var articles = document.querySelectorAll('article');
+        var a = articles[${articleIndex}];
+        if (!a) return 'no-article';
+        var commentBtn = a.querySelector('svg[aria-label="Comment"]');
+        if (!commentBtn) return 'no-btn';
+        var clickTarget = commentBtn.closest('button') || commentBtn.closest('[role="button"]') || commentBtn.parentElement;
+        if (!clickTarget) return 'no-target';
+        clickTarget.click();
+        return 'clicked';
+      })();
+    `);
+    if (clicked !== 'clicked') {
+      console.error('[Instagram] commentOnFeedPostByIndex: click failed:', clicked);
+      return false;
+    }
+
+    // Clicking the comment button may navigate to the post page (Instagram SPA routing).
+    // Wait for navigation + textarea to appear.
+    await this.wait(2000);
+
+    // Step 2: Focus and type into the comment textarea
+    // After clicking, we may be on either the feed (textarea in article) OR the post page (global textarea).
+    const typed = await this.executeJS(`
+      (function() {
+        // First try: textarea within the specific article (still on feed)
+        var articles = document.querySelectorAll('article');
+        var a = articles[${articleIndex}];
+        var textarea = a ? a.querySelector('textarea') : null;
+        // Second try: any textarea on the page (navigated to post page)
+        if (!textarea) textarea = document.querySelector('textarea[placeholder], textarea[aria-label]');
+        if (!textarea) textarea = document.querySelector('textarea');
+        if (!textarea) return 'no-textarea';
+        textarea.focus();
+        // Use native input value setter to bypass React synthetic event restrictions
+        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        if (nativeSetter && nativeSetter.set) {
+          nativeSetter.set.call(textarea, ${JSON.stringify(commentText)});
+        } else {
+          textarea.value = ${JSON.stringify(commentText)};
+        }
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'typed:' + textarea.value.length;
+      })();
+    `);
+    if (!typed || !typed.startsWith('typed:')) {
+      console.error('[Instagram] commentOnFeedPostByIndex: type failed:', typed);
+      return false;
+    }
+
+    await this.wait(800);
+
+    // Step 3: Submit via Enter key on the textarea
+    const submitted = await this.executeJS(`
+      (function() {
+        // Find textarea globally (works both in feed and on post page after SPA navigation)
+        var textarea = document.querySelector('textarea');
+        if (!textarea) return 'no-textarea';
+        // Try to find and click the Post/Submit button (text-based search globally)
+        var allBtns = document.querySelectorAll('button, div[role="button"]');
+        for (var b = 0; b < allBtns.length; b++) {
+          var btnTxt = (allBtns[b].textContent || '').trim().toLowerCase();
+          if (btnTxt === 'post' || btnTxt === 'submit') {
+            allBtns[b].click();
+            return 'posted-btn';
+          }
+        }
+        // Fallback: press Enter on textarea
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        textarea.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', bubbles: true }));
+        textarea.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'enter-pressed';
+      })();
+    `);
+    console.log('[Instagram] commentOnFeedPostByIndex: submit result:', submitted);
+    return submitted === 'posted-btn' || submitted === 'enter-pressed';
+  }
 }

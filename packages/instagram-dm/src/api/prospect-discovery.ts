@@ -13,18 +13,23 @@
  */
 
 import { enrichContact } from '../automation/index.js';
-import type { SafariDriver } from '../automation/index.js';
+import type { ChromeDriver as SafariDriver } from '../automation/chrome-driver.js';
 
 const COMMENTS_BASE = 'http://localhost:3005';
 const CRM_BASE = 'https://crmlite-h3k1s46jj-isaiahduprees-projects.vercel.app';
 const MAX_ENRICH = 30; // hard cap to protect Safari rate limits
 
 export const ICP_KEYWORDS = [
-  // Strong SaaS/founder signals (required for ICP qualification)
+  // Strong SaaS/founder signals
   'saas', 'founder', 'software', 'automation', 'startup',
   'mrr', 'arr', 'solopreneur', 'buildinpublic', 'indiehacker',
   'indie hacker', 'developer', 'b2b', 'ai automation', 'tech founder',
   'bootstrapped', 'microsaas', 'micro saas', 'cto', 'ceo of',
+  // Broad business/creator signals — anyone who might benefit from AI automation
+  'creator', 'maker', 'consultant', 'agency', 'marketer', 'freelancer',
+  'entrepreneur', 'builder', 'coach', 'expert', 'business', 'marketing',
+  'growth', 'content', 'brand', 'digital', 'online', 'ecommerce',
+  'designer', 'product', 'engineer', 'tech', 'ai', 'community',
 ];
 
 // Extended keyword pool for continuation rounds when first pass yields too few candidates
@@ -62,13 +67,18 @@ export function scoreICP(profile: Profile, _source: string): { score: number; si
   const bioLower = (profile.bio || '').toLowerCase();
   const followers = parseFollowerCount(profile.followers);
 
-  // Bio keyword matches: up to 30pts (10 per keyword)
-  // HARD REQUIREMENT: no bio match → score 0 (disqualified regardless of follower count)
+  // Base points for any public account with a bio (broad network approach)
+  if (bioLower.length > 0) {
+    score += 10;
+    signals.push('has_bio');
+  }
+
+  // Bio keyword matches: up to 30pts (10 per keyword, capped)
+  // Soft signal only — no hard requirement; anyone can be valuable to connect with
   const matched = ICP_KEYWORDS.filter(k => bioLower.includes(k));
-  if (matched.length === 0) return { score: 0, signals: [] };
   if (matched.length > 0) {
-    score += Math.min(matched.length * 10, 30);
-    signals.push(...matched.map(k => `bio:${k}`));
+    score += Math.min(matched.length * 8, 30);
+    signals.push(...matched.slice(0, 4).map(k => `bio:${k}`));
   }
 
   // Revenue signals in bio: +15
@@ -83,6 +93,10 @@ export function scoreICP(profile: Profile, _source: string): { score: number; si
     signals.push('follower_range:1K-100K');
   } else if (followers > 100 && followers < 1_000) {
     score += 8;
+    signals.push('follower_range:100-1K');
+  } else if (followers >= 100_000) {
+    score += 10; // large accounts still worth connecting with
+    signals.push('large_account');
   }
 
   // Not private: +15

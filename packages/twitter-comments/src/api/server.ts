@@ -9,6 +9,7 @@ import { TwitterDriver, type TwitterConfig, type ComposeOptions, type SearchResu
 import { TabCoordinator } from '../automation/tab-coordinator.js';
 import { SafariDriver } from '../automation/safari-driver.js';
 import { CommentLogger } from '../db/comment-logger.js';
+import * as ChromeDriver from '../automation/chrome-driver.js';
 
 const commentLogger = new CommentLogger();
 
@@ -165,7 +166,24 @@ let driver: TwitterDriver | null = null;
 function getDriver(): TwitterDriver { if (!driver) driver = new TwitterDriver(); return driver; }
 
 // ─── Public Routes (no auth required) ──────────────────────
-app.get('/health', (req: Request, res: Response) => res.json({ status: 'ok', service: 'twitter-comments', port: PORT, timestamp: new Date().toISOString(), version: '1.0.0', uptime: process.uptime() }));
+app.get('/health', async (_req: Request, res: Response) => {
+  const cdp = await ChromeDriver.getCDPStatus();
+  res.json({
+    status: 'ok',
+    service: 'twitter-comments',
+    port: PORT,
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    uptime: process.uptime(),
+    chrome: {
+      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9223',
+      connected: cdp.connected,
+      has_twitter_tab: cdp.hasTwitterTab,
+      tab_url: cdp.url,
+      error: cdp.error,
+    },
+  });
+});
 
 // ─── Protected Routes (auth required) ───────────────────────
 app.use('/api', authMiddleware);
