@@ -221,9 +221,40 @@ JS_WAIT_CHECK = """
     var t = (document.body||{innerText:''}).innerText;
     var cards = document.querySelectorAll('div[data-testid="ad-archive-renderer"]').length;
     var started = (t.match(/Started running/g)||[]).length;
-    return JSON.stringify({ cards: cards, started: started, loaded: cards > 0 || started > 0, snippet: t.substring(0,200) });
+    var libids = (t.match(/Library ID/g)||[]).length;
+    return JSON.stringify({ cards: cards, started: started, libids: libids, loaded: cards > 0 || started > 0 || libids > 0, snippet: t.substring(0,200) });
 })();
 """
+
+# Facebook shows a cookie/consent dialog before rendering ads. Dismiss it by
+# clicking (in priority order) a "decline optional" / "allow" style button.
+JS_DISMISS_COOKIES = r"""
+(function() {
+    var labels = [
+        'Decline optional cookies',
+        'Only allow essential cookies',
+        'Allow all cookies',
+        'Accept all',
+        'Allow all',
+        'Accept'
+    ];
+    var candidates = Array.from(document.querySelectorAll('div[role="button"], button, [aria-label]'));
+    for (var i = 0; i < candidates.length; i++) {
+        var el = candidates[i];
+        var t = (el.innerText || el.getAttribute('aria-label') || '').trim();
+        if (!t) continue;
+        for (var j = 0; j < labels.length; j++) {
+            if (t.toLowerCase() === labels[j].toLowerCase()) {
+                try { el.click(); return 'clicked:' + t; } catch (e) {}
+            }
+        }
+    }
+    return 'none';
+})();
+"""
+
+# Returns document.readyState so we can confirm the page is actually loaded.
+JS_READY_STATE = "(function(){return document.readyState||'';})();"
 
 
 class MetaAdLibraryScraper:
@@ -244,28 +275,87 @@ class MetaAdLibraryScraper:
             return ""
 
     def _execute_js(self, js_code: str, timeout: int = 30) -> str:
+        # Target the dedicated Ad Library document by URL match instead of
+        # blindly using `front document`. This prevents the scraper from running
+        # its JS against a stale/unrelated tab (e.g. a Claude Code OAuth page)
+        # if window focus changes mid-scrape.
         js_escaped = js_code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         script = f'''
 tell application "Safari"
-    if (count of windows) > 0 then
-        return do JavaScript "{js_escaped}" in front document
+    set targetDoc to missing value
+    repeat with d in documents
+        try
+            if (URL of d) contains "ads/library" then
+                set targetDoc to d
+                exit repeat
+            end if
+        end try
+    end repeat
+    if targetDoc is missing value then
+        if (count of documents) > 0 then set targetDoc to front document
     end if
-    return ""
+    if targetDoc is missing value then return ""
+    return do JavaScript "{js_escaped}" in targetDoc
 end tell'''
         return self._run_applescript(script, timeout=timeout)
 
     def _navigate(self, url: str):
+        # FRESH ISOLATED CONTEXT: open a NEW dedicated Safari window pointed at
+        # the ad-library URL rather than hijacking whatever `front document`
+        # happens to be. Close any prior ad-library windows first so each run
+        # starts clean. This is the root-cause fix — the old code did
+        # `set URL of front document` which silently reused a stale tab.
+        esc = url.replace("\\", "\\\\").replace('"', '\\"')
         script = f'''
 tell application "Safari"
     activate
-    if (count of windows) = 0 then make new document
-    set URL of front document to "{url}"
+    repeat with i from (count of documents) to 1 by -1
+        try
+            if (URL of document i) contains "ads/library" then close document i
+        end try
+    end repeat
+    make new document with properties {{URL:"{esc}"}}
 end tell'''
         self._run_applescript(script)
         time.sleep(self.delay)
+        self._wait_until_loaded()
+        self._dismiss_cookies()
+
+    def _wait_until_loaded(self, max_wait: int = 20) -> bool:
+        """Poll until the front document actually reaches the ad-library URL and
+        the DOM is ready (domcontentloaded-equivalent) before extracting."""
+        for _ in range(max_wait):
+            cur = self._get_current_url()
+            if cur and "ads/library" in cur:
+                state = self._execute_js(JS_READY_STATE)
+                if state in ("interactive", "complete"):
+                    return True
+            time.sleep(1)
+        logger.warning(f"  Page did not reach Ad Library URL (current: {self._get_current_url()!r})")
+        return False
+
+    def _dismiss_cookies(self):
+        """Dismiss the Facebook cookie/consent dialog if it is blocking ads."""
+        try:
+            res = self._execute_js(JS_DISMISS_COOKIES)
+            if res and res != "none":
+                logger.debug(f"  Cookie dialog dismissed: {res}")
+                time.sleep(1.5)
+        except Exception:
+            pass
 
     def _get_current_url(self) -> str:
-        return self._run_applescript('tell application "Safari"\nif (count of windows) > 0 then return URL of front document\nreturn ""\nend tell')
+        script = '''
+tell application "Safari"
+    repeat with d in documents
+        try
+            if (URL of d) contains "ads/library" then return (URL of d)
+        end try
+    end repeat
+    if (count of documents) > 0 then return URL of front document
+    return ""
+end tell'''
+        return self._run_applescript(script)
 
     def _scroll_down(self):
         self._execute_js("window.scrollBy(0, window.innerHeight * 0.85);")
@@ -300,6 +390,17 @@ end tell'''
         logger.debug(f"  URL: {url}")
 
         self._navigate(url)
+
+        # Honest blocker check: confirm we are actually on the Ad Library page
+        # before trying to extract. If not, report the real landing page.
+        cur = self._get_current_url()
+        if "ads/library" not in (cur or ""):
+            logger.error(
+                f"  ❌ Navigation did not reach the Ad Library — landed on {cur!r}. "
+                f"Safari may have blocked the new window or redirected. Aborting."
+            )
+            return []
+
         loaded = self._wait_for_ads(max_wait=15)
         if not loaded:
             logger.warning(f"  No ads loaded for '{keyword}' — may be no results or slow load")
