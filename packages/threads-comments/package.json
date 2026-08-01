@@ -32,5 +32,8 @@
     "comments",
     "automation",
     "safari"
-  ]
+  ],
+  "overrides": {
+    "yargs": "^18.0.0"
+  }
 }

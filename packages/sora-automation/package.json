@@ -35,5 +35,8 @@
     "safari",
     "automation",
     "watermark"
-  ]
+  ],
+  "overrides": {
+    "yargs": "^18.0.0"
+  }
 }

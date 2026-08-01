@@ -25,5 +25,17 @@
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
-  "keywords": ["market-research", "safari", "automation", "twitter", "threads", "instagram", "facebook", "tiktok"]
+  "keywords": [
+    "market-research",
+    "safari",
+    "automation",
+    "twitter",
+    "threads",
+    "instagram",
+    "facebook",
+    "tiktok"
+  ],
+  "overrides": {
+    "yargs": "^18.0.0"
+  }
 }

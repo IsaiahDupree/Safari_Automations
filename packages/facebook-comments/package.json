@@ -26,5 +26,8 @@
     "automation",
     "safari",
     "research"
-  ]
+  ],
+  "overrides": {
+    "yargs": "^18.0.0"
+  }
 }
