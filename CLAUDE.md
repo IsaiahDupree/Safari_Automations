@@ -142,16 +142,42 @@ npm run build  # from root
 
 # Type-check a specific package:
 npx tsc --noEmit --project packages/instagram-dm/tsconfig.json
-
-# Install dependencies for a package:
-npm install --prefix packages/instagram-dm
 ```
+
+### Installing dependencies (REQUIRED — no workspaces)
+
+This is a **per-package monorepo with NO npm workspaces** — each `packages/*` has its own
+`package.json`/lock and must be installed on its own; a root `npm install` only covers shared
+tooling (tsx, etc.), not each service's `express`/`puppeteer-core`/etc.
+
+```bash
+cd "/Users/isaiahdupree/Documents/Software/Safari Automation"
+PUPPETEER_SKIP_DOWNLOAD=1 npm install                      # shared tooling (drives agent-Chrome over CDP :9222, no bundled browser needed)
+for p in instagram-dm twitter-dm tiktok-dm linkedin-automation instagram-comments \
+         upwork-automation tiktok-comments twitter-comments threads-comments \
+         market-research sora-automation medium-automation facebook-comments; do
+  ( cd "packages/$p" && PUPPETEER_SKIP_DOWNLOAD=1 npm install )
+done
+```
+
+### Node 26 fix (yargs `require(esm)` crash) — DO NOT REMOVE the overrides
+
+On Node ≥ ~24 (verified on **v26.5.0**), `puppeteer-core@22` → `@puppeteer/browsers@2` →
+**yargs@17.7.2** crashes at import: *"require is not defined in ES module scope"* (yargs 17's
+`"type":"module"` + extensionless CJS entry hits Node's default `require(esm)`). Every fleet
+package.json therefore pins `"overrides": { "yargs": "^18.0.0" }`. yargs 18 loads clean and the
+services never invoke the browsers CLI, so puppeteer-core stays at 22 (no API-breaking bump).
+Keep this override when adding new puppeteer-using packages.
 
 ---
 
 ## Common Issues
 
 - **npx not found**: Use `/bin/zsh -l` login shell
+- **`MODULE_NOT_FOUND` (dotenv/express) on start**: deps not installed — run the per-package
+  install above (no workspaces; a root install alone is not enough).
+- **`require is not defined in ES module scope` (yargs)**: Node 26 + yargs 17 — ensure the
+  package has `"overrides": { "yargs": "^18.0.0" }` and reinstall. See "Node 26 fix" above.
 - **Service not responding**: Check Safari is open and logged into the platform
 - **Session expired**: Call `POST /api/{platform}/session/ensure` then retry
 - **Rate limited**: Wait 60s, then retry. Twitter is strictest.
