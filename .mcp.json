@@ -1,0 +1,112 @@
+{
+  "mcpServers": {
+    "safari-medium": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/medium-automation/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation",
+      "env": {
+        "MEDIUM_PORT": "3108",
+        "SAFARI_AUTOMATION_WINDOW": "2"
+      }
+    },
+    "safari-market-research": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/market-research/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-instagram-dm": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/instagram-dm/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-twitter-dm": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/twitter-dm/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-tiktok-dm": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/tiktok-dm/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-instagram-comments": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/instagram-comments/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-twitter-comments": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/twitter-comments/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-tiktok-comments": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/tiktok-comments/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-threads-comments": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/threads-comments/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-linkedin": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/linkedin-automation/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-upwork": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/upwork-automation/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "safari-cloud-sync": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/cloud-sync/src/api/mcp-server.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    },
+    "sora-mcp": {
+      "type": "stdio",
+      "command": "/Users/isaiahdupree/Documents/Software/Safari Automation/node_modules/.bin/tsx",
+      "args": [
+        "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/services/src/sora/sora-mcp.ts"
+      ],
+      "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation"
+    }
+  }
+}
