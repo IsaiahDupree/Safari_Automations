@@ -97,49 +97,20 @@ export class ChromeDriver {
       if (this.config.verbose) console.log('[ChromeDriver] CDP connection established');
       return this.browser;
     } catch (cdpErr) {
-      if (this.config.verbose) console.warn(`[ChromeDriver] CDP connect failed (${(cdpErr as Error).message}), falling back to launch`);
-    }
-
-    // Mode 2: Launch Chrome with the automation profile
-    const userDataDir = process.env.CHROME_USER_DATA_DIR || DEFAULT_USER_DATA_DIR;
-    const profileDir = process.env.CHROME_PROFILE || DEFAULT_PROFILE;
-    if (!existsSync(userDataDir)) {
-      mkdirSync(userDataDir, { recursive: true });
-      if (this.config.verbose) console.log(`[ChromeDriver] Created profile dir: ${userDataDir}`);
-    }
-    const executablePath = findChrome();
-    if (this.config.verbose) console.log(`[ChromeDriver] Launching Chrome: ${executablePath} profile=${profileDir}`);
-
-    try {
-      this.browser = await puppeteer.launch({
-        executablePath,
-        headless: false,
-        userDataDir,
-        args: [
-          `--profile-directory=${profileDir}`,
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-infobars',
-          `--remote-debugging-port=${new URL(DEFAULT_CDP_URL).port || 9224}`,
-          '--window-size=1400,900',
-        ],
-        defaultViewport: null,
-      });
-      this.browser.on('disconnected', () => {
-        if (this.config.verbose) console.warn('[ChromeDriver] Browser disconnected — resetting state');
-        this.browser = null;
-        this.page = null;
-      });
-      return this.browser;
-    } catch (launchErr) {
-      const msg = (launchErr as Error).message;
-      if (msg.includes('user data directory is already in use')) {
-        throw new Error(
-          `Chrome profile is already open. Either close Chrome or set TIKTOK_CDP_URL=http://localhost:9224 to connect to it.`
-        );
-      }
-      throw launchErr;
+      // NO-NEW-PROFILE POLICY: the whole fleet drives ONE shared logged-in Chrome
+      // on :9222 (the chrome-bridge "agent" profile). We deliberately DO NOT launch
+      // a separate automation profile as a fallback — that opens a logged-out
+      // browser and fragments sessions. Fail loudly with a fix hint instead.
+      const cdpMsg = (cdpErr as Error).message;
+      console.error(`[ChromeDriver] Cannot reach shared logged-in Chrome at ${cdpUrl}: ${cdpMsg}`);
+      throw Object.assign(
+        new Error(
+          `[tiktok] Shared logged-in Chrome unreachable at ${cdpUrl}: ${cdpMsg}. ` +
+          `The watchdog normally keeps it up — verify with: curl -s ${cdpUrl}/json/version . ` +
+          `Do NOT launch a separate profile; restart the shared browser instead.`
+        ),
+        { code: 'CDP_CONNECT_FAILED', cdpUrl }
+      );
     }
   }
 

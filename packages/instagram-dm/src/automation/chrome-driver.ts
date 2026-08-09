@@ -75,46 +75,20 @@ async function getBrowser(): Promise<Browser> {
     _browser = await connectCDP(DEFAULT_CDP_URL);
     return _browser;
   } catch (_cdpErr) {
-    // CDP not available — launch Chrome with Instagram profile
-    if (!existsSync(DEFAULT_PROFILE_DIR)) {
-      mkdirSync(DEFAULT_PROFILE_DIR, { recursive: true });
-    }
-    const executablePath = findChrome();
-    console.log(`[ChromeDriver] Launching Chrome with profile at ${DEFAULT_PROFILE_DIR}`);
-    try {
-      _browser = await puppeteer.launch({
-        executablePath,
-        headless: false,
-        userDataDir: DEFAULT_PROFILE_DIR,
-        args: [
-          '--profile-directory=Default',
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-infobars',
-          '--window-size=1400,900',
-          `--remote-debugging-port=9222`,
-        ],
-        defaultViewport: null,
-      });
-      _browser.on('disconnected', () => {
-        console.warn('[ChromeDriver] Browser disconnected — resetting state');
-        _browser = null;
-        _page = null;
-      });
-      return _browser;
-    } catch (launchErr) {
-      const msg = (launchErr as Error).message;
-      if (msg.includes('user data directory is already in use')) {
-        throw Object.assign(
-          new Error(
-            'Chrome Instagram profile is already open. Connect via CDP or close Chrome first.'
-          ),
-          { code: 'PROFILE_LOCKED' }
-        );
-      }
-      throw launchErr;
-    }
+    // NO-NEW-PROFILE POLICY: the whole fleet drives ONE shared logged-in Chrome
+    // on :9222 (the chrome-bridge "agent" profile). We deliberately DO NOT launch a
+    // separate Instagram profile as a fallback — that opens a logged-out browser
+    // and fragments sessions. Fail loudly with a fix hint instead.
+    const cdpMsg = (_cdpErr as Error).message;
+    console.error(`[ChromeDriver] Shared logged-in Chrome unreachable at ${DEFAULT_CDP_URL}: ${cdpMsg}`);
+    throw Object.assign(
+      new Error(
+        `[instagram] Shared logged-in Chrome unreachable at ${DEFAULT_CDP_URL}: ${cdpMsg}. ` +
+        `The watchdog normally keeps it up — verify with: curl -s ${DEFAULT_CDP_URL}/json/version . ` +
+        `Do NOT launch a separate profile; restart the shared browser instead.`
+      ),
+      { code: 'CDP_CONNECT_FAILED', cdpUrl: DEFAULT_CDP_URL }
+    );
   }
 }
 

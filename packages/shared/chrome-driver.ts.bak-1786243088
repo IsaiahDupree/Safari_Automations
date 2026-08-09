@@ -41,18 +41,12 @@ export interface TabClaim {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// SHARED LOGGED-IN BROWSER: every platform now attaches to ONE Chrome instance
-// (the chrome-bridge "agent" profile, logged in) on :9222 and works in its own
-// tab, rather than each platform spawning a separate profile/port. Override a
-// single platform with CHROME_CDP_PORT_<PLATFORM> or all of them with
-// CHROME_CDP_PORT if you ever need the old per-platform-instance behavior.
-const SHARED_CDP_PORT = 9222;
 const DEFAULT_CDP_PORTS: Record<ChromePlatform, number> = {
-  instagram: SHARED_CDP_PORT,
-  twitter:   SHARED_CDP_PORT,
-  tiktok:    SHARED_CDP_PORT,
-  threads:   SHARED_CDP_PORT,
-  linkedin:  SHARED_CDP_PORT,
+  instagram: 9222,
+  twitter:   9223,
+  tiktok:    9224,
+  threads:   9225,
+  linkedin:  9333,
 };
 
 const CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
@@ -121,27 +115,17 @@ export class ChromeDriver {
       }
     }
 
-    // SHARED-BROWSER SAFETY: all platforms drive ONE logged-in Chrome, so grabbing
-    // the "last tab" would hijack another platform's tab. If this driver already
-    // owns a live tab, reuse it; otherwise open a fresh, DEDICATED tab for this
-    // platform instead of stealing an existing one.
-    if (this._page && !this._page.isClosed()) {
-      console.log(`[chrome-driver:${this.opts.platform}] Reusing owned tab: ${this._page.url().slice(0, 80)}`);
+    // Fall back to last tab or open a new one
+    if (pages.length > 0) {
+      this._page = pages[pages.length - 1];
+      console.log(`[chrome-driver:${this.opts.platform}] Reusing last tab: ${this._page.url().slice(0, 80)}`);
       return this._page;
     }
 
-    console.log(
-      `[chrome-driver:${this.opts.platform}] No tab matching "${this.opts.urlPattern ?? 'n/a'}" among ${pages.length} open tab(s); opening a dedicated new tab`
-    );
+    console.log(`[chrome-driver:${this.opts.platform}] Opening new tab`);
     this._page = await b.newPage();
     await this._page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
     this._page.on('pageerror', e => console.warn(`[chrome-driver:${this.opts.platform}] Page JS error: ${e.message}`));
-    this._page.on('close', () => {
-      if (this._page && this._page.isClosed()) {
-        console.warn(`[chrome-driver:${this.opts.platform}] Owned tab was closed — will open a new one on next use`);
-        this._page = null;
-      }
-    });
     return this._page;
   }
 

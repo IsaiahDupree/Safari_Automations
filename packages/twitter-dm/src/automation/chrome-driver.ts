@@ -86,54 +86,20 @@ export async function getBrowser(): Promise<Browser> {
     browser = await connectToCDP(cdpUrl);
     return browser;
   } catch (cdpErr) {
-    log('warn', 'CDP connect failed — launching Chrome', { cdpUrl, err: (cdpErr as Error).message });
-  }
-
-  // Mode 2: Launch Chrome with the Twitter automation profile
-  const userDataDir = process.env['CHROME_USER_DATA_DIR'] || DEFAULT_USER_DATA_DIR;
-  const profileDir = process.env['CHROME_PROFILE'] || DEFAULT_PROFILE_DIR;
-
-  if (!existsSync(userDataDir)) {
-    mkdirSync(userDataDir, { recursive: true });
-    log('info', `Created user data dir: ${userDataDir}`);
-  }
-
-  const executablePath = findChrome();
-  log('info', 'Launching Chrome', { executablePath, userDataDir, profileDir });
-
-  try {
-    browser = await puppeteer.launch({
-      executablePath,
-      headless: false,
-      userDataDir,
-      args: [
-        `--profile-directory=${profileDir}`,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1400,900',
-      ],
-      defaultViewport: null,
-    });
-    log('info', 'Chrome launched', { pid: browser.process()?.pid, profileDir });
-    browser.on('disconnected', () => {
-      log('warn', 'Browser disconnected — resetting state');
-      browser = null;
-      page = null;
-    });
-    return browser;
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (msg.includes('user data directory is already in use')) {
-      log('error', 'Profile is locked by another Chrome instance', { userDataDir });
-      throw Object.assign(
-        new Error('Chrome profile is already open. Either close Chrome or point TWITTER_CDP_URL to it.'),
-        { code: 'PROFILE_LOCKED' }
-      );
-    }
-    log('error', 'Failed to launch Chrome', { error: msg });
-    throw err;
+    // NO-NEW-PROFILE POLICY: the whole fleet drives ONE shared logged-in Chrome
+    // on :9222 (the chrome-bridge "agent" profile). We deliberately DO NOT launch a
+    // separate automation profile as a fallback — that opens a logged-out browser
+    // and fragments sessions. Fail loudly with a fix hint instead.
+    const cdpMsg = (cdpErr as Error).message;
+    log('error', 'Shared logged-in Chrome unreachable — NOT launching a new profile', { cdpUrl, err: cdpMsg });
+    throw Object.assign(
+      new Error(
+        `[twitter] Shared logged-in Chrome unreachable at ${cdpUrl}: ${cdpMsg}. ` +
+        `The watchdog normally keeps it up — verify with: curl -s ${cdpUrl}/json/version . ` +
+        `Do NOT launch a separate profile; restart the shared browser instead.`
+      ),
+      { code: 'CDP_CONNECT_FAILED', cdpUrl }
+    );
   }
 }
 
