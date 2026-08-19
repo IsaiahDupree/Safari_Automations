@@ -64,6 +64,18 @@ npm run test:selectors
 npm run test:platform -- --platform=instagram
 ```
 
+### 5. Supervise Cross-Platform Research
+
+The user LaunchAgent runs the compiled five-platform market-research service from private Application Support, independently of the source checkout and terminal sessions. Its installer copies the existing research archive into the same non-Documents runtime so collection continues while the Mac is locked.
+
+```bash
+./scripts/install-market-research-launchd.sh
+launchctl print gui/$(id -u)/com.isaiah.safari-automation.market-research
+curl -fsS http://127.0.0.1:3106/health
+```
+
+Cross-platform public research is coordinated through `POST /api/research/all/full`. X reads remain explicitly gated by `SAFARI_RESEARCH_ENABLED=true`; set it only in the private `.env`, never in committed source.
+
 ## Architecture Overview
 
 ```

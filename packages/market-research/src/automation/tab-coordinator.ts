@@ -33,6 +33,21 @@ export function getAutomationWindow(): number {
 /** @deprecated use getAutomationWindow() — kept for backward compat */
 export const AUTOMATION_WINDOW = 0; // placeholder, not used internally
 
+export function urlMatchesPattern(value: string, pattern: string): boolean {
+  try {
+    const url = new URL(value);
+    const normalized = pattern.trim().toLowerCase().replace(/^https?:\/\//, '');
+    const slash = normalized.indexOf('/');
+    const hostPattern = (slash >= 0 ? normalized.slice(0, slash) : normalized).replace(/^www\./, '');
+    const pathPattern = slash >= 0 ? `/${normalized.slice(slash + 1)}` : '';
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const hostMatches = host === hostPattern || host.endsWith(`.${hostPattern}`);
+    return hostMatches && (!pathPattern || url.pathname.startsWith(pathPattern));
+  } catch {
+    return false;
+  }
+}
+
 export interface TabClaim {
   agentId: string;        // unique, e.g. 'ig-sync-20240304-32396'
   service: string;        // 'instagram-dm', 'twitter-dm', 'tiktok-dm', etc.
@@ -114,7 +129,10 @@ export class TabCoordinator {
       });
       if (res.ok) {
         const data = await res.json() as { found: boolean; windowIndex?: number; tabIndex?: number; url?: string };
-        if (data.found && data.windowIndex != null && data.tabIndex != null) {
+        if (
+          data.found && data.windowIndex != null && data.tabIndex != null
+          && !!data.url && urlMatchesPattern(data.url, this.urlPattern)
+        ) {
           // Controller resolved via stable window ID — check claim conflicts as usual
           const claims = await TabCoordinator.listClaims();
           const taken = new Set(
@@ -211,6 +229,12 @@ end tell`;
       if (conflict) {
         throw new Error(
           `Tab ${windowIndex}:${tabIndex} already claimed by '${conflict.agentId}' (${conflict.service} :${conflict.port})`
+        );
+      }
+      url = await this.readTabUrl(windowIndex, tabIndex);
+      if (!urlMatchesPattern(url, this.urlPattern)) {
+        throw new Error(
+          `Refusing to claim tab ${windowIndex}:${tabIndex} because its hostname/path does not match '${this.urlPattern}'`
         );
       }
     } else {
@@ -315,6 +339,24 @@ end tell`;
       return { windowIndex, tabIndex };
     } catch (err) {
       throw new Error(`Failed to open new tab in automation window ${getAutomationWindow()} to '${url}': ${err}`);
+    }
+  }
+
+  private async readTabUrl(windowIndex: number, tabIndex: number): Promise<string> {
+    const script = `
+tell application "Safari"
+  if (count of windows) < ${windowIndex} then error "Safari window unavailable"
+  if (count of tabs of window ${windowIndex}) < ${tabIndex} then error "Safari tab unavailable"
+  return URL of tab ${tabIndex} of window ${windowIndex}
+end tell`;
+    try {
+      const { stdout } = await execAsync(
+        `osascript << 'ASEOF'\n${script}\nASEOF`,
+        { timeout: 10000 }
+      );
+      return stdout.trim();
+    } catch {
+      throw new Error(`Unable to verify Safari tab ${windowIndex}:${tabIndex}`);
     }
   }
 

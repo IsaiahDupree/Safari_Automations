@@ -112,6 +112,7 @@ const activeCoordinators = new Map<string, TabCoordinator>();
 
 const STABLE_AGENT_ID = 'market-research-stable';
 let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
+let stableClaim: { windowIndex: number; tabIndex: number } | null = null;
 setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
@@ -399,7 +400,8 @@ type Platform = 'twitter' | 'threads' | 'instagram' | 'facebook' | 'tiktok';
 
 const PLATFORMS: Platform[] = ['twitter', 'threads', 'instagram', 'facebook', 'tiktok'];
 
-const DEFAULT_OUTPUT_DIR = path.join(os.homedir(), 'Documents/market-research');
+const DEFAULT_OUTPUT_DIR = process.env.MARKET_RESEARCH_OUTPUT_DIR
+  || path.join(os.homedir(), 'Documents/market-research');
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -414,7 +416,7 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
 
   switch (platform) {
     case 'twitter':
-      return new TwitterResearcher({
+      const twitter = new TwitterResearcher({
         tweetsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         enrichTopCreators: config.enrichTopCreators ?? 10,
@@ -423,6 +425,10 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
         outputDir,
         ...config,
       });
+      if (stableClaim) {
+        twitter.setTrackedTab(stableClaim.windowIndex, stableClaim.tabIndex);
+      }
+      return twitter;
     case 'threads':
       return new ThreadsResearcher({
         postsPerNiche: config.postsPerNiche || 1000,
@@ -565,6 +571,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
 
   if (myClaim) {
     // Claim exists — pin driver to the claimed tab and proceed
+    stableClaim = { windowIndex: myClaim.windowIndex, tabIndex: myClaim.tabIndex };
     getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
     next();
     return;
@@ -573,10 +580,17 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   // No claim — auto-claim now (open new tab if needed)
   try {
     if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      stableCoord = new TabCoordinator(
+        STABLE_AGENT_ID,
+        SERVICE_NAME,
+        SERVICE_PORT,
+        SESSION_URL_PATTERN,
+        OPEN_URL,
+      );
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
     const claim = await stableCoord.claim();
+    stableClaim = { windowIndex: claim.windowIndex, tabIndex: claim.tabIndex };
     getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
@@ -793,8 +807,12 @@ app.post('/api/research/:platform/niche', async (req: Request, res: Response) =>
 
 // ─── Multi-niche research (async, returns job ID) ────────────────
 
-app.post('/api/research/:platform/full', async (req: Request, res: Response) => {
+app.post('/api/research/:platform/full', async (req: Request, res: Response, next: NextFunction) => {
   const platform = req.params.platform as Platform;
+  if (req.params.platform === 'all') {
+    next();
+    return;
+  }
   if (!PLATFORMS.includes(platform)) {
     res.status(400).json({ error: `Invalid platform. Must be one of: ${PLATFORMS.join(', ')}` });
     return;
@@ -2275,12 +2293,18 @@ app.get('/api/tabs/claims', async (_req, res) => {
 });
 
 app.post('/api/tabs/claim', async (req, res) => {
-  const { agentId, windowIndex, tabIndex } = req.body;
+  const { agentId, windowIndex, tabIndex, openUrl } = req.body;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      coord = new TabCoordinator(
+        agentId,
+        SERVICE_NAME,
+        SERVICE_PORT,
+        SESSION_URL_PATTERN,
+        openUrl || OPEN_URL,
+      );
       activeCoordinators.set(agentId, coord);
     }
     const claim = await coord.claim(windowIndex, tabIndex);
