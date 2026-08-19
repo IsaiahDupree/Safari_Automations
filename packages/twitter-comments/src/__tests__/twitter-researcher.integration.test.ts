@@ -18,7 +18,12 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TwitterResearcher, type ResearchTweet, type Creator } from '../automation/twitter-researcher.js';
+import {
+  TwitterResearcher,
+  researchRelevance,
+  type ResearchTweet,
+  type Creator,
+} from '../automation/twitter-researcher.js';
 
 const execAsync = promisify(exec);
 
@@ -91,6 +96,11 @@ describe('TwitterResearcher (real Safari)', () => {
     expect(typeof first.retweets).toBe('number');
     expect(typeof first.replies).toBe('number');
     expect(typeof first.engagementScore).toBe('number');
+    expect(extractedTweets.some(tweet => researchRelevance(
+      tweet.text,
+      `${tweet.author} ${tweet.authorDisplayName}`,
+      'AI automation',
+    ).accepted)).toBe(true);
 
     // Log a sample
     console.log(`   Sample tweet:`);
@@ -158,6 +168,12 @@ describe('TwitterResearcher (real Safari)', () => {
       creators: researcher.rankCreators(collectedTweets, 'AI automation', 10),
       totalCollected: collectedTweets.length,
       uniqueTweets: collectedTweets.length,
+      relevance: {
+        rawCollected: collectedTweets.length,
+        accepted: collectedTweets.length,
+        rejected: 0,
+        precision: 1,
+      },
       collectionStarted: new Date().toISOString(),
       collectionFinished: new Date().toISOString(),
       durationMs: 0,

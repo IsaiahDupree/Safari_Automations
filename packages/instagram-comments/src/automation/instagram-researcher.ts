@@ -133,6 +133,12 @@ export interface InstagramResearchConfig {
   timeout: number;
   outputDir: string;
   maxRetries: number;
+  queryMode: 'niche' | 'trend';
+}
+
+export interface InstagramSearchPlan {
+  mode: 'explore' | 'hashtag';
+  queries: string[];
 }
 
 export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
@@ -145,6 +151,7 @@ export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
   timeout: 30000,
   outputDir: path.join(os.homedir(), 'Documents/instagram-research'),
   maxRetries: 3,
+  queryMode: 'niche',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -643,6 +650,14 @@ export class InstagramResearcher {
   buildSearchQueries(niche: string): string[] {
     const base = niche.trim().toLowerCase();
     const tag = base.replace(/\s+/g, '');
+    if (this.config.queryMode === 'trend') {
+      const words = base.split(/\s+/).filter(word => word.length >= 3);
+      return Array.from(new Set([
+        tag,
+        words.slice(0, 2).join(''),
+        words.at(-1) || '',
+      ].filter(Boolean)));
+    }
     return [
       tag,                                 // main hashtag
       `${tag}tips`,                        // tips variant
@@ -652,43 +667,60 @@ export class InstagramResearcher {
     ];
   }
 
+  buildSearchPlan(niche: string): InstagramSearchPlan {
+    if (this.config.queryMode === 'trend') {
+      return { mode: 'explore', queries: [niche.trim()] };
+    }
+    return { mode: 'hashtag', queries: this.buildSearchQueries(niche) };
+  }
+
   // ─── Full Niche Research ───────────────────────────────────
 
   async researchNiche(niche: string): Promise<InstagramNicheResult> {
     const startTime = Date.now();
     const startISO = new Date().toISOString();
     const allPosts = new Map<string, InstagramPost>();
-    const queries = this.buildSearchQueries(niche);
+    const searchPlan = this.buildSearchPlan(niche);
+    const queries = searchPlan.queries;
     const targetPerQuery = Math.ceil(this.config.postsPerNiche / queries.length);
 
     console.log(`\n${'═'.repeat(60)}`);
     console.log(`[IG Research] NICHE: "${niche}" — target ${this.config.postsPerNiche} posts`);
-    console.log(`[IG Research] Running ${queries.length} hashtag searches`);
+    console.log(`[IG Research] Running ${searchPlan.mode === 'explore' ? 'direct keyword search' : `${queries.length} hashtag searches`}`);
     console.log(`${'═'.repeat(60)}`);
 
-    for (const query of queries) {
-      if (allPosts.size >= this.config.postsPerNiche) break;
-
-      const remaining = this.config.postsPerNiche - allPosts.size;
-      const target = Math.min(targetPerQuery, remaining);
-
-      const searched = await this.searchHashtag(query);
-      if (!searched) {
-        console.log(`[IG Research] Hashtag #${query} failed, skipping`);
-        continue;
+    if (searchPlan.mode === 'explore') {
+      const explored = await this.searchExplore(queries[0]);
+      if (explored) {
+        const posts = await this.scrollAndCollect(niche, this.config.postsPerNiche);
+        for (const post of posts) allPosts.set(post.id, post);
+        console.log(`[IG Research] keyword search: ${posts.length} collected`);
       }
+    } else {
+      for (const query of queries) {
+        if (allPosts.size >= this.config.postsPerNiche) break;
 
-      const posts = await this.scrollAndCollect(niche, target);
-      let newCount = 0;
-      for (const post of posts) {
-        if (!allPosts.has(post.id)) {
-          allPosts.set(post.id, post);
-          newCount++;
+        const remaining = this.config.postsPerNiche - allPosts.size;
+        const target = Math.min(targetPerQuery, remaining);
+
+        const searched = await this.searchHashtag(query);
+        if (!searched) {
+          console.log(`[IG Research] Hashtag #${query} failed, skipping`);
+          continue;
         }
-      }
-      console.log(`[IG Research] #${query}: ${posts.length} collected, ${newCount} new (total: ${allPosts.size})`);
 
-      await this.wait(3000);
+        const posts = await this.scrollAndCollect(niche, target);
+        let newCount = 0;
+        for (const post of posts) {
+          if (!allPosts.has(post.id)) {
+            allPosts.set(post.id, post);
+            newCount++;
+          }
+        }
+        console.log(`[IG Research] #${query}: ${posts.length} collected, ${newCount} new (total: ${allPosts.size})`);
+
+        await this.wait(3000);
+      }
     }
 
     let postArray = Array.from(allPosts.values());

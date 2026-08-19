@@ -22,6 +22,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { researchRelevance } from '../../../twitter-comments/src/automation/twitter-researcher.js';
 
 const execAsync = promisify(exec);
 
@@ -72,6 +73,12 @@ export interface ThreadsNicheResult {
   creators: ThreadsCreator[];
   totalCollected: number;
   uniquePosts: number;
+  relevance: {
+    rawCollected: number;
+    accepted: number;
+    rejected: number;
+    precision: number;
+  };
   collectionStarted: string;
   collectionFinished: string;
   durationMs: number;
@@ -86,6 +93,7 @@ export interface ThreadsResearchConfig {
   timeout: number;
   outputDir: string;
   maxRetries: number;
+  queryMode: 'niche' | 'trend';
 }
 
 export const DEFAULT_THREADS_RESEARCH_CONFIG: ThreadsResearchConfig = {
@@ -97,6 +105,7 @@ export const DEFAULT_THREADS_RESEARCH_CONFIG: ThreadsResearchConfig = {
   timeout: 30000,
   outputDir: path.join(os.homedir(), 'Documents/threads-research'),
   maxRetries: 3,
+  queryMode: 'niche',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -522,6 +531,9 @@ export class ThreadsResearcher {
 
   buildSearchQueries(niche: string): string[] {
     const base = niche.trim();
+    if (this.config.queryMode === 'trend') {
+      return [base, `"${base}"`, `#${base.replace(/\s+/g, '')}`];
+    }
     return [
       base,
       `"${base}"`,
@@ -537,6 +549,8 @@ export class ThreadsResearcher {
     const startTime = Date.now();
     const startISO = new Date().toISOString();
     const allPosts = new Map<string, ThreadsPost>();
+    let rawCollected = 0;
+    let rejectedForRelevance = 0;
     const queries = this.buildSearchQueries(niche);
     const targetPerQuery = Math.ceil(this.config.postsPerNiche / queries.length);
 
@@ -557,14 +571,24 @@ export class ThreadsResearcher {
       }
 
       const posts = await this.scrollAndCollect(niche, target);
+      rawCollected += posts.length;
+      const relevantPosts = posts.filter(post => {
+        const relevance = researchRelevance(
+          post.text,
+          `${post.author} ${post.authorDisplayName}`,
+          niche,
+        );
+        if (!relevance.accepted) rejectedForRelevance++;
+        return relevance.accepted;
+      });
       let newCount = 0;
-      for (const post of posts) {
+      for (const post of relevantPosts) {
         if (!allPosts.has(post.id)) {
           allPosts.set(post.id, post);
           newCount++;
         }
       }
-      this.log(`query "${query}": ${posts.length} collected, ${newCount} new → total ${allPosts.size}`);
+      this.log(`query "${query}": ${posts.length} raw, ${relevantPosts.length} relevant, ${newCount} new → total ${allPosts.size}`);
 
       await this.wait(3000);
     }
@@ -598,6 +622,12 @@ export class ThreadsResearcher {
       creators,
       totalCollected: postArray.length,
       uniquePosts: postArray.length,
+      relevance: {
+        rawCollected,
+        accepted: postArray.length,
+        rejected: rejectedForRelevance,
+        precision: rawCollected > 0 ? Number((postArray.length / rawCollected).toFixed(6)) : 0,
+      },
       collectionStarted: startISO,
       collectionFinished: new Date().toISOString(),
       durationMs: Date.now() - startTime,

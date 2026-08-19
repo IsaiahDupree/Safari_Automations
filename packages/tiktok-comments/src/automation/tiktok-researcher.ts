@@ -93,6 +93,7 @@ export interface TikTokResearchConfig {
   timeout: number;
   outputDir: string;
   maxRetries: number;
+  queryMode: 'niche' | 'trend';
 }
 
 export const DEFAULT_TT_RESEARCH_CONFIG: TikTokResearchConfig = {
@@ -104,6 +105,7 @@ export const DEFAULT_TT_RESEARCH_CONFIG: TikTokResearchConfig = {
   timeout: 30000,
   outputDir: path.join(os.homedir(), 'Documents/tiktok-research'),
   maxRetries: 3,
+  queryMode: 'niche',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -429,6 +431,9 @@ export class TikTokResearcher {
 
   buildSearchQueries(niche: string): string[] {
     const base = niche.trim();
+    if (this.config.queryMode === 'trend') {
+      return [base, `#${base.replace(/\s+/g, '')}`, `${base} reaction`];
+    }
     return [
       base,
       `${base} tips`,

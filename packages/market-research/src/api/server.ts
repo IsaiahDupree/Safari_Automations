@@ -50,6 +50,10 @@ import type { OfferContext, NicheContext } from '../../../twitter-comments/src/a
 import { UniversalTaskQueue } from '../queue/universal-queue.js';
 import type { TaskPriority, TaskStatus } from '../queue/universal-queue.js';
 import { registerBuiltinWorkers } from '../queue/builtin-workers.js';
+import {
+  summarizeCrossPlatformResults,
+  type PlatformResearchReceipt,
+} from './cross-platform-receipts.js';
 
 // ─── Supabase logging ────────────────────────────────────────────
 
@@ -383,12 +387,13 @@ interface ResearchJob {
   id: string;
   platform: string;
   niches: string[];
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'degraded' | 'failed';
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
   resultFile?: string;
   error?: string;
+  platformReceipts?: PlatformResearchReceipt[];
   progress?: {
     currentNiche: string;
     nichesCompleted: number;
@@ -1223,15 +1228,29 @@ app.post('/api/research/all/full', async (req: Request, res: Response) => {
     if (!fs.existsSync(combinedDir)) fs.mkdirSync(combinedDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filepath = path.join(combinedDir, `all-platforms-${timestamp}.json`);
+    const summary = summarizeCrossPlatformResults(activePlatforms, allResults);
     fs.writeFileSync(filepath, JSON.stringify({
-      metadata: { generatedAt: new Date().toISOString(), platforms: activePlatforms, niches },
+      metadata: {
+        generatedAt: new Date().toISOString(),
+        platforms: activePlatforms,
+        niches,
+        status: summary.status,
+        platformReceipts: summary.receipts,
+      },
       results: allResults,
     }, null, 2));
 
-    job.status = 'completed';
+    job.status = summary.status;
     job.completedAt = new Date().toISOString();
     job.durationMs = Date.now() - new Date(job.startedAt).getTime();
     job.resultFile = filepath;
+    job.platformReceipts = summary.receipts;
+    if (summary.status !== 'completed') {
+      const failedPlatforms = summary.receipts
+        .filter((receipt) => receipt.status === 'failed')
+        .map((receipt) => receipt.platform);
+      job.error = `Platform research failed: ${failedPlatforms.join(', ')}`;
+    }
     job.progress = { currentNiche: 'done', nichesCompleted: activePlatforms.length * niches.length, totalNiches: activePlatforms.length * niches.length };
   } catch (e) {
     job.status = 'failed';

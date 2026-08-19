@@ -104,6 +104,12 @@ export interface NicheResult {
   creators: Creator[];
   totalCollected: number;
   uniqueTweets: number;
+  relevance: {
+    rawCollected: number;
+    accepted: number;
+    rejected: number;
+    precision: number;
+  };
   collectionStarted: string;
   collectionFinished: string;
   durationMs: number;
@@ -119,6 +125,7 @@ export interface ResearchConfig {
   timeout: number;              // JS execution timeout
   outputDir: string;            // where to save results
   maxRetries: number;           // retries per operation
+  queryMode: 'niche' | 'trend';
 }
 
 export const DEFAULT_RESEARCH_CONFIG: ResearchConfig = {
@@ -131,7 +138,47 @@ export const DEFAULT_RESEARCH_CONFIG: ResearchConfig = {
   timeout: 30000,
   outputDir: path.join(os.homedir(), 'Documents/twitter-research'),
   maxRetries: 3,
+  queryMode: 'niche',
 };
+
+const RELEVANCE_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'at', 'best', 'for', 'from', 'funny', 'highlights', 'in', 'of',
+  'on', 'or', 'the', 'tips', 'to', 'with',
+]);
+
+export function researchRelevance(text: string, author: string, niche: string): {
+  accepted: boolean;
+  matchedTokens: string[];
+  requiredMatches: number;
+  nicheTokens: string[];
+} {
+  const normalize = (value: string): string[] => (
+    value
+      .normalize('NFKD')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(token => token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token)
+  );
+  const nicheTokens = Array.from(new Set(
+    normalize(niche).filter(token => token.length >= 3 && !RELEVANCE_STOP_WORDS.has(token)),
+  ));
+  const documentTokens = new Set(normalize(`${text} ${author}`));
+  const matchedTokens = nicheTokens.filter(token => Array.from(documentTokens).some(
+    documentToken => documentToken === token || (token.length >= 4 && documentToken.includes(token)),
+  ));
+  const requiredMatches = nicheTokens.length === 1
+    ? 1
+    : Math.max(2, Math.ceil(nicheTokens.length * 0.5));
+  return {
+    accepted: nicheTokens.length > 0 && matchedTokens.length >= requiredMatches,
+    matchedTokens,
+    requiredMatches,
+    nicheTokens,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // TwitterResearcher
@@ -258,27 +305,70 @@ export class TwitterResearcher {
     const url = `https://x.com/search?q=${encoded}${tabParam}&src=typed_query`;
 
     console.log(`[Research] Searching: "${query}" (${tab} tab)`);
+    const previousTweetId = await this.executeJS(`(function() {
+      var link = document.querySelector('article[data-testid="tweet"] a[href*="/status/"]');
+      var match = link && (link.getAttribute('href') || '').match(/\\/status\\/(\\d+)/);
+      return match ? match[1] : '';
+    })()`);
     const ok = await this.navigate(url);
     if (!ok) return false;
 
-    // Wait for search results to render
-    const loaded = await this.waitForSelector('[data-testid="tweet"]', 12000);
-    if (!loaded) {
-      // Check if "No results" page
-      const noResults = await this.executeJS(`
-        (function() {
-          var pc = document.querySelector('[data-testid="primaryColumn"]');
-          if (pc && pc.innerText.includes('No results')) return 'no_results';
-          return '';
-        })()
-      `);
-      if (noResults === 'no_results') {
-        console.log(`[Research] No results for "${query}"`);
-        return false;
-      }
+    const loaded = await this.waitForSearchTransition(query, previousTweetId, 12000);
+    if (loaded === 'no_results') {
+      console.log(`[Research] No results for "${query}"`);
+      return false;
     }
+    if (loaded !== 'loaded') {
+      console.log(`[Research] Search did not settle for "${query}"`);
+      return false;
+    }
+    await this.executeJS('window.scrollTo(0, 0)');
+    return true;
+  }
 
-    return loaded;
+  private async waitForSearchTransition(
+    query: string,
+    previousTweetId: string,
+    timeoutMs: number,
+  ): Promise<'loaded' | 'no_results' | 'timeout'> {
+    const start = Date.now();
+    let matchingUrlAt = 0;
+    while (Date.now() - start < timeoutMs) {
+      const raw = await this.executeJS(`(function() {
+        var currentQuery = '';
+        try { currentQuery = new URL(window.location.href).searchParams.get('q') || ''; } catch (e) {}
+        var primary = document.querySelector('[data-testid="primaryColumn"]');
+        var link = document.querySelector('article[data-testid="tweet"] a[href*="/status/"]');
+        var match = link && (link.getAttribute('href') || '').match(/\\/status\\/(\\d+)/);
+        return JSON.stringify({
+          query: currentQuery,
+          firstTweetId: match ? match[1] : '',
+          hasTweet: !!link,
+          noResults: !!(primary && primary.innerText.includes('No results')),
+          readyState: document.readyState
+        });
+      })()`);
+      try {
+        const state = JSON.parse(raw || '{}') as {
+          query?: string;
+          firstTweetId?: string;
+          hasTweet?: boolean;
+          noResults?: boolean;
+          readyState?: string;
+        };
+        if (state.query === query) {
+          if (!matchingUrlAt) matchingUrlAt = Date.now();
+          if (state.noResults) return 'no_results';
+          const settledMs = Date.now() - matchingUrlAt;
+          const transitioned = !previousTweetId || state.firstTweetId !== previousTweetId;
+          if (state.hasTweet && state.readyState === 'complete' && settledMs >= 700 && (
+            transitioned || settledMs >= 3000
+          )) return 'loaded';
+        }
+      } catch {}
+      await this.wait(300);
+    }
+    return 'timeout';
   }
 
   // ─── Tweet Extraction ──────────────────────────────────────
@@ -570,6 +660,9 @@ export class TwitterResearcher {
    */
   buildSearchQueries(niche: string): string[] {
     const base = niche.trim();
+    if (this.config.queryMode === 'trend') {
+      return [base, `"${base}"`, `#${base.replace(/\s+/g, '')}`];
+    }
     const queries = [
       base,                              // plain search
       `"${base}"`,                       // exact phrase
@@ -600,6 +693,8 @@ export class TwitterResearcher {
     const startTime = Date.now();
     const startISO = new Date().toISOString();
     const allTweets = new Map<string, ResearchTweet>();
+    let rawCollected = 0;
+    let rejectedForRelevance = 0;
     const queries = this.buildSearchQueries(niche);
     const targetPerQuery = Math.ceil(this.config.tweetsPerNiche / queries.length);
 
@@ -625,14 +720,24 @@ export class TwitterResearcher {
       }
 
       const tweets = await this.scrollAndCollect(niche, target);
+      rawCollected += tweets.length;
+      const relevantTweets = tweets.filter(tweet => {
+        const relevance = researchRelevance(
+          tweet.text,
+          `${tweet.author} ${tweet.authorDisplayName}`,
+          niche,
+        );
+        if (!relevance.accepted) rejectedForRelevance++;
+        return relevance.accepted;
+      });
       let newCount = 0;
-      for (const tweet of tweets) {
+      for (const tweet of relevantTweets) {
         if (!allTweets.has(tweet.id)) {
           allTweets.set(tweet.id, tweet);
           newCount++;
         }
       }
-      console.log(`[Research] Query "${query}": ${tweets.length} collected, ${newCount} new (total: ${allTweets.size})`);
+      console.log(`[Research] Query "${query}": ${tweets.length} raw, ${relevantTweets.length} relevant, ${newCount} new (total: ${allTweets.size})`);
 
       // Brief pause between queries to avoid rate limits
       await this.wait(3000);
@@ -667,6 +772,12 @@ export class TwitterResearcher {
       creators,
       totalCollected: tweetArray.length,
       uniqueTweets: tweetArray.length,
+      relevance: {
+        rawCollected,
+        accepted: tweetArray.length,
+        rejected: rejectedForRelevance,
+        precision: rawCollected > 0 ? Number((tweetArray.length / rawCollected).toFixed(6)) : 0,
+      },
       collectionStarted: startISO,
       collectionFinished: new Date().toISOString(),
       durationMs: Date.now() - startTime,

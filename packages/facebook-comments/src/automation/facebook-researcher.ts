@@ -89,6 +89,7 @@ export interface FacebookResearchConfig {
   timeout: number;
   outputDir: string;
   maxRetries: number;
+  queryMode: 'niche' | 'trend';
 }
 
 export const DEFAULT_FB_RESEARCH_CONFIG: FacebookResearchConfig = {
@@ -99,6 +100,7 @@ export const DEFAULT_FB_RESEARCH_CONFIG: FacebookResearchConfig = {
   timeout: 30000,
   outputDir: path.join(os.homedir(), 'Documents/facebook-research'),
   maxRetries: 3,
+  queryMode: 'niche',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -480,6 +482,9 @@ export class FacebookResearcher {
 
   buildSearchQueries(niche: string): string[] {
     const base = niche.trim();
+    if (this.config.queryMode === 'trend') {
+      return [base, `"${base}"`, `${base} latest`, `${base} news`];
+    }
     return [
       base,
       `"${base}"`,
