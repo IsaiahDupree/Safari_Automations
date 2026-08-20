@@ -16,6 +16,7 @@ import argparse
 import fcntl
 import json
 import os
+import plistlib
 import re
 import shlex
 import signal
@@ -43,6 +44,10 @@ LOG_FILE = RUNTIME_DIR / "browser-enforcer.log"
 RUNTIME_PROGRAM = RUNTIME_DIR / "browser-enforcer.py"
 RUNTIME_POLICY = RUNTIME_DIR / "browser-policy.json"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.isaiah.actp-browser-enforcer.plist"
+WATCHDOG_SOURCE = REPO_DIR / "watchdog-safari.sh"
+WATCHDOG_RUNTIME_DIR = Path.home() / "Library" / "Application Support" / "ACTP" / "safari-watchdog"
+WATCHDOG_RUNTIME_PROGRAM = WATCHDOG_RUNTIME_DIR / "watchdog-safari.sh"
+WATCHDOG_LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.isaiah.safari-automation.watchdog.plist"
 CHROME_CLAIMS = Path("/tmp/chrome-tab-claims.json")
 SAFARI_CLAIMS = Path("/tmp/safari-tab-claims.json")
 BRIDGE_CLAIMS = RUNTIME_DIR / "chrome-claims.json"
@@ -1278,6 +1283,41 @@ def install_launch_agent(policy_path: Path) -> None:
     log(f"installed launch agent: {LAUNCH_AGENT}")
 
 
+def install_watchdog_launch_agent() -> None:
+    """Install the fleet watchdog outside macOS privacy-protected Documents."""
+    if not WATCHDOG_SOURCE.exists():
+        raise RuntimeError(f"Safari fleet watchdog source is missing: {WATCHDOG_SOURCE}")
+    WATCHDOG_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    WATCHDOG_LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(WATCHDOG_SOURCE, WATCHDOG_RUNTIME_PROGRAM)
+    WATCHDOG_RUNTIME_PROGRAM.chmod(0o700)
+    payload = {
+        "Label": "com.isaiah.safari-automation.watchdog",
+        "ProgramArguments": ["/bin/zsh", "-l", str(WATCHDOG_RUNTIME_PROGRAM)],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 30,
+        "ProcessType": "Background",
+        "StandardOutPath": "/tmp/safari-watchdog.log",
+        "StandardErrorPath": "/tmp/safari-watchdog.error.log",
+    }
+    with WATCHDOG_LAUNCH_AGENT.open("wb") as handle:
+        plistlib.dump(payload, handle, sort_keys=False)
+    domain = f"gui/{os.getuid()}"
+    label = f"{domain}/com.isaiah.safari-automation.watchdog"
+    subprocess.run(["launchctl", "bootout", domain, str(WATCHDOG_LAUNCH_AGENT)], capture_output=True)
+    run(["launchctl", "bootstrap", domain, str(WATCHDOG_LAUNCH_AGENT)], timeout=15, check=True)
+    run(["launchctl", "enable", label], timeout=10)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        service = run(["launchctl", "print", label], timeout=5)
+        if service.returncode == 0 and "state = running" in service.stdout:
+            log(f"installed Safari fleet watchdog: {WATCHDOG_LAUNCH_AGENT}")
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"Safari fleet watchdog failed readiness verification; inspect {WATCHDOG_RUNTIME_DIR}")
+
+
 def daemon(policy: dict[str, Any]) -> None:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     lock_handle = LOCK_FILE.open("w", encoding="utf-8")
@@ -1352,6 +1392,7 @@ def main() -> int:
         configure_agents()
         if not args.no_start:
             install_launch_agent(args.policy)
+            install_watchdog_launch_agent()
         else:
             print(str(LAUNCH_AGENT))
     elif args.action == "ensure":
