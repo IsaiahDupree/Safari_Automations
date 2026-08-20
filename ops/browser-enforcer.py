@@ -49,6 +49,10 @@ SAFARI_CLAIMS = Path("/tmp/safari-tab-claims.json")
 BRIDGE_CLAIMS = RUNTIME_DIR / "chrome-claims.json"
 WORKSPACE = Path("/Users/isaiahdupree/Documents/Software")
 CANONICAL_CDP = "http://127.0.0.1:9222"
+PROCESS_TABLE_CACHE_SECONDS = 0.35
+_process_table_lock = threading.Lock()
+_process_table_cache_at = 0.0
+_process_table_cache: list[dict[str, Any]] = []
 
 
 def utc_now() -> str:
@@ -119,23 +123,30 @@ def run(command: list[str], timeout: float = 15, check: bool = False) -> subproc
 
 
 def process_table() -> list[dict[str, Any]]:
-    result = run(["ps", "-axo", "pid=,ppid=,pcpu=,rss=,command="], timeout=10, check=True)
-    processes: list[dict[str, Any]] = []
-    for raw in result.stdout.splitlines():
-        parts = raw.strip().split(None, 4)
-        if len(parts) != 5:
-            continue
-        try:
-            processes.append({
-                "pid": int(parts[0]),
-                "ppid": int(parts[1]),
-                "cpu": float(parts[2]),
-                "rss_kb": int(parts[3]),
-                "command": parts[4],
-            })
-        except ValueError:
-            continue
-    return processes
+    global _process_table_cache_at, _process_table_cache
+    now = time.monotonic()
+    with _process_table_lock:
+        if _process_table_cache and now - _process_table_cache_at <= PROCESS_TABLE_CACHE_SECONDS:
+            return _process_table_cache
+        result = run(["ps", "-axo", "pid=,ppid=,pcpu=,rss=,command="], timeout=10, check=True)
+        processes: list[dict[str, Any]] = []
+        for raw in result.stdout.splitlines():
+            parts = raw.strip().split(None, 4)
+            if len(parts) != 5:
+                continue
+            try:
+                processes.append({
+                    "pid": int(parts[0]),
+                    "ppid": int(parts[1]),
+                    "cpu": float(parts[2]),
+                    "rss_kb": int(parts[3]),
+                    "command": parts[4],
+                })
+            except ValueError:
+                continue
+        _process_table_cache = processes
+        _process_table_cache_at = time.monotonic()
+        return processes
 
 
 def command_argv(command: str) -> list[str]:
@@ -176,9 +187,18 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
         "minibrowser", "webkittestrunner",
     }
     cached_root_names = root_names | {"playwright"}
+    browser_hints = (
+        "chrome", "chromium", "firefox", "webkit", "minibrowser",
+        "headless", "playwright",
+    )
     candidates: list[dict[str, Any]] = []
     for process in processes:
         command = process["command"]
+        lowered_command = command.lower()
+        # Avoid shell-tokenizing every process on the host each second. Only
+        # browser-engine candidates need the more expensive argv/path checks.
+        if not any(hint in lowered_command for hint in browser_hints):
+            continue
         argv = command_argv(command)
         if not argv:
             continue
