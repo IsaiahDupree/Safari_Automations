@@ -1290,24 +1290,15 @@ def daemon(policy: dict[str, Any]) -> None:
     lock_handle.flush()
     state = load_state()
     threading.Thread(target=fast_singleton_guard, args=(policy,), daemon=True).start()
-    try:
-        configure_agents()
-    except OSError as exc:
-        log(f"agent config enforcement unavailable in launchd context: {exc}")
+    # Agent configuration lives in privacy-protected user locations and is
+    # enforced by the interactive installer plus command hooks. A launchd
+    # daemon must never block on those files before its first heartbeat.
     log("browser enforcer started: one Chrome, one Safari, tab/resource caps active")
-    config_counter = 0
     while True:
         try:
             # Pick up cooling/restart state written by an interactive command.
             state = load_state()
             enforce_once(policy, state)
-            config_counter += 1
-            if config_counter >= 60:
-                try:
-                    configure_agents()
-                except OSError as exc:
-                    log(f"agent config enforcement unavailable in launchd context: {exc}")
-                config_counter = 0
         except Exception as exc:  # daemon must survive transient OS/browser failures
             log(f"enforcement cycle error: {type(exc).__name__}: {exc}")
         time.sleep(int(policy["poll_seconds"]))
