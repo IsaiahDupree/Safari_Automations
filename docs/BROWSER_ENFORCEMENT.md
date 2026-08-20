@@ -24,6 +24,9 @@ cooling deadline expires.
 The fast path queries exact kernel process names and confirms their full argv;
 if that targeted query fails, it completes the cycle from a full process
 snapshot instead of silently skipping enforcement.
+Within the slower resource cycle, a short process-table cache coalesces root,
+descendant, and aggregate reads so the enforcer does not repeatedly scan the
+same host process list.
 
 Agent command hooks call `check-command` before shell execution. The parser
 follows nested shells, conditionals, loops, functions, and `eval` so forbidden

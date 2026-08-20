@@ -57,7 +57,10 @@ SAFARI_CONTROL_PROGRAM = RUNTIME_DIR / "safari-control-broker.py"
 SAFARI_CONTROL_TOKEN = RUNTIME_DIR / "safari-control.token"
 SAFARI_CONTROL_LOG = RUNTIME_DIR / "safari-control-broker.log"
 SAFARI_CONTROL_SESSION = "actp-safari-control"
-PROCESS_TABLE_CACHE_SECONDS = 0.35
+# One enforcement cycle asks for roots, descendants, and resource totals in
+# quick succession. Coalesce those reads without making the independent
+# two-second rogue guard stale.
+PROCESS_TABLE_CACHE_SECONDS = 1.5
 _process_table_lock = threading.Lock()
 _process_table_cache_at = 0.0
 _process_table_cache: list[dict[str, Any]] = []
@@ -448,6 +451,7 @@ def inspect(policy: dict[str, Any]) -> dict[str, Any]:
     canonical = [p for p in chrome if canonical_chrome(p, policy)]
     chrome_tree = descendants(processes, {p["pid"] for p in canonical})
     safari_tree = safari_processes(processes, safari)
+    rogue_browsers = rogue_chromium_roots(processes)
     windows, safari_tabs, safari_control_error = safari_counts() if safari else (0, 0, None)
     targets = chrome_targets(policy) if canonical else []
     return {
@@ -456,8 +460,8 @@ def inspect(policy: dict[str, Any]) -> dict[str, Any]:
             "root_pids": [p["pid"] for p in chrome],
             "canonical_pids": [p["pid"] for p in canonical],
             "unauthorized_pids": [p["pid"] for p in chrome if p not in canonical],
-            "rogue_chromium_pids": [p["pid"] for p in rogue_chromium_roots(processes)],
-            "rogue_browser_pids": [p["pid"] for p in rogue_chromium_roots(processes)],
+            "rogue_chromium_pids": [p["pid"] for p in rogue_browsers],
+            "rogue_browser_pids": [p["pid"] for p in rogue_browsers],
             "tabs": len(targets),
             "cdp_available": (bool(targets) or chrome_cdp_available(policy)) if canonical else False,
             "launch_policy_compliant": len(canonical) == 1 and chrome_launch_compliant(canonical[0], policy),
@@ -804,7 +808,7 @@ def reconcile_singletons(policy: dict[str, Any], state: dict[str, Any], ensure_r
             "duplicate canonical Chrome root denied",
         )
         canonical = canonical[:1]
-    safari = safari_roots(process_table())
+    safari = safari_roots(processes)
     if len(safari) > 1:
         terminate_pids(
             [p["pid"] for p in safari[1:]],
