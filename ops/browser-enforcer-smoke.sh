@@ -43,6 +43,7 @@ python3 "$ENFORCER" check-command 'rg -n "if|then|do" chrome-launcher.sh scripts
 python3 "$ENFORCER" check-command 'sed -n "1,80p" chrome-launcher.sh'
 python3 "$ENFORCER" check-command '/bin/zsh -n chrome-launcher.sh ops/browser-enforcer-smoke.sh'
 python3 "$ENFORCER" check-command 'python3 /Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py status'
+python3 "$ROOT/ops/safari-control-broker-smoke.py"
 
 python3 - <<'PY'
 import json

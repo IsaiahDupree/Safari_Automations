@@ -32,7 +32,11 @@ to `127.0.0.1:5591`. The installer runs that broker inside the existing
 Apple-authorized tmux identity, while launchd reads counts and applies the cap
 through its token-protected loopback API. The token and installed broker are
 mode-restricted under the runtime directory. Apple Events are serialized so
-overlapping inspections and trims cannot race Safari.
+overlapping inspections and trims cannot race Safari. The broker accepts at
+most four concurrent, five-second requests, rotates its logs, and restarts
+with exponential backoff plus jitter if it crashes. Installation rotates the
+token atomically at mode `0600` and tears down the supervisor if readiness
+verification fails.
 
 Safari control availability is reported separately as control health. A
 permission denial or transient AppleScript timeout does not by itself trigger

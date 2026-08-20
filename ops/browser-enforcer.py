@@ -22,6 +22,7 @@ import shlex
 import signal
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -1386,11 +1387,9 @@ def install_safari_control_broker() -> None:
     if not SAFARI_CONTROL_SOURCE.exists():
         raise RuntimeError(f"Safari control broker source is missing: {SAFARI_CONTROL_SOURCE}")
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    RUNTIME_DIR.chmod(0o700)
     shutil.copy2(SAFARI_CONTROL_SOURCE, SAFARI_CONTROL_PROGRAM)
     SAFARI_CONTROL_PROGRAM.chmod(0o700)
-    if not SAFARI_CONTROL_TOKEN.exists():
-        SAFARI_CONTROL_TOKEN.write_text(secrets.token_urlsafe(48) + "\n", encoding="utf-8")
-    SAFARI_CONTROL_TOKEN.chmod(0o600)
     tmux = Path("/opt/homebrew/bin/tmux")
     if not tmux.exists():
         resolved_tmux = shutil.which("tmux")
@@ -1398,29 +1397,83 @@ def install_safari_control_broker() -> None:
             raise RuntimeError("tmux is required for the authorized Safari control broker")
         tmux = Path(resolved_tmux)
     subprocess.run([str(tmux), "kill-session", "-t", SAFARI_CONTROL_SESSION], capture_output=True)
+
+    # Rotate the credential on every install. Create it at its final mode so
+    # there is never a world-readable window, then atomically replace any old
+    # token. O_EXCL/O_NOFOLLOW prevent a pre-created path from being followed.
+    temporary_token = RUNTIME_DIR / f".{SAFARI_CONTROL_TOKEN.name}.{os.getpid()}.{secrets.token_hex(8)}"
+    token_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        token_flags |= os.O_NOFOLLOW
+    try:
+        token_fd = os.open(temporary_token, token_flags, 0o600)
+        try:
+            token_payload = (secrets.token_urlsafe(48) + "\n").encode("utf-8")
+            if os.write(token_fd, token_payload) != len(token_payload):
+                raise OSError("short write while creating Safari control token")
+            os.fsync(token_fd)
+        finally:
+            os.close(token_fd)
+        os.replace(temporary_token, SAFARI_CONTROL_TOKEN)
+    finally:
+        temporary_token.unlink(missing_ok=True)
+    token_stat = os.lstat(SAFARI_CONTROL_TOKEN)
+    if (
+        not stat.S_ISREG(token_stat.st_mode)
+        or token_stat.st_uid != os.getuid()
+        or stat.S_IMODE(token_stat.st_mode) != 0o600
+    ):
+        raise RuntimeError("Safari control token ownership or mode is unsafe")
+
     broker = shlex.join([
         "/usr/bin/nice", "-n", "8", "/usr/bin/python3", str(SAFARI_CONTROL_PROGRAM),
         "--token-file", str(SAFARI_CONTROL_TOKEN),
+        "--log-file", str(SAFARI_CONTROL_LOG),
     ])
-    loop = f"while true; do {broker} >> {shlex.quote(str(SAFARI_CONTROL_LOG))} 2>&1; sleep 5; done"
+    # A persistent failure backs off to five minutes plus jitter instead of
+    # creating a process storm. A broker that was healthy for five minutes
+    # earns a fresh retry budget. The broker owns bounded log rotation.
+    loop = "\n".join([
+        "attempt=0",
+        "while true; do",
+        "  started=$(/bin/date +%s)",
+        f"  {broker} >/dev/null 2>&1",
+        "  runtime=$(( $(/bin/date +%s) - started ))",
+        "  if (( runtime >= 300 )); then",
+        "    attempt=0",
+        "  elif (( attempt < 7 )); then",
+        "    attempt=$((attempt + 1))",
+        "  fi",
+        "  if (( attempt > 0 )); then shift_count=$((attempt - 1)); else shift_count=0; fi",
+        "  delay=$((5 * (1 << shift_count)))",
+        "  if (( delay > 300 )); then delay=300; fi",
+        "  jitter=$((RANDOM % 11))",
+        "  /bin/sleep $((delay + jitter))",
+        "done",
+    ])
     shell_command = f"/bin/zsh -lc {shlex.quote(loop)}"
-    run([str(tmux), "new-session", "-d", "-s", SAFARI_CONTROL_SESSION, shell_command], timeout=10, check=True)
-    deadline = time.time() + 15
-    last_error = "not started"
-    while time.time() < deadline:
-        try:
-            health = safari_control_json("/health", timeout=2)
-            counts = safari_control_json("/counts", timeout=4)
-            if health.get("ok") is True and counts.get("control_available") is True:
-                log(
-                    "Safari control broker ready "
-                    f"windows={int(counts['windows'])} tabs={int(counts['tabs'])}"
-                )
-                return
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-        time.sleep(0.5)
-    raise RuntimeError(f"Safari control broker failed readiness verification: {last_error}")
+    try:
+        run([str(tmux), "new-session", "-d", "-s", SAFARI_CONTROL_SESSION, shell_command], timeout=10, check=True)
+        deadline = time.time() + 15
+        last_error = "not started"
+        while time.time() < deadline:
+            try:
+                health = safari_control_json("/health", timeout=2)
+                counts = safari_control_json("/counts", timeout=4)
+                if health.get("ok") is True and counts.get("control_available") is True:
+                    log(
+                        "Safari control broker ready "
+                        f"windows={int(counts['windows'])} tabs={int(counts['tabs'])}"
+                    )
+                    return
+                last_error = str(counts.get("error") or counts)[-500:]
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(0.5)
+        raise RuntimeError(f"Safari control broker failed readiness verification: {last_error}")
+    except Exception:
+        subprocess.run([str(tmux), "kill-session", "-t", SAFARI_CONTROL_SESSION], capture_output=True)
+        raise
 
 
 def retire_legacy_fleet_watchdog() -> None:
