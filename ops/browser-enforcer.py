@@ -122,6 +122,25 @@ def run(command: list[str], timeout: float = 15, check: bool = False) -> subproc
     return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=check)
 
 
+def parse_process_rows(output: str) -> list[dict[str, Any]]:
+    processes: list[dict[str, Any]] = []
+    for raw in output.splitlines():
+        parts = raw.strip().split(None, 4)
+        if len(parts) != 5:
+            continue
+        try:
+            processes.append({
+                "pid": int(parts[0]),
+                "ppid": int(parts[1]),
+                "cpu": float(parts[2]),
+                "rss_kb": int(parts[3]),
+                "command": parts[4],
+            })
+        except ValueError:
+            continue
+    return processes
+
+
 def process_table() -> list[dict[str, Any]]:
     global _process_table_cache_at, _process_table_cache
     now = time.monotonic()
@@ -129,24 +148,32 @@ def process_table() -> list[dict[str, Any]]:
         if _process_table_cache and now - _process_table_cache_at <= PROCESS_TABLE_CACHE_SECONDS:
             return _process_table_cache
         result = run(["ps", "-axo", "pid=,ppid=,pcpu=,rss=,command="], timeout=10, check=True)
-        processes: list[dict[str, Any]] = []
-        for raw in result.stdout.splitlines():
-            parts = raw.strip().split(None, 4)
-            if len(parts) != 5:
-                continue
-            try:
-                processes.append({
-                    "pid": int(parts[0]),
-                    "ppid": int(parts[1]),
-                    "cpu": float(parts[2]),
-                    "rss_kb": int(parts[3]),
-                    "command": parts[4],
-                })
-            except ValueError:
-                continue
+        processes = parse_process_rows(result.stdout)
         _process_table_cache = processes
         _process_table_cache_at = time.monotonic()
         return processes
+
+
+def browser_process_table() -> list[dict[str, Any]]:
+    """Return only possible browser processes for the latency-sensitive guard."""
+    pattern = (
+        "Google Chrome|Chromium|Chrome for Testing|chrome-headless|headless_shell|"
+        "Firefox|MiniBrowser|WebKitTestRunner|ms-playwright|Playwright|"
+        "Safari\\.app/Contents/MacOS/Safari|Microsoft Edge|Brave Browser|"
+        "Arc\\.app/Contents/MacOS/Arc|Opera\\.app/Contents/MacOS/Opera|Vivaldi"
+    )
+    matches = run(["pgrep", "-if", pattern], timeout=3)
+    if matches.returncode not in (0, 1):
+        raise RuntimeError(f"browser process query failed: {matches.stderr.strip()}")
+    pids = sorted({int(value) for value in matches.stdout.split() if value.isdigit()})
+    if not pids:
+        return []
+    selected = run(
+        ["ps", "-p", ",".join(str(pid) for pid in pids), "-o", "pid=,ppid=,pcpu=,rss=,command="],
+        timeout=3,
+        check=True,
+    )
+    return parse_process_rows(selected.stdout)
 
 
 def command_argv(command: str) -> list[str]:
@@ -180,16 +207,23 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
         "/Applications/Firefox.app/Contents/MacOS/firefox",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Arc.app/Contents/MacOS/Arc",
+        "/Applications/Opera.app/Contents/MacOS/Opera",
+        "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
     }
     root_names = {
         "chromium", "chrome", "chrome-headless-shell", "chromium_headless_shell",
         "headless_shell", "google chrome for testing", "firefox", "firefox-bin",
-        "minibrowser", "webkittestrunner",
+        "minibrowser", "webkittestrunner", "microsoft edge", "brave browser",
+        "arc", "opera", "vivaldi",
     }
     cached_root_names = root_names | {"playwright"}
     browser_hints = (
         "chrome", "chromium", "firefox", "webkit", "minibrowser",
-        "headless", "playwright",
+        "headless", "playwright", "microsoft edge", "brave browser",
+        "/arc.app/", "/opera.app/", "vivaldi",
     )
     candidates: list[dict[str, Any]] = []
     for process in processes:
@@ -788,7 +822,7 @@ def fast_singleton_guard(policy: dict[str, Any]) -> None:
     interval = float(policy.get("rogue_poll_seconds", 1))
     while True:
         try:
-            processes = process_table()
+            processes = browser_process_table()
             chrome = chrome_roots(processes)
             canonical = sorted(
                 (process for process in chrome if canonical_chrome(process, policy)),
