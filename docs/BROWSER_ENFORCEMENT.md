@@ -40,6 +40,9 @@ a restart; CPU, memory, process, root, window, and tab limits remain the
 restart thresholds. Installation fails if authenticated Safari counts cannot
 be read through the broker.
 
+The canonical browser roots, browserd, and the launchd enforcer run at nice 8
+so interactive work retains CPU priority when the machine is busy.
+
 Commands:
 
 ```bash

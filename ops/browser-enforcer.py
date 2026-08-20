@@ -1355,6 +1355,7 @@ def install_launch_agent(policy_path: Path) -> None:
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
+  <key>Nice</key><integer>8</integer>
   <key>StandardOutPath</key><string>{RUNTIME_DIR / 'launchd.log'}</string>
   <key>StandardErrorPath</key><string>{RUNTIME_DIR / 'launchd-error.log'}</string>
   <key>ProcessType</key><string>Background</string>
