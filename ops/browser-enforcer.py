@@ -1013,16 +1013,17 @@ def configure_codex_toml(path: Path) -> int:
         return 0
     text = path.read_text(encoding="utf-8")
     original = text
+    # Codex has the installed Chrome plugin, so a second always-on Playwright
+    # MCP client is redundant. Remove it instead of spawning one connector per
+    # agent turn; browser work remains on the plugin's canonical Chrome.
     block = re.compile(r"(?ms)^\[mcp_servers\.playwright\]\n.*?(?=^\[|\Z)")
-    replacement = (
-        '[mcp_servers.playwright]\n'
-        'command = "/opt/homebrew/bin/playwright-mcp"\n'
-        'args = ["--cdp-endpoint", "http://127.0.0.1:9222"]\n\n'
-    )
     if block.search(text):
-        text = block.sub(replacement, text, count=1)
-    else:
-        text += "\n" + replacement
+        text = block.sub("", text, count=1)
+    text = re.sub(
+        r'(?m)^\[plugins\."chrome@openai-bundled"\]\nenabled = false$',
+        '[plugins."chrome@openai-bundled"]\nenabled = true',
+        text,
+    )
     text = re.sub(
         r'(?m)^\[plugins\."browser@openai-bundled"\]\nenabled = true$',
         '[plugins."browser@openai-bundled"]\nenabled = false',
@@ -1081,8 +1082,10 @@ def config_violations() -> list[str]:
     codex = Path.home() / ".codex" / "config.toml"
     if codex.exists():
         text = codex.read_text(encoding="utf-8")
-        if '[mcp_servers.playwright]' in text and CANONICAL_CDP not in text:
-            findings.append(f"{codex}:mcp_servers.playwright")
+        if '[mcp_servers.playwright]' in text:
+            findings.append(f"{codex}:redundant-playwright-mcp")
+        if '[plugins."chrome@openai-bundled"]\nenabled = true' not in text:
+            findings.append(f"{codex}:chrome-plugin-disabled")
         if '[plugins."browser@openai-bundled"]\nenabled = true' in text:
             findings.append(f"{codex}:in-app-browser-enabled")
         if 'BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"' in text or 'NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER' in text:

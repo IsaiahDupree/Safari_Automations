@@ -29,6 +29,10 @@ Agent command hooks call `check-command` before shell execution. The parser
 follows nested shells, conditionals, loops, functions, and `eval` so forbidden
 launches cannot hide behind shell syntax. Browser filenames remain safe to pass
 as data to inspection tools such as Git, `rg`, `sed`, and shell syntax checks.
+Codex uses its Chrome plugin as the sole browser client; the installer removes
+the redundant always-on Playwright MCP entry that otherwise leaves one idle
+connector process behind per agent turn. Claude's Playwright entry remains
+allowed only with the canonical `--cdp-endpoint http://127.0.0.1:9222`.
 
 Safari window and tab control is served by an authenticated broker bound only
 to `127.0.0.1:5591`. The installer runs that broker inside the existing
