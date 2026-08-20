@@ -1,14 +1,14 @@
 /**
  * Chrome CDP Driver — Threads Comments
  *
- * Connects to a DEDICATED Chrome instance on port 9225 (Threads-only).
+ * Connects to the shared Chrome singleton on port 9222.
  * Uses browser.pages() to find or open the threads.net tab — never launches a new Chrome.
  *
  * Important: Threads domain is threads.net (NOT threads.com).
  * The SESSION_URL_PATTERN in server.ts says 'threads.com' but Threads navigates to threads.net.
  * This driver checks for both to be safe.
  *
- * Set env: CHROME_CDP_URL=http://localhost:9225
+ * Canonical endpoint: CHROME_CDP_URL=http://localhost:9222
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -16,7 +16,7 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 const MOD = 'threads-comments:chrome-driver';
 // Threads serves content under threads.net (the actual domain) — check both
 const PLATFORM_DOMAINS = ['threads.net', 'threads.com'];
-const DEFAULT_CDP_URL = 'http://localhost:9225';
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 
 function log(level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: Record<string, unknown>) {
   const prefix = `[${MOD}][${level.toUpperCase()}]`;
@@ -37,7 +37,7 @@ let _page: Page | null = null;
 async function getBrowser(): Promise<Browser> {
   if (_browser && _browser.connected) return _browser;
 
-  const cdpUrl = process.env['CHROME_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
   log('info', `Connecting to Chrome CDP at ${cdpUrl}`);
 
   try {
@@ -54,7 +54,7 @@ async function getBrowser(): Promise<Browser> {
     log('error', `CDP connection failed: ${msg}`);
     throw Object.assign(
       new Error(`Cannot connect to Chrome at ${cdpUrl}: ${msg}`),
-      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure Chrome is running with --remote-debugging-port=9225' }
+      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure the canonical Chrome is running on CDP 9222' }
     );
   }
 }

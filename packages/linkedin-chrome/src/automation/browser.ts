@@ -1,41 +1,9 @@
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { logInfo, logWarn, logError, logDebug } from './logger.js';
 
 const MOD = 'browser';
 
-// ─── Profile resolution ─────────────────────────────────────────────────────
-// Priority (highest → lowest):
-//   1. CHROME_CDP_URL  — connect to already-running Chrome (no launch needed)
-//   2. CHROME_USER_DATA_DIR + CHROME_PROFILE  — use a specific Chrome profile
-//   3. Default isolated profile at ~/.linkedin-chrome-profile
-const DEFAULT_USER_DATA_DIR = join(homedir(), '.linkedin-chrome-profile');
-
-function resolveUserDataDir(): { userDataDir: string; profileDir: string } {
-  const custom = process.env['CHROME_USER_DATA_DIR'];
-  if (custom) {
-    return { userDataDir: custom, profileDir: process.env['CHROME_PROFILE'] || 'Default' };
-  }
-  return { userDataDir: DEFAULT_USER_DATA_DIR, profileDir: 'Default' };
-}
-
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium-browser',
-];
-
-function findChrome(): string {
-  for (const p of CHROME_PATHS) {
-    if (existsSync(p)) { logDebug(MOD, `Found Chrome at ${p}`); return p; }
-  }
-  const msg = `Chrome not found. Checked: ${CHROME_PATHS.join(', ')}. Set CHROME_PATH env var.`;
-  logError(MOD, msg);
-  throw new Error(msg);
-}
+const SHARED_CDP_URL = 'http://localhost:9222';
 
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -59,52 +27,15 @@ async function connectToCDP(url: string): Promise<Browser> {
 export async function getBrowser(): Promise<Browser> {
   if (browser && browser.connected) { logDebug(MOD, 'Reusing existing browser'); return browser; }
 
-  // Mode 1: Connect to existing Chrome via CDP
-  const cdpUrl = process.env['CHROME_CDP_URL'];
-  if (cdpUrl) {
-    browser = await connectToCDP(cdpUrl);
-    return browser;
+  const configured = process.env['CHROME_CDP_URL'] || SHARED_CDP_URL;
+  if (!/^http:\/\/(localhost|127\.0\.0\.1):9222\/?$/.test(configured)) {
+    throw Object.assign(
+      new Error(`Chrome endpoint denied by singleton policy: ${configured}`),
+      { code: 'BROWSER_POLICY_DENIED', hint: `Use ${SHARED_CDP_URL}` },
+    );
   }
-
-  // Mode 2: Launch Chrome (with custom profile or default isolated profile)
-  const { userDataDir, profileDir } = resolveUserDataDir();
-  if (!existsSync(userDataDir)) {
-    mkdirSync(userDataDir, { recursive: true });
-    logInfo(MOD, `Created user data dir: ${userDataDir}`);
-  }
-  const executablePath = process.env['CHROME_PATH'] || findChrome();
-  const usingCustomProfile = !!process.env['CHROME_USER_DATA_DIR'];
-  logInfo(MOD, 'Launching Chrome', { executablePath, userDataDir, profileDir, usingCustomProfile });
-  try {
-    browser = await puppeteer.launch({
-      executablePath,
-      headless: false,
-      userDataDir,
-      args: [
-        `--profile-directory=${profileDir}`,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1400,900',
-      ],
-      defaultViewport: null,
-    });
-    logInfo(MOD, 'Chrome launched', { pid: browser.process()?.pid, profileDir });
-    browser.on('disconnected', () => {
-      logWarn(MOD, 'Browser disconnected — resetting state');
-      browser = null; page = null;
-    });
-    return browser;
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (msg.includes('user data directory is already in use')) {
-      logError(MOD, 'Profile is locked by another Chrome instance', { userDataDir, profileDir });
-      throw Object.assign(new Error('Chrome profile is already open. Either close Chrome or use CHROME_CDP_URL to connect to it.'), { code: 'PROFILE_LOCKED' });
-    }
-    logError(MOD, 'Failed to launch Chrome', { error: msg });
-    throw err;
-  }
+  browser = await connectToCDP(SHARED_CDP_URL);
+  return browser;
 }
 
 export async function getPage(): Promise<Page> {
@@ -222,9 +153,9 @@ export async function typeInto(selector: string, text: string, clearFirst = true
 
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    logInfo(MOD, 'Closing browser');
-    await browser.close();
+    logInfo(MOD, 'Disconnecting from shared browser');
+    await browser.disconnect();
     browser = null; page = null;
-    logInfo(MOD, 'Browser closed');
+    logInfo(MOD, 'Browser client disconnected');
   }
 }

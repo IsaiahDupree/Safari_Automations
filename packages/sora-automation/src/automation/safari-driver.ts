@@ -91,19 +91,32 @@ export class SafariDriver {
    * Open a new Safari tab and return its window+tab index.
    */
   async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
-    const safe = url.replace(/"/g, '\\"');
+    const safe = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `
 tell application "Safari"
+  if (count of windows) is 0 then error "Shared Safari window is not available"
+  set totalTabs to 0
+  repeat with existingWindow in windows
+    set totalTabs to totalTabs + (count of tabs of existingWindow)
+  end repeat
+  if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
   activate
-  make new document with properties {URL:"${safe}"}
-  delay 1
-  set w to index of window 1
-  return w as text
+  tell front window
+    set newTab to make new tab with properties {URL:"${safe}"}
+    set current tab to newTab
+    set tabIndex to index of newTab
+    set windowIndex to index
+  end tell
+  return (windowIndex as text) & ":" & (tabIndex as text)
 end tell`;
     const { stdout } = await execAsync(`osascript << 'ASEOF'\n${script}\nASEOF`, { timeout: 15_000 });
-    const windowIndex = parseInt(stdout.trim(), 10);
-    if (isNaN(windowIndex)) throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
-    return { windowIndex, tabIndex: 1 };
+    const [windowText, tabText] = stdout.trim().split(':');
+    const windowIndex = parseInt(windowText, 10);
+    const tabIndex = parseInt(tabText, 10);
+    if (isNaN(windowIndex) || isNaN(tabIndex)) {
+      throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
+    }
+    return { windowIndex, tabIndex };
   }
 
   /**

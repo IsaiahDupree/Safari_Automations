@@ -316,7 +316,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     uptime_human: `${Math.floor(uptimeMs / 1000)}s`,
     timestamp: new Date().toISOString(),
     chrome: {
-      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9222',
+      cdp_url: 'http://localhost:9222',
       connected: cdp.connected,
       has_instagram_tab: cdp.hasInstagramTab,
       tab_url: cdp.url,

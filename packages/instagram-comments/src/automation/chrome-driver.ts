@@ -32,7 +32,7 @@ let _page: Page | null = null;
 async function getBrowser(): Promise<Browser> {
   if (_browser && _browser.connected) return _browser;
 
-  const cdpUrl = process.env['CHROME_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
   log('info', `Connecting to Chrome CDP at ${cdpUrl}`);
 
   try {

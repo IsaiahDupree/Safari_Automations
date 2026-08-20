@@ -176,7 +176,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     version: '1.0.0',
     uptime: process.uptime(),
     chrome: {
-      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9223',
+      cdp_url: 'http://localhost:9222',
       connected: cdp.connected,
       has_twitter_tab: cdp.hasTwitterTab,
       tab_url: cdp.url,

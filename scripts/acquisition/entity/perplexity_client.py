@@ -200,9 +200,36 @@ class SafariPerplexityFallback:
         """
         encoded = urllib.parse.quote(query)
         url = f"https://www.perplexity.ai/?q={encoded}"
-        
-        # Open URL in Safari
-        open_script = f'tell application "Safari" to open location "{url}"'
+
+        # Reuse the shared Perplexity tab when possible. Opening a tab is
+        # fail-closed when Safari's global eight-tab budget is exhausted.
+        safe_url = url.replace("\\", "\\\\").replace('"', '\\"')
+        open_script = f'''
+        tell application "Safari"
+            if (count of windows) is 0 then error "Shared Safari window is not available"
+            set totalTabs to 0
+            repeat with candidateWindow in windows
+                set totalTabs to totalTabs + (count of tabs of candidateWindow)
+                repeat with candidateTab from 1 to count of tabs of candidateWindow
+                    try
+                        if (URL of tab candidateTab of candidateWindow) contains "perplexity.ai" then
+                            set URL of tab candidateTab of candidateWindow to "{safe_url}"
+                            set current tab of candidateWindow to tab candidateTab of candidateWindow
+                            activate
+                            return "reused"
+                        end if
+                    end try
+                end repeat
+            end repeat
+            if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
+            tell front window
+                set targetTab to make new tab with properties {{URL:"{safe_url}"}}
+                set current tab to targetTab
+            end tell
+            activate
+            return "opened"
+        end tell
+        '''
         await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: subprocess.run(["osascript", "-e", open_script], check=True)
@@ -214,6 +241,16 @@ class SafariPerplexityFallback:
         # Extract response text via JavaScript in Safari
         extract_script = '''
         tell application "Safari"
+            set targetDocument to missing value
+            repeat with candidateDocument in documents
+                try
+                    if (URL of candidateDocument) contains "perplexity.ai" then
+                        set targetDocument to candidateDocument
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetDocument is missing value then error "No shared Perplexity tab is open"
             do JavaScript "
                 const selectors = ['.prose', '[class*=answer]', '[class*=response]', 'main'];
                 for (const sel of selectors) {
@@ -221,7 +258,7 @@ class SafariPerplexityFallback:
                     if (el && el.innerText) return el.innerText;
                 }
                 return '';
-            " in front document
+            " in targetDocument
         end tell
         '''
         
@@ -231,7 +268,7 @@ class SafariPerplexityFallback:
                 ["osascript", "-e", extract_script],
                 capture_output=True,
                 text=True,
-                check=False
+                check=True
             )
         )
         

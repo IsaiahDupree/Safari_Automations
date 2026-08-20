@@ -2,8 +2,7 @@
  * Chrome/Puppeteer CDP Driver for TikTok DM
  *
  * Replaces the Safari AppleScript driver. Connects to an already-running
- * Chrome instance via CDP (default port 9224) using the "Automation-TikTok"
- * profile at ~/.chrome-automation-profiles/tiktok/.
+ * Shared Chrome singleton via CDP 9222.
  *
  * Key design decisions vs the Safari driver:
  *  - No AppleScript / osascript calls anywhere.
@@ -20,31 +19,10 @@
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import type { AutomationConfig } from '../types/index.js';
 
 // ── Profile / CDP resolution ─────────────────────────────────────────────────
-const DEFAULT_CDP_URL = process.env.TIKTOK_CDP_URL || 'http://localhost:9224';
-const DEFAULT_USER_DATA_DIR = join(homedir(), '.chrome-automation-profiles', 'tiktok');
-const DEFAULT_PROFILE = 'Automation-TikTok';
-
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium-browser',
-];
-
-function findChrome(): string {
-  const envPath = process.env.CHROME_PATH;
-  if (envPath && existsSync(envPath)) return envPath;
-  for (const p of CHROME_PATHS) {
-    if (existsSync(p)) return p;
-  }
-  throw new Error(`Chrome not found. Checked: ${CHROME_PATHS.join(', ')}. Set CHROME_PATH env var.`);
-}
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 
 // ── Virtual DOM helpers ───────────────────────────────────────────────────────
 /**
@@ -83,7 +61,7 @@ export class ChromeDriver {
   async getBrowser(): Promise<Browser> {
     if (this.browser && this.browser.connected) return this.browser;
 
-    const cdpUrl = process.env.TIKTOK_CDP_URL || DEFAULT_CDP_URL;
+    const cdpUrl = DEFAULT_CDP_URL;
 
     // Mode 1: Connect to already-running Chrome via CDP
     try {
@@ -151,10 +129,10 @@ export class ChromeDriver {
     return this.page;
   }
 
-  /** Close the browser. Use for cleanup only. */
+  /** Disconnect this client without closing the shared browser. */
   async closeBrowser(): Promise<void> {
     if (this.browser) {
-      await this.browser.close();
+      await this.browser.disconnect();
       this.browser = null;
       this.page = null;
     }
@@ -563,7 +541,7 @@ export class ChromeDriver {
       const url = page.url();
       return { found: true, windowIndex: 1, tabIndex: 1, url };
     } catch (error) {
-      throw new Error(`[ChromeDriver] No Chrome/TikTok session available: ${(error as Error).message}. Start Chrome with --remote-debugging-port=9224 and navigate to tiktok.com.`);
+      throw new Error(`[ChromeDriver] No Chrome/TikTok session available: ${(error as Error).message}. Wait for the canonical Chrome on CDP 9222; never launch another browser.`);
     }
   }
 

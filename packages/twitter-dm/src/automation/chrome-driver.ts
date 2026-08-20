@@ -2,41 +2,17 @@
  * Chrome/Puppeteer Driver for Twitter/X DM Automation
  *
  * Replaces SafariDriver with a Puppeteer CDP connection.
- * CDP port: 9223
- * Profile: ~/.chrome-automation-profiles/twitter/
- * Env var: TWITTER_CDP_URL (default: http://localhost:9223)
+ * CDP port: 9222
+ * The endpoint is fixed to the managed Chrome singleton on localhost:9222.
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { execSync, execFileSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 
 const MOD = 'twitter-chrome-driver';
 
 // ─── Profile resolution ──────────────────────────────────────────────────────
-const DEFAULT_CDP_URL = 'http://localhost:9223';
-const DEFAULT_USER_DATA_DIR = join(homedir(), '.chrome-automation-profiles', 'twitter');
-const DEFAULT_PROFILE_DIR = 'Default';
-
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium-browser',
-];
-
-function findChrome(): string {
-  const envPath = process.env['CHROME_PATH'];
-  if (envPath && existsSync(envPath)) return envPath;
-  for (const p of CHROME_PATHS) {
-    if (existsSync(p)) return p;
-  }
-  throw new Error(
-    `Chrome not found. Checked: ${CHROME_PATHS.join(', ')}. Set CHROME_PATH env var.`
-  );
-}
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 
 function log(level: 'info' | 'warn' | 'error' | 'debug', msg: string, extra?: object): void {
   const prefix = `[${MOD}][${level.toUpperCase()}]`;
@@ -67,7 +43,7 @@ async function connectToCDP(url: string): Promise<Browser> {
     log('error', 'CDP connection failed', { url, error: (err as Error).message });
     throw Object.assign(
       new Error(`Cannot connect to Chrome at ${url}: ${(err as Error).message}`),
-      { code: 'CDP_CONNECT_FAILED', hint: `Make sure Chrome is running with --remote-debugging-port=9223` }
+      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure the canonical Chrome is running on CDP 9222' }
     );
   }
 }
@@ -79,7 +55,7 @@ export async function getBrowser(): Promise<Browser> {
   }
 
   // Mode 1: Connect to existing Chrome via CDP
-  const cdpUrl = process.env['TWITTER_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
 
   // Try CDP first — if Chrome is already running on that port, use it
   try {
@@ -426,15 +402,15 @@ export async function isLoggedIn(): Promise<boolean> {
 }
 
 /**
- * Close the browser (used for cleanup).
+ * Disconnect this client without closing the shared browser.
  */
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    log('info', 'Closing browser');
-    await browser.close();
+    log('info', 'Disconnecting from shared browser');
+    await browser.disconnect();
     browser = null;
     page = null;
-    log('info', 'Browser closed');
+    log('info', 'Browser client disconnected');
   }
 }
 
@@ -442,7 +418,7 @@ export async function closeBrowser(): Promise<void> {
  * Get CDP connection status for health reporting.
  */
 export async function getCDPStatus(): Promise<{ connected: boolean; url: string; tabCount: number; currentUrl: string }> {
-  const cdpUrl = process.env['TWITTER_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
   try {
     if (!browser || !browser.connected) {
       return { connected: false, url: cdpUrl, tabCount: 0, currentUrl: '' };

@@ -84,25 +84,18 @@ async function copyProfile(profile: Profile) {
   }
 
   console.log(`\n${G}${B}Done — ${ok}/${items.length} items copied.${X}`);
-  console.log(`\nThe MCP server (~/.linkedin-chrome-profile) now has your LinkedIn session.`);
-  console.log(`\nAlternatives (no copy needed):`);
-  console.log(`  ${B}Direct profile${X} — Chrome must be closed first:`);
-  console.log(`  ${C}CHROME_USER_DATA_DIR="${CHROME_DIR}" CHROME_PROFILE="${profile.id}"${X}`);
-  console.log(`\n  ${B}CDP mode${X} — connect to a running Chrome:`);
+  console.log(`\nThe profile copy is stored, but launching it is denied by the one-Chrome policy.`);
+  console.log(`\nUse the shared CDP browser instead:`);
   console.log(`  ${C}CHROME_CDP_URL=http://localhost:9222${X}`);
   console.log(`  Run: npx tsx setup-profile.ts --cdp  for full CDP instructions\n`);
 }
 
 function printCdpHelp(profiles: Profile[]) {
   const defaultPick = profiles.find(p => p.hasLinkedIn) ?? profiles[0];
-  const profileArg  = defaultPick ? `--profile-directory="${defaultPick.id}"` : '--profile-directory="Default"';
-
   console.log(`\n${B}${C}CDP Connection Mode${X}`);
-  console.log(`Connect the MCP server to your already-signed-in Chrome window.\n`);
-  console.log(`${B}Step 1${X}  Quit Chrome, then re-launch with remote debugging:`);
-  console.log(`  ${C}"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\`);
-  console.log(`    --remote-debugging-port=9222 \\`);
-  console.log(`    ${profileArg}${X}\n`);
+  console.log(`Connect the MCP server to the managed Chrome singleton.\n`);
+  console.log(`${B}Step 1${X}  Request the canonical browser (never launch Chrome directly):`);
+  console.log(`  ${C}python3 "/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py" ensure chrome${X}\n`);
   console.log(`${B}Step 2${X}  Set the env var when running the MCP server:`);
   console.log(`  ${C}CHROME_CDP_URL=http://localhost:9222 npx tsx src/api/mcp-server.ts${X}\n`);
   console.log(`${B}Step 3${X}  Add to claude_desktop_config.json → mcpServers → linkedin-chrome → env:`);

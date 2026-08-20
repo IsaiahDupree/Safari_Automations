@@ -1,0 +1,48 @@
+# Browser enforcement
+
+ACTP permits exactly one browser root of each family:
+
+- Chrome: the `chrome-bridge` `agent` profile on `127.0.0.1:9222`.
+- Safari: the existing macOS Safari application.
+
+Agents and services must attach to those browsers. They may not launch a fresh
+Playwright/Puppeteer context, a headless Chromium, Chrome for Testing, another
+Chrome profile, or a second Safari instance.
+
+The policy is in `config/browser-policy.json`. Both browsers are capped at eight
+tabs, and Safari is capped at one window. Resource limits require three
+consecutive breach samples before a restart.
+A controlled restart waits briefly for active claims, stops the browser, cools
+for 45 seconds, and only then relaunches the canonical singleton. A ten-minute
+restart backoff prevents restart loops.
+
+A separate one-second process guard terminates unauthorized Chrome profiles,
+Chromium/Chrome-for-Testing, Playwright Firefox/WebKit, headless shells, and
+duplicate Safari roots. It continues running while a controlled browser restart
+is draining or cooling, and kills any browser that tries to relaunch before its
+cooling deadline expires.
+
+Agent command hooks call `check-command` before shell execution. The parser
+follows nested shells, conditionals, loops, functions, and `eval` so forbidden
+launches cannot hide behind shell syntax. Browser filenames remain safe to pass
+as data to inspection tools such as Git, `rg`, `sed`, and shell syntax checks.
+
+Safari AppleScript availability is reported separately as control health. A
+permission denial or transient AppleScript timeout does not by itself trigger
+a restart; CPU, memory, process, root, window, and tab limits remain the
+restart thresholds.
+
+Commands:
+
+```bash
+python3 ops/browser-enforcer.py status
+python3 ops/browser-enforcer.py enforce-once
+python3 ops/browser-enforcer.py restart chrome --reason "manual maintenance"
+python3 ops/browser-enforcer.py restart safari --reason "manual maintenance"
+python3 ops/browser-enforcer.py configure-agents
+python3 ops/browser-enforcer.py install
+```
+
+Logs and runtime state live under
+`~/Library/Application Support/ACTP/browser-enforcer/`. The installed launchd
+label is `com.isaiah.actp-browser-enforcer`.

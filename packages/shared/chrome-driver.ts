@@ -4,15 +4,9 @@
  * Import from any platform service:
  *   import { ChromeDriver, getChromeDriver } from '../../shared/chrome-driver.js';
  *
- * Platform → CDP port defaults:
- *   instagram → 9222
- *   twitter   → 9223
- *   tiktok    → 9224
- *   threads   → 9225
- *   linkedin  → 9333  (already managed by linkedin-chrome package)
+ * Every platform attaches to the one canonical Chrome on CDP 9222.
  *
- * Chrome must be running with the appropriate --remote-debugging-port before
- * calling any driver methods. Use chrome-launcher.sh to start instances.
+ * Chrome must already be running on CDP 9222. This driver never launches it.
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -43,9 +37,8 @@ export interface TabClaim {
 
 // SHARED LOGGED-IN BROWSER: every platform now attaches to ONE Chrome instance
 // (the chrome-bridge "agent" profile, logged in) on :9222 and works in its own
-// tab, rather than each platform spawning a separate profile/port. Override a
-// single platform with CHROME_CDP_PORT_<PLATFORM> or all of them with
-// CHROME_CDP_PORT if you ever need the old per-platform-instance behavior.
+// tab, rather than each platform spawning a separate profile/port. Overrides
+// are deliberately ignored so no service can route itself to another Chrome.
 const SHARED_CDP_PORT = 9222;
 const DEFAULT_CDP_PORTS: Record<ChromePlatform, number> = {
   instagram: SHARED_CDP_PORT,
@@ -133,6 +126,12 @@ export class ChromeDriver {
     console.log(
       `[chrome-driver:${this.opts.platform}] No tab matching "${this.opts.urlPattern ?? 'n/a'}" among ${pages.length} open tab(s); opening a dedicated new tab`
     );
+    if (pages.length >= 8) {
+      throw Object.assign(
+        new Error(`Chrome tab cap reached (${pages.length}/8); reuse or close a tab.`),
+        { code: 'TAB_CAP_REACHED' },
+      );
+    }
     this._page = await b.newPage();
     await this._page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
     this._page.on('pageerror', e => console.warn(`[chrome-driver:${this.opts.platform}] Page JS error: ${e.message}`));
@@ -340,17 +339,10 @@ export class ChromeDriver {
 /**
  * Returns a ChromeDriver for the given platform.
  *
- * CDP port resolution order:
- *   1. CHROME_CDP_PORT_{PLATFORM_UPPER} env var (e.g. CHROME_CDP_PORT_INSTAGRAM)
- *   2. CHROME_CDP_PORT env var (generic override)
- *   3. Built-in platform default
- *
  * URL pattern is inferred from platform name (e.g. 'instagram' → 'instagram.com').
  */
 export function getChromeDriver(platform: ChromePlatform, urlPatternOverride?: string): ChromeDriver {
-  const envKey = `CHROME_CDP_PORT_${platform.toUpperCase()}`;
-  const portFromEnv = process.env[envKey] || process.env['CHROME_CDP_PORT'];
-  const cdpPort = portFromEnv ? parseInt(portFromEnv, 10) : DEFAULT_CDP_PORTS[platform];
+  const cdpPort = SHARED_CDP_PORT;
 
   // Derive URL pattern from platform name
   const urlPattern = urlPatternOverride ?? platformUrlPattern(platform);

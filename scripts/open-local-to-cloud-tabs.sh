@@ -1,19 +1,20 @@
 #!/bin/zsh -l
 # open-local-to-cloud-tabs.sh
-# Opens all automation platform tabs in Safari Window 2 ("Local to Cloud" profile),
+# Opens all automation platform tabs in the sole shared Safari window,
 # then triggers session/ensure on every service so tab claims are registered.
 #
 # Usage:
 #   ./scripts/open-local-to-cloud-tabs.sh           # open missing tabs + claim
 #   ./scripts/open-local-to-cloud-tabs.sh --claim   # claim only (no new tabs)
-#   ./scripts/open-local-to-cloud-tabs.sh --reset   # close all W2 tabs and reopen fresh
+#   ./scripts/open-local-to-cloud-tabs.sh --reset   # reuse tab 1 and close task tabs
 
 SAFARI_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SAFARI_DIR/.env" 2>/dev/null || true
-WIN="${SAFARI_AUTOMATION_WINDOW:-2}"
+WIN=1
+MAX_SAFARI_TABS=8
 
 # ── Platform tabs: "DETECT_PATTERN|OPEN_URL" ─────────────────────────────────
-# DETECT_PATTERN — substring match; if any W2 tab URL contains this, tab is present
+# DETECT_PATTERN — substring match; if any shared tab URL contains this, tab is present
 # OPEN_URL       — URL to open when tab is missing
 declare -a PLATFORM_TABS=(
   "instagram.com|https://www.instagram.com/direct/inbox/"
@@ -42,6 +43,18 @@ declare -a ENSURE_SERVICES=(
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
+total_safari_tabs() {
+  osascript 2>/dev/null <<'ASEOF'
+tell application "Safari"
+  set totalTabs to 0
+  repeat with candidateWindow in windows
+    set totalTabs to totalTabs + (count of tabs of candidateWindow)
+  end repeat
+  return totalTabs
+end tell
+ASEOF
+}
+
 parse_claim() {
   # Parse windowIndex/tabIndex from JSON, fall back to raw output
   echo "$1" | python3 -c "
@@ -69,17 +82,28 @@ if (( win_count < WIN )); then
   exit 1
 fi
 log "Safari Window ${WIN} confirmed (${win_count} total windows)."
+total_tab_count=$(total_safari_tabs || echo "invalid")
+if [[ "$total_tab_count" != <-> ]]; then
+  log "ERROR: Could not read the shared Safari tab count. Refusing to open tabs."
+  exit 42
+fi
+if (( total_tab_count > MAX_SAFARI_TABS )); then
+  log "ERROR: Safari already has ${total_tab_count} tabs (limit ${MAX_SAFARI_TABS})."
+  exit 42
+fi
 
 # ── Reset mode ───────────────────────────────────────────────────────────────
 if [[ "$1" == "--reset" ]]; then
-  log "Resetting Window ${WIN}: closing all tabs..."
+  log "Resetting Window ${WIN}: reusing its first tab and closing the rest..."
   tab_count=$(osascript -e "tell application \"Safari\" to return count of tabs of window ${WIN}" 2>/dev/null || echo 0)
-  for (( i=tab_count; i>=1; i-- )); do
+  if (( tab_count < 1 )); then
+    log "ERROR: Safari Window ${WIN} has no reusable tab."
+    exit 42
+  fi
+  for (( i=tab_count; i>=2; i-- )); do
     osascript -e "tell application \"Safari\" to close tab ${i} of window ${WIN}" 2>/dev/null
   done
-  sleep 1
-  # Open a blank tab to keep window alive
-  osascript -e "tell application \"Safari\" to make new tab with properties {URL:\"about:blank\"} in window ${WIN}" 2>/dev/null
+  osascript -e "tell application \"Safari\" to set URL of tab 1 of window ${WIN} to \"about:blank\"" 2>/dev/null
 fi
 
 # ── Open missing tabs ─────────────────────────────────────────────────────────
@@ -88,15 +112,15 @@ if [[ "$1" != "--claim" ]]; then
   for entry in "${PLATFORM_TABS[@]}"; do
     pattern="${entry%%|*}"
     url="${entry##*|}"
-    # Check if any tab in W$WIN matches the pattern
+    # Reuse a matching tab anywhere in the one shared Safari application.
     exists=$(osascript 2>/dev/null << ASEOF
 tell application "Safari"
-  if (count of windows) < ${WIN} then return "no"
-  repeat with t from 1 to count of tabs of window ${WIN}
-    try
-      set u to URL of tab t of window ${WIN}
-      if u contains "${pattern}" then return "yes"
-    end try
+  repeat with candidateWindow in windows
+    repeat with candidateTab in tabs of candidateWindow
+      try
+        if (URL of candidateTab) contains "${pattern}" then return "yes"
+      end try
+    end repeat
   end repeat
   return "no"
 end tell
@@ -106,15 +130,54 @@ ASEOF
       log "  OK      ${pattern}"
     else
       log "  OPEN    ${url}"
-      osascript << ASEOF 2>/dev/null
+      open_result=$(osascript << ASEOF 2>/dev/null
 tell application "Safari"
+  if (count of windows) < ${WIN} then return "no-window"
+  set totalTabs to 0
+  repeat with candidateWindow in windows
+    set totalTabs to totalTabs + (count of tabs of candidateWindow)
+    repeat with candidateTab in tabs of candidateWindow
+      try
+        if (URL of candidateTab) contains "${pattern}" then return "reused"
+      end try
+    end repeat
+  end repeat
   tell window ${WIN}
-    make new tab with properties {URL:"${url}"}
+    repeat with candidateTab in tabs
+      try
+        set candidateUrl to URL of candidateTab
+        if candidateUrl is "" or candidateUrl is "about:blank" or candidateUrl starts with "favorites://" then
+          set URL of candidateTab to "${url}"
+          set current tab to candidateTab
+          activate
+          return "reused-blank"
+        end if
+      end try
+    end repeat
+  end tell
+  if totalTabs is greater than or equal to ${MAX_SAFARI_TABS} then return "limit"
+  tell window ${WIN}
+    set targetTab to make new tab with properties {URL:"${url}"}
+    set current tab to targetTab
     activate
   end tell
+  return "opened"
 end tell
 ASEOF
-      sleep 1
+)
+      case "$open_result" in
+        opened|reused|reused-blank)
+          sleep 1
+          ;;
+        limit)
+          log "ERROR: Safari tab limit reached (${MAX_SAFARI_TABS}); refusing to open ${url}."
+          exit 42
+          ;;
+        *)
+          log "ERROR: Shared Safari window unavailable; refusing to open ${url}."
+          exit 42
+          ;;
+      esac
     fi
   done
   log "Waiting 4s for tabs to load..."

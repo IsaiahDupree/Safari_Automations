@@ -250,7 +250,7 @@ app.get('/health', async (_req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     browser: 'chrome',
-    cdpUrl: process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222',
+    cdpUrl: 'http://localhost:9222',
     chromeStatus,
     chromeCurrentUrl: chromeUrl,
     rateLimits: {
@@ -1884,7 +1884,7 @@ const PORT = parseInt(process.env.PORT || '3100');
 
 export function startServer(port: number = PORT): void {
   // Chrome/Puppeteer: no stale Safari tab claims to clear
-  console.log(`[startup] Instagram DM service using Chrome CDP at ${process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222'}`);
+  console.log('[startup] Instagram DM service using the canonical Chrome CDP at http://localhost:9222');
 
   app.listen(port, () => {
     console.log(`\n🚀 Instagram DM API Server (Chrome) running on http://localhost:${port}`);

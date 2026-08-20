@@ -15,7 +15,7 @@ import { videoRouter } from './routes/video.js';
 import { jobsRouter } from './routes/jobs.js';
 import { healthRouter } from './routes/health.js';
 import { commandsRouter } from './routes/commands.js';
-import { focusApp, focusSafari, focusChrome, getFrontmostApp, ensureAppFocused, exclusiveFocus, focusSafariWindow, getSafariState } from './utils/focus.js';
+import { focusSafari, getFrontmostApp, ensureAppFocused, focusSafariWindow, getSafariState } from './utils/focus.js';
 import { JobManager } from './services/job-manager.js';
 import { logger } from './utils/logger.js';
 import { resolve, dirname } from 'path';
@@ -189,35 +189,38 @@ const server = createServer(async (req, res) => {
       matched = true;
     }
 
-    // Focus API — bring apps to foreground for automation
+    // Focus API — Safari only. Arbitrary apps and alternate browsers are denied.
     else if (path === '/v1/focus' && method === 'POST') {
       const body = await parseBody(req);
-      const app = body?.app || 'Safari';
-      const mode = body?.mode || 'activate'; // activate | ensure | exclusive | window
-      let success = false;
+      const app = String(body?.app || 'Safari');
+      const mode = String(body?.mode || 'activate');
+      const allowedModes = new Set(['activate', 'ensure', 'window']);
 
-      switch (mode) {
-        case 'ensure':
-          success = ensureAppFocused(app);
-          break;
-        case 'exclusive':
-          success = exclusiveFocus(app);
-          break;
-        case 'window':
-          success = focusSafariWindow(body?.window_index || 1);
-          break;
-        default:
-          success = focusApp(app);
+      if (app !== 'Safari' || !allowedModes.has(mode)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: false,
+          error: 'Focus API is restricted to managed Safari (activate, ensure, or window)',
+          app,
+          mode,
+          timestamp: new Date().toISOString(),
+        }));
+      } else {
+        const success = mode === 'ensure'
+          ? ensureAppFocused('Safari')
+          : mode === 'window'
+            ? focusSafariWindow(Number(body?.window_index || 1))
+            : focusSafari();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success,
+          app,
+          mode,
+          frontmost: getFrontmostApp(),
+          timestamp: new Date().toISOString(),
+        }));
       }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        success,
-        app,
-        mode,
-        frontmost: getFrontmostApp(),
-        timestamp: new Date().toISOString(),
-      }));
       matched = true;
     }
     else if (path === '/v1/focus' && method === 'GET') {
@@ -232,9 +235,9 @@ const server = createServer(async (req, res) => {
     // Safari automation — direct synchronous endpoints (no command queue)
     else if (path === '/v1/safari/focus' && method === 'POST') {
       const body = await parseBody(req);
-      const success = focusSafari();
+      const success = ensureAppFocused('Safari');
       // If URL provided, navigate via gateway
-      if (body?.url) {
+      if (body?.url && success) {
         try {
           await fetch(`${process.env.GATEWAY_URL || 'http://localhost:3000'}/gateway/safari/focus`, {
             method: 'POST',
@@ -261,21 +264,26 @@ const server = createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'url required' }));
       } else {
-        focusSafari();
-        try {
-          const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
-          const r = await fetch(`${gwUrl}/gateway/safari/focus`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: body.url }),
-            signal: AbortSignal.timeout(15000),
-          });
-          const data = await r.json();
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(data));
-        } catch (e: any) {
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+        const ready = ensureAppFocused('Safari');
+        if (!ready) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Managed Safari is unavailable or cooling' }));
+        } else {
+          try {
+            const gwUrl = process.env.GATEWAY_URL || 'http://localhost:3000';
+            const r = await fetch(`${gwUrl}/gateway/safari/focus`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: body.url }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const data = await r.json();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(data));
+          } catch (e: any) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Gateway unreachable: ${e.message}` }));
+          }
         }
       }
       matched = true;

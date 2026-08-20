@@ -13,7 +13,6 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils/logger.js';
-import { focusApp, getFrontmostApp } from '../utils/focus.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -82,24 +81,20 @@ async function executeResearch(command: Command): Promise<void> {
 
 async function scrapePublicFeed(platform: string, maxItems: number, query: string): Promise<any[]> {
   // Attempt to use Puppeteer for real browser scraping
+  let browser: any;
+  let page: any;
   try {
     const puppeteer = await import('puppeteer');
 
-    // Remember current frontmost app to restore later
-    const previousApp = getFrontmostApp();
-
-    const useHeadless = process.env.PUPPETEER_HEADLESS !== 'false';
-    const browser = await puppeteer.default.launch({
-      headless: useHeadless ? 'shell' : false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    browser = await puppeteer.default.connect({
+      browserURL: 'http://127.0.0.1:9222',
+      defaultViewport: null,
     });
-
-    // Focus the browser so macOS gives it full priority
-    if (!useHeadless) {
-      focusApp('Chromium') || focusApp('Google Chrome');
+    const existingPages = await browser.pages();
+    if (existingPages.length >= 8) {
+      throw new Error(`Chrome tab cap reached (${existingPages.length}/8)`);
     }
-
-    const page = await browser.newPage();
+    page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     let items: any[] = [];
@@ -117,22 +112,18 @@ async function scrapePublicFeed(platform: string, maxItems: number, query: strin
       }];
     }
 
-    await browser.close();
-
-    // Restore previous frontmost app if we changed focus
-    if (!useHeadless && previousApp) {
-      focusApp(previousApp);
-    }
-
     return items;
   } catch (err: any) {
-    logger.warn(`[commands] Puppeteer scrape failed, using API fallback: ${err.message}`);
+    logger.warn(`[commands] Shared-CDP scrape failed, using API fallback: ${err.message}`);
     // Fallback: return empty with error note
     return [{
       platform,
       error: `Browser automation unavailable: ${err.message}`,
       scraped_at: new Date().toISOString(),
     }];
+  } finally {
+    if (page) await page.close().catch(() => undefined);
+    if (browser) browser.disconnect();
   }
 }
 

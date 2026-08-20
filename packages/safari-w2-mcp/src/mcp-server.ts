@@ -1,8 +1,8 @@
 /**
- * Safari W2 MCP Server — "Local to Cloud" profile control plane
+ * Safari W2 MCP Server — compatibility control plane for the shared window
  *
- * Exposes MCP tools that ONLY interact with Safari Window 2,
- * the designated "Local to Cloud" automation profile.
+ * The historical safari_w2 tool names are retained for compatibility, but all
+ * tools now target the sole managed Safari window (window 1).
  *
  * Tools:
  *   safari_w2_list_tabs        — list all W2 tabs (index, url, title)
@@ -37,7 +37,7 @@ const CLAIM_TTL_MS    = 60_000;
 const SETUP_SCRIPT    = '/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh';
 
 function getW2(): number {
-  return parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+  return 1;
 }
 
 // ─── AppleScript helpers ─────────────────────────────────────────────────────
@@ -135,56 +135,56 @@ async function httpPost(url: string, data: unknown, timeoutMs = 8000): Promise<{
 const TOOLS = [
   {
     name: 'safari_w2_list_tabs',
-    description: 'List all tabs open in Safari Window 2 ("Local to Cloud" profile). Returns index, URL, and title for each tab.',
+    description: 'List all tabs open in the sole shared Safari window. Returns index, URL, and title for each tab.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'safari_w2_navigate',
-    description: 'Navigate a specific tab in Safari Window 2 to a URL. Specify tab by index (1-based).',
+    description: 'Navigate a specific shared Safari tab to a URL. Specify tab by index (1-based).',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in the shared window (1-based)' },
       url: { type: 'string', description: 'URL to navigate to' },
     }, required: ['tabIndex', 'url'] },
   },
   {
     name: 'safari_w2_eval',
-    description: 'Run JavaScript in a specific Window 2 tab and return the result. Use for reading page state, checking login, extracting data.',
+    description: 'Run JavaScript in a specific shared Safari tab and return the result.',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in the shared window (1-based)' },
       script: { type: 'string', description: 'JavaScript to execute. Return value becomes the result.' },
     }, required: ['tabIndex', 'script'] },
   },
   {
     name: 'safari_w2_open_tab',
-    description: 'Open a new tab in Safari Window 2 navigated to a URL. Returns the new tab index.',
+    description: 'Open a new tab in the shared Safari window, subject to the global eight-tab cap.',
     inputSchema: { type: 'object', properties: {
       url: { type: 'string', description: 'URL to open in the new tab' },
     }, required: ['url'] },
   },
   {
     name: 'safari_w2_close_tab',
-    description: 'Close a tab in Safari Window 2 by index. Use carefully — this cannot be undone.',
+    description: 'Close a task-owned tab in the shared Safari window by index.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to close (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_activate_tab',
-    description: 'Bring a Window 2 tab to the foreground (make it the active visible tab).',
+    description: 'Bring a shared Safari tab to the foreground.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to activate (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_get_url',
-    description: 'Get the current URL of a specific Window 2 tab.',
+    description: 'Get the current URL of a specific shared Safari tab.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_claims',
-    description: 'Read the tab claim registry filtered to Window 2 only. Shows which automation service owns which tab, and any conflicts.',
+    description: 'Read the tab claim registry for the sole shared Safari window.',
     inputSchema: { type: 'object', properties: {
       includeExpired: { type: 'boolean', description: 'Include expired claims (older than 60s)', default: false },
     } },
@@ -198,21 +198,21 @@ const TOOLS = [
   },
   {
     name: 'safari_w2_setup_tabs',
-    description: 'Open all missing platform tabs in Window 2 and trigger tab claims on all services. Equivalent to running open-local-to-cloud-tabs.sh.',
+    description: 'Open missing platform tabs in the shared window and trigger service claims.',
     inputSchema: { type: 'object', properties: {
       mode: { type: 'string', enum: ['full', 'claim-only', 'reset'], description: '"full" opens missing tabs then claims, "claim-only" only triggers claims, "reset" closes all W2 tabs and reopens fresh', default: 'full' },
     } },
   },
   {
     name: 'safari_w2_claim_tab',
-    description: 'Trigger /api/session/ensure on a specific service to make it claim its Window 2 tab.',
+    description: 'Trigger /api/session/ensure on a service so it claims its shared-window tab.',
     inputSchema: { type: 'object', properties: {
       service: { type: 'string', description: 'Service name (e.g. "instagram-dm", "twitter-dm", "tiktok-dm", "threads-comments", "facebook-comments", "upwork-automation", "sora-automation")' },
     }, required: ['service'] },
   },
   {
     name: 'safari_w2_login_status',
-    description: 'Check whether each platform tab in Window 2 is logged in or showing a login/auth page.',
+    description: 'Check whether each platform tab in the shared window is logged in.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -288,6 +288,11 @@ end tell`;
       const out = await runAS(`
 tell application "Safari"
   if (count of windows) < ${W2} then error "Window ${W2} not open"
+  set totalTabs to 0
+  repeat with existingWindow in windows
+    set totalTabs to totalTabs + (count of tabs of existingWindow)
+  end repeat
+  if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
   tell window ${W2}
     make new tab with properties {URL:"${safeUrl}"}
     activate

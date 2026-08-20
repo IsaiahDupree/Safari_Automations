@@ -5,10 +5,13 @@ Controls the actual Safari.app browser (not Playwright's WebKit).
 import asyncio
 import subprocess
 import json
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from loguru import logger
 from datetime import datetime
+
+BROWSER_ENFORCER = Path("/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py")
 
 
 class SafariAppController:
@@ -40,6 +43,42 @@ class SafariAppController:
         except subprocess.TimeoutExpired:
             logger.warning(f"AppleScript timeout after {timeout}s - Safari may be slow to launch")
             raise
+
+    def _browser_enforcer_status(self) -> Dict:
+        """Read the authoritative singleton/cooling state without launching Safari."""
+        result = subprocess.run(
+            ["/usr/bin/python3", str(BROWSER_ENFORCER), "status"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        return json.loads(result.stdout)
+
+    def _safari_cooling_remaining(self, status: Dict) -> int:
+        cool_until = float(status.get("state", {}).get("cool_until", {}).get("safari", 0) or 0)
+        return max(0, int(cool_until - time.time() + 0.999))
+
+    def _ensure_managed_safari(self) -> Dict:
+        """Delegate Safari startup to the singleton enforcer and honor cooling."""
+        status = self._browser_enforcer_status()
+        remaining = self._safari_cooling_remaining(status)
+        if remaining:
+            raise RuntimeError(f"Safari is in the enforced cooling window ({remaining}s remaining)")
+
+        if len(status.get("safari", {}).get("root_pids", [])) != 1:
+            subprocess.run(
+                ["/usr/bin/python3", str(BROWSER_ENFORCER), "ensure", "safari"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            status = self._browser_enforcer_status()
+            remaining = self._safari_cooling_remaining(status)
+            if remaining or len(status.get("safari", {}).get("root_pids", [])) != 1:
+                raise RuntimeError("Managed Safari is unavailable after enforcer ensure")
+        return status
     
     async def find_tiktok_window(self, require_logged_in: bool = True) -> Optional[Dict]:
         """
@@ -52,6 +91,9 @@ class SafariAppController:
             Dict with window_index, tab_index, url, is_logged_in, or None if not found
         """
         try:
+            status = self._browser_enforcer_status()
+            if self._safari_cooling_remaining(status) or len(status.get("safari", {}).get("root_pids", [])) != 1:
+                return None
             script = '''
             tell application "Safari"
                 set windowList to every window
@@ -148,9 +190,11 @@ class SafariAppController:
             
             script = f'''
             tell application "Safari"
-                activate
                 set current tab of window {window_idx} to tab {tab_idx} of window {window_idx}
                 set index of window {window_idx} to 1
+            end tell
+            tell application "System Events"
+                set frontmost of process "Safari" to true
             end tell
             '''
             
@@ -168,8 +212,9 @@ class SafariAppController:
             return False
     
     async def launch_safari(self, url: str = "https://www.tiktok.com/en/"):
-        """Launch Safari.app with a specific URL."""
-        logger.info("Launching Safari.app with your actual profile...")
+        """Ensure the managed Safari singleton and reuse it for the requested URL."""
+        logger.info("Ensuring the managed Safari singleton...")
+        self._ensure_managed_safari()
         
         # First, try to find existing TikTok window
         logger.info("🔍 Looking for existing TikTok tab...")
@@ -180,20 +225,15 @@ class SafariAppController:
             await asyncio.sleep(2)
             return
         
-        # If not found, open new tab
-        logger.info("📝 No TikTok tab found, opening new one...")
+        # If not found, reuse the existing front tab rather than adding a window.
+        logger.info("📝 No TikTok tab found, reusing the managed Safari front tab...")
         
-        # First, try to just open Safari (simpler, faster)
-        try:
-            script1 = 'tell application "Safari" to activate'
-            self._run_applescript(script1, timeout=15)
-            await asyncio.sleep(2)  # Give Safari time to launch
-        except Exception as e:
-            logger.warning(f"Could not activate Safari: {e}")
-            # Try opening Safari directly
-            import subprocess
-            subprocess.Popen(["/usr/bin/open", "-a", "Safari"])
-            await asyncio.sleep(3)
+        # Focus the existing process without invoking LaunchServices.
+        self._run_applescript(
+            'tell application "System Events" to set frontmost of process "Safari" to true',
+            timeout=10,
+        )
+        await asyncio.sleep(1)
         
         # Now set the URL
         try:
@@ -884,15 +924,9 @@ class SafariAppController:
         return await self.enter_text_in_field(field_selector, code)
     
     async def close_safari(self):
-        """Close Safari (optional - user might want to keep it open)."""
-        script = '''
-        tell application "Safari"
-            quit
-        end tell
-        '''
-        try:
-            self._run_applescript(script)
-            logger.info("Safari closed")
-        except Exception as e:
-            logger.warning(f"Could not close Safari: {e}")
-
+        """Refuse to close the shared Safari singleton from an individual task."""
+        logger.warning(
+            "Safari close denied by singleton policy; use browser-enforcer.py restart safari "
+            "for a claim-aware, cooled recovery"
+        )
+        return False

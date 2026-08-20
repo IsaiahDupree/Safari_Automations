@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "poll_seconds": 5,
+  "rogue_poll_seconds": 1,
+  "rogue_kill_grace_seconds": 2,
+  "sustained_breach_samples": 3,
+  "cooldown_seconds": 45,
+  "drain_timeout_seconds": 30,
+  "stop_grace_seconds": 12,
+  "minimum_restart_interval_seconds": 600,
+  "chrome": {
+    "enabled": true,
+    "binary": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "canonical_data_dir": "/Users/isaiahdupree/Documents/Chrome/chrome-bridge/profiles/agent",
+    "debug_port": 9222,
+    "max_root_processes": 1,
+    "max_tabs": 8,
+    "max_total_processes": 24,
+    "max_rss_mb": 3072,
+    "max_cpu_percent": 175,
+    "nice": 8,
+    "renderer_process_limit": 6
+  },
+  "safari": {
+    "enabled": true,
+    "max_root_processes": 1,
+    "max_windows": 1,
+    "max_tabs": 8,
+    "max_total_processes": 18,
+    "max_rss_mb": 2048,
+    "max_cpu_percent": 150,
+    "nice": 8
+  }
+}

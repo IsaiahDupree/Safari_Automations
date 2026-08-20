@@ -19,7 +19,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
@@ -68,12 +68,13 @@ import {
 } from '../automation/sora-operations.js';
 import type { CommandPayload, CommandType, TelemetryEvent } from '../automation/types.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const PORT = parseInt(process.env.SORA_PORT || '7070', 10);
 const WS_PORT = PORT + 1;
 const SERVICE_NAME = 'sora-automation';
 const OPEN_URL = SORA_URL;
+const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 const app = express();
 app.use(cors());
@@ -82,6 +83,54 @@ app.use(express.json());
 // ─── Tab claim ────────────────────────────────────────────────────────────────
 
 const activeCoordinators = new Map<string, TabCoordinator>();
+
+interface EnforcerStatus {
+  safari?: { root_pids?: number[] };
+  state?: { cool_until?: { safari?: number } };
+}
+
+async function readEnforcerStatus(): Promise<EnforcerStatus> {
+  const { stdout } = await execFileAsync(
+    '/usr/bin/python3',
+    [BROWSER_ENFORCER, 'status'],
+    { timeout: 10_000, encoding: 'utf8' }
+  );
+  return JSON.parse(String(stdout)) as EnforcerStatus;
+}
+
+async function focusManagedSafari(): Promise<void> {
+  let status = await readEnforcerStatus();
+  let remaining = Math.max(
+    0,
+    Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
+  );
+  if (remaining > 0) {
+    throw new Error(`Safari is in the enforced cooling window (${remaining}s remaining)`);
+  }
+
+  if ((status.safari?.root_pids?.length || 0) !== 1) {
+    await execFileAsync(
+      '/usr/bin/python3',
+      [BROWSER_ENFORCER, 'ensure', 'safari'],
+      { timeout: 30_000, encoding: 'utf8' }
+    );
+    status = await readEnforcerStatus();
+    remaining = Math.max(
+      0,
+      Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
+    );
+    if (remaining > 0 || (status.safari?.root_pids?.length || 0) !== 1) {
+      throw new Error('Managed Safari is unavailable after enforcer ensure');
+    }
+  }
+
+  // System Events can focus an existing process without asking LaunchServices
+  // or AppleScript to create another browser application.
+  await execFileAsync('/usr/bin/osascript', [
+    '-e',
+    'tell application "System Events" to set frontmost of process "Safari" to true',
+  ], { timeout: 5000, encoding: 'utf8' });
+}
 
 async function ensureTabClaim(): Promise<{ windowIndex: number; tabIndex: number } | null> {
   const claims = await TabCoordinator.listClaims();
@@ -142,7 +191,7 @@ async function executeCommand(commandId: string): Promise<void> {
         await coord.claim(found.windowIndex, found.tabIndex);
       } else {
         throw new Error(
-          'No sora.com tab found. Open Safari, navigate to sora.com, and run safari-tabs-setup.sh to claim the tab.'
+          'No reusable sora.com tab found. Run "/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh"; it reuses shared Safari tabs and enforces the eight-tab cap.'
         );
       }
     }
@@ -240,7 +289,7 @@ app.get('/ready', async (_req: Request, res: Response) => {
   } else {
     res.status(503).json({
       ready: false,
-      reason: 'No sora.com tab claimed. Run safari-tabs-setup.sh to open and claim the Sora tab.',
+      reason: 'No sora.com tab claimed. Run "/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh" to reuse or claim a capped shared Safari tab.',
     });
   }
 });
@@ -248,11 +297,18 @@ app.get('/ready', async (_req: Request, res: Response) => {
 // POST /v1/focus
 app.post('/v1/focus', async (req: Request, res: Response) => {
   const { app: targetApp = 'Safari' } = req.body as { app?: string };
+  if (targetApp !== 'Safari') {
+    res.status(400).json({
+      success: false,
+      error: 'sora-automation focus is restricted to the managed Safari singleton',
+    });
+    return;
+  }
   try {
-    await execAsync(`osascript -e 'tell application "${targetApp}" to activate'`, { timeout: 5000 });
-    res.json({ success: true, app: targetApp });
+    await focusManagedSafari();
+    res.json({ success: true, app: 'Safari' });
   } catch (err) {
-    res.json({ success: false, error: String(err) });
+    res.status(503).json({ success: false, error: String(err) });
   }
 });
 

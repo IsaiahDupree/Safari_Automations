@@ -6,7 +6,7 @@
  */
 
 import { Browser as PuppeteerBrowser, Page as PuppeteerPage } from 'puppeteer';
-import { Browser as PlaywrightBrowser, Page as PlaywrightPage, webkit, chromium, firefox } from 'playwright';
+import { Page as PlaywrightPage } from 'playwright';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { logger } from '../utils/logger';
@@ -181,78 +181,37 @@ function wrapPlaywrightPage(page: PlaywrightPage, browserType: BrowserType): Uni
  * Launch a browser with the specified configuration
  */
 async function launchBrowser(config: BrowserConfig): Promise<UnifiedBrowser> {
-    const { browserType, headless, userDataDir, proxy, slowMo } = config;
+    const { browserType } = config;
 
-    logger.info(`Launching ${browserType} browser`, {
+    logger.info(`Attaching to shared ${browserType} browser`, {
         component: 'BrowserAdapter',
         event: 'launch_browser',
         browserType,
-        headless
+        headless: false
     });
 
-    if (browserType === 'chrome') {
-        // Use Puppeteer for Chrome (with stealth plugin)
-        const browser = await puppeteer.launch({
-            headless: headless,
-            userDataDir,
-            slowMo,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-infobars',
-                '--window-position=0,0',
-                '--ignore-certifcate-errors',
-                '--ignore-certifcate-errors-spki-list',
-                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                '--start-maximized',
-                ...(proxy ? [`--proxy-server=${proxy}`] : [])
-            ]
-        }) as PuppeteerBrowser;
-
-        return {
-            newPage: async () => {
-                const page = await browser.newPage();
-                return wrapPuppeteerPage(page);
-            },
-            close: () => browser.close(),
-            browserType: 'chrome'
-        };
-    } else {
-        // Use Playwright for Safari/Firefox
-        const launchOptions = {
-            headless,
-            slowMo,
-            proxy: proxy ? { server: proxy } : undefined,
-        };
-
-        let browser: PlaywrightBrowser;
-        
-        if (browserType === 'safari') {
-            logger.info('Launching Safari/WebKit browser via Playwright');
-            browser = await webkit.launch(launchOptions);
-        } else if (browserType === 'firefox') {
-            logger.info('Launching Firefox browser via Playwright');
-            browser = await firefox.launch(launchOptions);
-        } else {
-            // Fallback to Chromium via Playwright
-            browser = await chromium.launch(launchOptions);
-        }
-
-        return {
-            newPage: async () => {
-                const context = await browser.newContext({
-                    userAgent: browserType === 'safari' 
-                        ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
-                        : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    viewport: { width: 1920, height: 1080 },
-                });
-                const page = await context.newPage();
-                return wrapPlaywrightPage(page, browserType);
-            },
-            close: () => browser.close(),
-            browserType
-        };
+    if (browserType !== 'chrome') {
+        throw new Error(
+            `Browser type ${browserType} is denied by the singleton policy. ` +
+            'Use the existing Safari.app automation services or shared Chrome CDP; never launch a fallback browser.'
+        );
     }
+    const browser = await puppeteer.connect({
+        browserURL: 'http://127.0.0.1:9222',
+        defaultViewport: null,
+    }) as PuppeteerBrowser;
+    return {
+        newPage: async () => {
+            const pages = await browser.pages();
+            if (pages.length >= 8) {
+                throw new Error(`Chrome tab cap reached (${pages.length}/8); reuse or close a tab.`);
+            }
+            const page = await browser.newPage();
+            return wrapPuppeteerPage(page);
+        },
+        close: async () => { browser.disconnect(); },
+        browserType: 'chrome'
+    };
 }
 
 /**

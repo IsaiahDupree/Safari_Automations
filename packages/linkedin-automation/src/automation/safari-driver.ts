@@ -172,7 +172,7 @@ export class SafariDriver {
 
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        const winNum = this.trackedWindow || parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+        const winNum = this.trackedWindow || 1;
 
         if (this.trackedWindow && this.trackedTab) {
           // Navigate + handle any "Leave Page?" sheet via System Events
@@ -664,7 +664,7 @@ end tell`;
       await this.wait(150);
 
       // Target Safari's window by index without activating it
-      const defaultWin = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+      const defaultWin = 1;
       const winIdx = this.trackedWindow || defaultWin;
       const tabIdx = this.trackedTab   || 1;
       const pasteScript = `
@@ -1033,9 +1033,8 @@ end tell`;
     try {
       const vpJson = await this.executeJS('JSON.stringify({w:window.innerWidth,h:window.innerHeight})');
       const vp = JSON.parse(vpJson || '{"w":1200,"h":800}');
-      // Use tracked window; fall back to SAFARI_AUTOMATION_WINDOW env var (default 2, not 1)
-      // Window 1 fallback is wrong when the automation profile runs in Window 2.
-      const defaultWin = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
+      // The singleton policy permits only the shared window at index 1.
+      const defaultWin = 1;
       const winIdx = this.trackedWindow || defaultWin;
       const winInfo = await execAsync(
         `osascript -e 'tell application "Safari" to get bounds of window ${winIdx}'`,
@@ -1125,11 +1124,19 @@ end tell`;
   async openTab(purpose: string, url?: string): Promise<{ windowIndex: number; tabIndex: number } | null> {
     if (this.config.instanceType !== 'local') return null;
     try {
-      // Create new tab in frontmost window
+      const safeUrl = (url || 'about:blank').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // Reuse the shared Safari application and enforce its global tab budget.
       const script = `
 tell application "Safari"
+  if (count of windows) is 0 then error "Shared Safari window is not available"
+  set totalTabs to 0
+  repeat with existingWindow in windows
+    set totalTabs to totalTabs + (count of tabs of existingWindow)
+  end repeat
+  if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
   tell front window
-    set newTab to make new tab with properties {URL:"${url || 'about:blank'}"}
+    set newTab to make new tab with properties {URL:"${safeUrl}"}
+    set current tab to newTab
     set tabIdx to (index of newTab)
     set winIdx to (index of front window)
     return (winIdx as text) & ":" & (tabIdx as text)

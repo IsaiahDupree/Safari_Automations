@@ -11,11 +11,13 @@
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -312,18 +314,117 @@ app.get('/gateway/lock', (_req: Request, res: Response) => {
 
 // ─── Safari Focus & Window Management ───────────────────────
 
+interface EnforcerStatus {
+  safari?: { root_pids?: number[] };
+  state?: { cool_until?: { safari?: number } };
+}
+
+interface SafariUiState {
+  running: boolean;
+  frontmost: boolean;
+  windowCount: number;
+  currentUrl: string;
+  pageTitle: string;
+  cooling: boolean;
+  cooldownRemainingSeconds: number;
+  error?: string;
+}
+
+async function getEnforcerStatus(): Promise<EnforcerStatus> {
+  const { stdout } = await execFileAsync(
+    '/usr/bin/python3',
+    [BROWSER_ENFORCER, 'status'],
+    { timeout: 10_000, encoding: 'utf8' }
+  );
+  return JSON.parse(String(stdout)) as EnforcerStatus;
+}
+
+function safariCoolingRemaining(status: EnforcerStatus): number {
+  return Math.max(
+    0,
+    Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
+  );
+}
+
+async function ensureManagedSafari(): Promise<void> {
+  let status = await getEnforcerStatus();
+  let remaining = safariCoolingRemaining(status);
+  if (remaining > 0) {
+    throw new Error(`Safari is in the enforced cooling window (${remaining}s remaining)`);
+  }
+
+  if ((status.safari?.root_pids?.length || 0) !== 1) {
+    await execFileAsync(
+      '/usr/bin/python3',
+      [BROWSER_ENFORCER, 'ensure', 'safari'],
+      { timeout: 30_000, encoding: 'utf8' }
+    );
+    status = await getEnforcerStatus();
+    remaining = safariCoolingRemaining(status);
+    if (remaining > 0 || (status.safari?.root_pids?.length || 0) !== 1) {
+      throw new Error('Managed Safari is unavailable after enforcer ensure');
+    }
+  }
+}
+
+async function readSafariUiState(): Promise<SafariUiState> {
+  try {
+    const status = await getEnforcerStatus();
+    const cooldownRemainingSeconds = safariCoolingRemaining(status);
+    const running = (status.safari?.root_pids?.length || 0) === 1;
+    if (!running || cooldownRemainingSeconds > 0) {
+      return {
+        running,
+        frontmost: false,
+        windowCount: 0,
+        currentUrl: '',
+        pageTitle: '',
+        cooling: cooldownRemainingSeconds > 0,
+        cooldownRemainingSeconds,
+      };
+    }
+
+    const stateResult = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+    const parts = stateResult.stdout.trim().split('|');
+    return {
+      running: true,
+      frontmost: parts[0] === 'true',
+      windowCount: parseInt(parts[1], 10) || 0,
+      currentUrl: parts[2] || '',
+      pageTitle: parts[3] || '',
+      cooling: false,
+      cooldownRemainingSeconds: 0,
+    };
+  } catch (e: any) {
+    return {
+      running: false,
+      frontmost: false,
+      windowCount: 0,
+      currentUrl: '',
+      pageTitle: '',
+      cooling: false,
+      cooldownRemainingSeconds: 0,
+      error: e.message,
+    };
+  }
+}
+
 /**
- * Robust Safari focus — ensures Safari is the frontmost app on macOS.
- * Uses multiple strategies because a single `activate` can fail if:
- *  - Another app is in fullscreen
- *  - System dialogs are blocking
- *  - macOS is in a focus mode
- * 
- * Strategies (in order):
- * 1. AppleScript `activate` — standard method
- * 2. Set `frontmost` property — forces frontmost even if activate is ignored
- * 3. Raise front window via `AXRaise` — handles minimized windows
- * 4. Open Safari via `open -a` — last resort, ensures Safari is launched
+ * Focus the managed Safari singleton. Startup is delegated to the enforcer;
+ * cooling is fail-closed and no LaunchServices fallback is permitted.
  */
 async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Promise<{
   success: boolean;
@@ -333,32 +434,25 @@ async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Pro
   error?: string;
 }> {
   try {
-    // Step 1: Activate Safari (bring to front)
-    await execAsync(`osascript -e '
-tell application "Safari"
-    activate
-end tell'`);
-    await new Promise(r => setTimeout(r, 300));
+    await ensureManagedSafari();
 
-    // Step 2: Force frontmost via System Events
+    // System Events focuses an existing process without launching Safari.
     await execAsync(`osascript -e '
 tell application "System Events"
     set frontmost of process "Safari" to true
-end tell'`).catch(() => null);
+end tell'`);
     await new Promise(r => setTimeout(r, 200));
 
-    // Step 3: Ensure at least one window exists
+    // Create one window only when the managed application has none.
     if (opts?.ensureWindow !== false) {
-      const windowCheck = await execAsync(`osascript -e '
+      await execAsync(`osascript -e '
 tell application "Safari"
     set wc to count of windows
     if wc = 0 then
         make new document
     end if
-    return wc
-end tell'`).catch(() => ({ stdout: '0' }));
+end tell'`);
 
-      // Step 3b: Raise the front window (un-minimize)
       await execAsync(`osascript -e '
 tell application "System Events"
     tell process "Safari"
@@ -369,43 +463,26 @@ tell application "System Events"
 end tell'`).catch(() => null);
     }
 
-    // Step 4: Navigate to URL if provided
     if (opts?.url) {
-      const safeUrl = opts.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const parsedUrl = new URL(opts.url);
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        throw new Error('Safari navigation only accepts http(s) URLs');
+      }
+      const safeUrl = parsedUrl.toString().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await execAsync(`osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`);
     }
 
     await new Promise(r => setTimeout(r, 300));
-
-    // Verify state
-    const stateResult = await execAsync(`osascript -e '
-tell application "System Events"
-    set isFront to frontmost of process "Safari"
-end tell
-tell application "Safari"
-    set wc to count of windows
-    set u to ""
-    try
-        set u to URL of front document
-    end try
-end tell
-return (isFront as text) & "|" & (wc as text) & "|" & u'`);
-
-    const parts = stateResult.stdout.trim().split('|');
-    const frontmost = parts[0] === 'true';
-    const windowCount = parseInt(parts[1]) || 0;
-    const currentUrl = parts[2] || '';
-
-    return { success: true, frontmost, windowCount, currentUrl };
+    const state = await readSafariUiState();
+    return {
+      success: state.running && !state.cooling,
+      frontmost: state.frontmost,
+      windowCount: state.windowCount,
+      currentUrl: state.currentUrl,
+      error: state.error,
+    };
   } catch (e: any) {
-    // Last resort: open -a Safari
-    try {
-      await execAsync('open -a Safari');
-      await new Promise(r => setTimeout(r, 1000));
-      return { success: true, frontmost: true, windowCount: 1, currentUrl: '', error: 'Used open -a fallback' };
-    } catch {
-      return { success: false, frontmost: false, windowCount: 0, currentUrl: '', error: e.message };
-    }
+    return { success: false, frontmost: false, windowCount: 0, currentUrl: '', error: e.message };
   }
 }
 
@@ -448,34 +525,7 @@ app.post('/gateway/safari/focus', async (req: Request, res: Response) => {
 
 // API: Get Safari window state
 app.get('/gateway/safari/state', async (_req: Request, res: Response) => {
-  try {
-    const stateResult = await execAsync(`osascript -e '
-tell application "System Events"
-    set isFront to frontmost of process "Safari"
-    set isRunning to exists process "Safari"
-end tell
-tell application "Safari"
-    set wc to count of windows
-    set u to ""
-    set t to ""
-    try
-        set u to URL of front document
-        set t to name of front document
-    end try
-end tell
-return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
-
-    const parts = stateResult.stdout.trim().split('|');
-    res.json({
-      running: parts[0] === 'true',
-      frontmost: parts[1] === 'true',
-      windowCount: parseInt(parts[2]) || 0,
-      currentUrl: parts[3] || '',
-      pageTitle: parts[4] || '',
-    });
-  } catch (e: any) {
-    res.json({ running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '', error: e.message });
-  }
+  res.json(await readSafariUiState());
 });
 
 // API: Full pre-automation setup (focus + lock + optional navigate)
@@ -730,27 +780,9 @@ app.get('/gateway/dashboard', async (_req: Request, res: Response) => {
   const lock = lockManager.getLock();
   const sessionList = Array.from(sessions.values());
 
-  // Get Safari state for dashboard
-  let safariState = { running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '' };
-  try {
-    const sr = await execAsync(`osascript -e '
-tell application "System Events"
-    set isFront to frontmost of process "Safari"
-    set isRunning to exists process "Safari"
-end tell
-tell application "Safari"
-    set wc to count of windows
-    set u to ""
-    set t to ""
-    try
-        set u to URL of front document
-        set t to name of front document
-    end try
-end tell
-return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
-    const sp = sr.stdout.trim().split('|');
-    safariState = { running: sp[0] === 'true', frontmost: sp[1] === 'true', windowCount: parseInt(sp[2]) || 0, currentUrl: sp[3] || '', pageTitle: sp[4] || '' };
-  } catch {}
+  // This state read first consults the enforcer, so a dashboard request cannot
+  // accidentally relaunch Safari while it is stopped or cooling.
+  const safariState = await readSafariUiState();
 
   res.json({
     gateway: {

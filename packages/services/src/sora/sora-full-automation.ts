@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 // ============================================================================
 // TYPES
@@ -266,7 +267,7 @@ export class SoraFullAutomation {
         await this.mouseWiggle();
       }
 
-      // At poll 30, do a full Safari restart to recover from stuck state
+      // At poll 30, request a claim-aware, resource-cooled Safari restart.
       if (attempt === 30) {
         console.log('[SORA] ⚠️ Poll 30 reached - performing Safari recovery...');
         await this.recoverSafari();
@@ -377,37 +378,21 @@ export class SoraFullAutomation {
   }
 
   // ==========================================================================
-  // SAFARI RECOVERY - Close/reopen Safari and navigate to drafts
+  // SAFARI RECOVERY - Enforcer-controlled restart, then navigate to drafts
   // ==========================================================================
 
   async recoverSafari(): Promise<void> {
-    console.log('[SORA] 🔄 Closing Safari...');
-    
+    console.log('[SORA] 🔄 Requesting managed Safari recovery...');
+
     try {
-      // Close Safari
-      await execAsync(`osascript -e 'tell application "Safari" to quit'`);
-      await this.wait(3000);
-      
-      // Reopen Safari
-      console.log('[SORA] 🔄 Reopening Safari...');
-      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
-      await this.wait(2000);
-      
-      // Bring Safari to front and make sure it's selected
-      console.log('[SORA] 🔄 Bringing Safari to front...');
-      await execAsync(`osascript -e '
-        tell application "Safari"
-          activate
-          set frontmost to true
-        end tell
-        tell application "System Events"
-          tell process "Safari"
-            set frontmost to true
-          end tell
-        end tell
-      '`);
-      await this.wait(2000);
-      
+      // Only the singleton enforcer may stop or relaunch the shared Safari.
+      // It drains live tab claims, pauses automation processes, observes the
+      // configured cooling period, and relaunches exactly one application.
+      await execAsync(
+        `/usr/bin/python3 "${BROWSER_ENFORCER}" restart safari --reason "Sora poll recovery"`,
+        { timeout: 180000 }
+      );
+
       // Navigate to drafts URL
       console.log('[SORA] 🔄 Navigating to drafts...');
       await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);

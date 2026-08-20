@@ -1,5 +1,5 @@
-import { Builder, WebDriver, By, until, WebElement } from 'selenium-webdriver';
-import safari from 'selenium-webdriver/safari';
+import { WebDriver, By, until, WebElement, Session } from 'selenium-webdriver';
+import { Executor, HttpClient } from 'selenium-webdriver/http';
 import type {
   Browser,
   BrowserOptions,
@@ -24,25 +24,48 @@ export class SafariBrowser implements Browser {
   }
 
   async initialize(): Promise<void> {
-    const safariOptions = new safari.Options();
+    if (this.driver) return;
 
-    this.driver = await new Builder()
-      .forBrowser('safari')
-      .setSafariOptions(safariOptions)
-      .build();
+    const sessionId = this.options.webdriverSessionId || process.env.SAFARI_WEBDRIVER_SESSION_ID;
+    const webdriverUrl = this.options.webdriverUrl || process.env.SAFARI_WEBDRIVER_URL;
+    if (!sessionId || !webdriverUrl) {
+      throw new Error(
+        'SafariBrowser cannot create a WebDriver session under the browser singleton policy. ' +
+        'Provide webdriverSessionId/webdriverUrl (or SAFARI_WEBDRIVER_SESSION_ID/' +
+        'SAFARI_WEBDRIVER_URL) for an already-running Safari session.'
+      );
+    }
 
-    await this.driver.manage().setTimeouts({
-      implicit: 0,
-      pageLoad: this.options.timeout,
-      script: this.options.timeout,
-    });
+    const executor = new Executor(new HttpClient(webdriverUrl));
+    const attachedDriver = new WebDriver(new Session(sessionId, {}), executor);
+    try {
+      const capabilities = await attachedDriver.getCapabilities();
+      const browserName = capabilities.getBrowserName();
+      if (!browserName || !browserName.toLowerCase().includes('safari')) {
+        throw new Error(`Existing WebDriver session is not Safari (browserName=${browserName || 'unknown'})`);
+      }
+      await attachedDriver.getCurrentUrl();
+      await attachedDriver.manage().setTimeouts({
+        implicit: 0,
+        pageLoad: this.options.timeout,
+        script: this.options.timeout,
+      });
+      this.driver = attachedDriver;
+    } catch (error) {
+      // Do not call quit(): this class never owns the externally provisioned
+      // singleton session and must leave it alive for other agents.
+      this.driver = null;
+      throw new Error(
+        `Could not attach to the existing Safari WebDriver session: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 
   async close(): Promise<void> {
-    if (this.driver) {
-      await this.driver.quit();
-      this.driver = null;
-    }
+    // Detach locally only. Quitting would terminate the shared Safari session.
+    this.driver = null;
   }
 
   private getDriver(): WebDriver {

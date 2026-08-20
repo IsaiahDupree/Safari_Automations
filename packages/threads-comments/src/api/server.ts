@@ -411,7 +411,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     uptime: Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000),
     timestamp: new Date().toISOString(),
     chrome: {
-      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9225',
+      cdp_url: 'http://localhost:9222',
       connected: cdp.connected,
       has_threads_tab: cdp.hasThreadsTab,
       tab_url: cdp.url,

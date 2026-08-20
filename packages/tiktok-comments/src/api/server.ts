@@ -161,7 +161,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     port: PORT,
     timestamp: new Date().toISOString(),
     chrome: {
-      cdp_url: process.env['CHROME_CDP_URL'] || 'http://localhost:9224',
+      cdp_url: 'http://localhost:9222',
       connected: cdp.connected,
       has_tiktok_tab: cdp.hasTikTokTab,
       tab_url: cdp.url,

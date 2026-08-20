@@ -1,17 +1,17 @@
 /**
  * Chrome CDP Driver — Twitter Comments
  *
- * Connects to the SHARED Chrome instance on port 9223 (same as twitter-dm).
+ * Connects to the shared Chrome singleton on port 9222.
  * Uses browser.pages() to find or open the x.com tab — never launches a new Chrome.
  *
- * Set env: CHROME_CDP_URL=http://localhost:9223
+ * Canonical endpoint: CHROME_CDP_URL=http://localhost:9222
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 
 const MOD = 'twitter-comments:chrome-driver';
 const PLATFORM_DOMAINS = ['x.com', 'twitter.com'];
-const DEFAULT_CDP_URL = 'http://localhost:9223';
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 
 function log(level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: Record<string, unknown>) {
   const prefix = `[${MOD}][${level.toUpperCase()}]`;
@@ -32,7 +32,7 @@ let _page: Page | null = null;
 async function getBrowser(): Promise<Browser> {
   if (_browser && _browser.connected) return _browser;
 
-  const cdpUrl = process.env['CHROME_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
   log('info', `Connecting to Chrome CDP at ${cdpUrl}`);
 
   try {
@@ -49,7 +49,7 @@ async function getBrowser(): Promise<Browser> {
     log('error', `CDP connection failed: ${msg}`);
     throw Object.assign(
       new Error(`Cannot connect to Chrome at ${cdpUrl}: ${msg}`),
-      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure Chrome is running with --remote-debugging-port=9223' }
+      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure the canonical Chrome is running on CDP 9222' }
     );
   }
 }

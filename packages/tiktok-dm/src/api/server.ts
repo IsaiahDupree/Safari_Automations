@@ -236,7 +236,7 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): v
 
 app.use(rateLimitMiddleware);
 
-// Create Chrome/Puppeteer driver (connects to Chrome CDP port 9224)
+// Create Chrome/Puppeteer driver (connects to the canonical Chrome on CDP 9222)
 const driver = new ChromeDriver({ verbose: VERBOSE });
 
 // URL pattern that identifies the TikTok Chrome session
@@ -253,7 +253,7 @@ async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number
 
 // Health check
 app.get('/health', async (_req: Request, res: Response) => {
-  const cdpUrl = process.env.TIKTOK_CDP_URL || 'http://localhost:9224';
+  const cdpUrl = 'http://localhost:9222';
   let chromeConnected = false;
   try {
     const b = await driver.getBrowser();
@@ -279,7 +279,7 @@ app.get('/api/session/status', async (_req: Request, res: Response) => {
     res.json({
       tracked: connected,
       driver: 'chrome-puppeteer',
-      cdpUrl: process.env.TIKTOK_CDP_URL || 'http://localhost:9224',
+      cdpUrl: 'http://localhost:9222',
       currentUrl: url,
       sessionUrlPattern: SESSION_URL_PATTERN,
     });
@@ -296,7 +296,7 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
       url: info.url,
       message: info.ok
         ? `TikTok Chrome session active: ${info.url.slice(0, 80)}`
-        : 'TikTok Chrome session not found — start Chrome with --remote-debugging-port=9224 and navigate to tiktok.com',
+        : 'TikTok Chrome session not found — wait for the canonical Chrome on CDP 9222',
     });
   } catch (error) {
     const msg = String(error);
@@ -1355,7 +1355,7 @@ function syncToCRMLite(username: string, message: string): void {
 
 // Start server
 export function startServer(port: number = PORT): void {
-  const cdpUrl = process.env.TIKTOK_CDP_URL || 'http://localhost:9224';
+  const cdpUrl = 'http://localhost:9222';
 
   app.listen(port, () => {
     console.log(`TikTok DM API server (Chrome/Puppeteer) running on http://localhost:${port}`);
@@ -1370,7 +1370,7 @@ export function startServer(port: number = PORT): void {
     if (VERBOSE) console.log('[startup] Chrome CDP connection established');
   }).catch((err) => {
     console.warn(`[startup] Chrome not yet available at ${cdpUrl}: ${(err as Error).message}`);
-    console.warn(`[startup] Start Chrome: open -a 'Google Chrome' --args --remote-debugging-port=9224 --profile-directory='Automation-TikTok' --user-data-dir=${process.env.CHROME_USER_DATA_DIR || '~/.chrome-automation-profiles/tiktok'}`);
+    console.warn('[startup] Canonical Chrome unavailable on CDP 9222; launch fallback is denied by browser policy');
   });
 }
 

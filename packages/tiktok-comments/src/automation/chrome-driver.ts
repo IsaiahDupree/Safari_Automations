@@ -1,21 +1,21 @@
 /**
  * Chrome CDP Driver — TikTok Comments
  *
- * Connects to the SHARED Chrome instance on port 9224 (same as tiktok-dm).
+ * Connects to the shared Chrome singleton on port 9222.
  * Uses browser.pages() to find or open the tiktok.com tab — never launches a new Chrome.
  *
  * TikTok-specific note: TikTok uses a virtual DOM (React) where comment inputs may have
  * 0×0 bounding rects. typeViaJS uses ClipboardEvent paste + execCommand fallbacks, which
  * bypass the virtual DOM limitations seen with Puppeteer's native page.type().
  *
- * Set env: CHROME_CDP_URL=http://localhost:9224
+ * Canonical endpoint: CHROME_CDP_URL=http://localhost:9222
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 
 const MOD = 'tiktok-comments:chrome-driver';
 const PLATFORM_DOMAIN = 'tiktok.com';
-const DEFAULT_CDP_URL = 'http://localhost:9224';
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 
 function log(level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: Record<string, unknown>) {
   const prefix = `[${MOD}][${level.toUpperCase()}]`;
@@ -36,7 +36,7 @@ let _page: Page | null = null;
 async function getBrowser(): Promise<Browser> {
   if (_browser && _browser.connected) return _browser;
 
-  const cdpUrl = process.env['CHROME_CDP_URL'] || DEFAULT_CDP_URL;
+  const cdpUrl = DEFAULT_CDP_URL;
   log('info', `Connecting to Chrome CDP at ${cdpUrl}`);
 
   try {
@@ -53,7 +53,7 @@ async function getBrowser(): Promise<Browser> {
     log('error', `CDP connection failed: ${msg}`);
     throw Object.assign(
       new Error(`Cannot connect to Chrome at ${cdpUrl}: ${msg}`),
-      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure Chrome is running with --remote-debugging-port=9224' }
+      { code: 'CDP_CONNECT_FAILED', hint: 'Ensure the canonical Chrome is running on CDP 9222' }
     );
   }
 }

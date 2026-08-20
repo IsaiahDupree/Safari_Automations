@@ -12,14 +12,12 @@
  *   await coord.release();     // on clean exit
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs/promises';
-
-const execAsync = promisify(exec);
 
 export const CHROME_CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
 export const CLAIM_TTL_MS = 60_000;
+const CHROME_CDP_BASE = 'http://127.0.0.1:9222';
+const MAX_CHROME_TABS = 8;
 
 export interface ChromeTabClaim {
   agentId: string;
@@ -77,39 +75,14 @@ export class ChromeTabCoordinator {
   // ─── Discover ─────────────────────────────────────────────────────────────
 
   async findAvailableTab(): Promise<{ windowIndex: number; tabIndex: number; url: string } | null> {
-    const script = `
-tell application "Google Chrome"
-  set result to {}
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      try
-        set u to URL of tab t of window w
-        if u contains "${this.urlPattern.replace(/"/g, '\\"')}" then
-          set end of result to ((w as text) & "||" & (t as text) & "||" & u)
-        end if
-      end try
-    end repeat
-  end repeat
-  return result
-end tell`;
-
     let matches: Array<{ windowIndex: number; tabIndex: number; url: string }> = [];
     try {
-      const { stdout } = await execAsync(
-        `osascript << 'ASEOF'\n${script}\nASEOF`,
-        { timeout: 10000 }
-      );
-      const items = stdout.trim().split(', ').filter(Boolean);
-      for (const item of items) {
-        const parts = item.split('||');
-        if (parts.length < 3) continue;
-        const windowIndex = parseInt(parts[0], 10);
-        const tabIndex = parseInt(parts[1], 10);
-        const url = parts.slice(2).join('||');
-        if (!isNaN(windowIndex) && !isNaN(tabIndex)) {
-          matches.push({ windowIndex, tabIndex, url });
-        }
-      }
+      const response = await fetch(`${CHROME_CDP_BASE}/json/list`);
+      if (!response.ok) throw new Error(`CDP returned ${response.status}`);
+      const targets = await response.json() as Array<{ type?: string; url?: string }>;
+      matches = targets
+        .filter(target => target.type === 'page' && String(target.url || '').includes(this.urlPattern))
+        .map((target, index) => ({ windowIndex: 1, tabIndex: index + 1, url: String(target.url || '') }));
     } catch {
       return null;
     }
@@ -201,27 +174,20 @@ end tell`;
   // ─── Open new tab ─────────────────────────────────────────────────────────
 
   async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
-    const safeUrl = url.replace(/"/g, '\\"');
-    const script = `
-tell application "Google Chrome"
-  activate
-  tell window 1
-    make new tab with properties {URL:"${safeUrl}"}
-    set w to count of windows
-    set t to count of tabs of window 1
-    return ((w as text) & "||" & (t as text))
-  end tell
-end tell`;
     try {
-      const { stdout } = await execAsync(
-        `osascript << 'ASEOF'\n${script}\nASEOF`,
-        { timeout: 15000 }
+      const listResponse = await fetch(`${CHROME_CDP_BASE}/json/list`);
+      if (!listResponse.ok) throw new Error(`CDP returned ${listResponse.status}`);
+      const before = await listResponse.json() as Array<{ type?: string }>;
+      const pageCount = before.filter(target => target.type === 'page').length;
+      if (pageCount >= MAX_CHROME_TABS) {
+        throw new Error(`Chrome tab cap reached (${pageCount}/${MAX_CHROME_TABS})`);
+      }
+      const createResponse = await fetch(
+        `${CHROME_CDP_BASE}/json/new?${encodeURIComponent(url)}`,
+        { method: 'PUT' },
       );
-      const parts = stdout.trim().split('||');
-      const windowIndex = parseInt(parts[0], 10);
-      const tabIndex = parseInt(parts[1], 10);
-      if (isNaN(windowIndex) || isNaN(tabIndex)) throw new Error(`Unexpected output: ${stdout.trim()}`);
-      return { windowIndex, tabIndex };
+      if (!createResponse.ok) throw new Error(`CDP tab create returned ${createResponse.status}`);
+      return { windowIndex: 1, tabIndex: pageCount + 1 };
     } catch (err) {
       throw new Error(`Failed to open Chrome tab to '${url}': ${err}`);
     }

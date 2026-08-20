@@ -2,44 +2,16 @@
  * Chrome/Puppeteer Driver for Instagram DM automation.
  * Replaces SafariDriver — connects to a running Chrome instance via CDP.
  *
- * Start Chrome with:
- *   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
- *     --remote-debugging-port=9222 \
- *     --user-data-dir=~/.chrome-automation-profiles/instagram \
- *     --profile-directory=Default
- *
- * Or set INSTAGRAM_CDP_URL env var (default: http://localhost:9222).
+ * The only endpoint is the managed Chrome singleton on localhost:9222.
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import type { AutomationConfig } from './types.js';
 
 // ─── Chrome setup ──────────────────────────────────────────────────────────
-const DEFAULT_CDP_URL = process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222';
-const DEFAULT_PROFILE_DIR = join(homedir(), '.chrome-automation-profiles', 'instagram');
+const DEFAULT_CDP_URL = 'http://localhost:9222';
 const INSTAGRAM_URL_PATTERN = 'instagram.com';
-
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium-browser',
-];
-
-function findChrome(): string {
-  const envPath = process.env['CHROME_PATH'];
-  if (envPath && existsSync(envPath)) return envPath;
-  for (const p of CHROME_PATHS) {
-    if (existsSync(p)) return p;
-  }
-  throw new Error(
-    `Chrome not found. Checked: ${CHROME_PATHS.join(', ')}. Set CHROME_PATH env var.`
-  );
-}
 
 // Module-level browser + page singletons (reused across requests)
 let _browser: Browser | null = null;

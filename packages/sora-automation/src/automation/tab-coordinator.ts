@@ -25,10 +25,9 @@ export const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
 export const CLAIM_TTL_MS = 60_000; // 60s — claim expires if no heartbeat
 
 // ── Phase A: automation window enforcement ─────────────────────────────────
-// Read at call time (not module load time) so dotenv override takes effect.
-// Set SAFARI_AUTOMATION_WINDOW=2 in .env (matches the automation profile window).
+// The singleton policy fixes automation to the sole Safari window.
 export function getAutomationWindow(): number {
-  return parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
+  return 1;
 }
 /** @deprecated use getAutomationWindow() — kept for backward compat */
 export const AUTOMATION_WINDOW = 0; // placeholder, not used internally
@@ -295,6 +294,11 @@ tell application "Safari"
   if (count of windows) < ${getAutomationWindow()} then
     error "Automation window ${getAutomationWindow()} is not open — open Safari and navigate to the automation profile"
   end if
+  set totalTabs to 0
+  repeat with browserWindow in windows
+    set totalTabs to totalTabs + (count of tabs of browserWindow)
+  end repeat
+  if totalTabs is greater than or equal to 8 then error "Safari tab cap reached (8); reuse or close a tab"
   set w to window ${getAutomationWindow()}
   tell w
     set newTab to make new tab with properties {URL:"${safeUrl}"}

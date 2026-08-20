@@ -21,9 +21,8 @@ LOG_DIR="/tmp"
 ACTP_DIR="/Users/isaiahdupree/Documents/Software/actp-worker"
 
 # -- Shared logged-in browser (chrome-bridge "agent" profile) -----------------
-CHROME_APP="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-AGENT_PROFILE_DIR="/Users/isaiahdupree/Documents/Chrome/chrome-bridge/profiles/agent"
 CDP_PORT=9222
+BROWSER_ENFORCER="$SAFARI_DIR/ops/browser-enforcer.py"
 
 # -- Single-instance guard: only one watchdog may run at a time ---------------
 LOCK="/tmp/safari-watchdog.lock"
@@ -105,17 +104,8 @@ ensure_agent_chrome() {
   if curl -s --max-time 3 "http://localhost:$CDP_PORT/json/version" >/dev/null 2>&1; then
     return 0
   fi
-  log ":$CDP_PORT (shared agent Chrome) DOWN -- relaunching logged-in profile"
-  "$CHROME_APP" \
-    --remote-debugging-port=$CDP_PORT \
-    --remote-allow-origins=* \
-    --user-data-dir="$AGENT_PROFILE_DIR" \
-    --profile-directory=Default \
-    --no-first-run --no-default-browser-check \
-    --disable-background-timer-throttling \
-    --disable-backgrounding-occluded-windows \
-    --disable-renderer-backgrounding \
-    >>"$LOG_DIR/agent-chrome.log" 2>&1 &
+  log ":$CDP_PORT (shared agent Chrome) DOWN -- requesting canonical singleton"
+  python3 "$BROWSER_ENFORCER" ensure chrome >>"$LOG_DIR/agent-chrome.log" 2>&1
   for i in $(seq 1 20); do
     sleep 1
     if curl -s --max-time 2 "http://localhost:$CDP_PORT/json/version" >/dev/null 2>&1; then
@@ -130,7 +120,9 @@ log "Safari watchdog started (shared browser :$CDP_PORT, actp :8090) SAFARI_AUTO
 
 while true; do
   # 0) shared logged-in browser FIRST -- everything else depends on it
-  ensure_agent_chrome
+  # Browser lifecycle belongs exclusively to the global enforcer. This service
+  # watchdog must never make a second availability or relaunch decision.
+  # ensure_agent_chrome
 
   # 1) platform HTTP services
   for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do

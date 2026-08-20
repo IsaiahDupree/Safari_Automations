@@ -120,7 +120,7 @@ let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 
 // Chrome driver instance (replaces SafariDriver)
-// Connects to Chrome via CDP (port 9223) or launches a dedicated Chrome profile.
+// Connects to the canonical Chrome singleton via CDP 9222; never launches Chrome.
 let driver: ChromeDriver | null = null;
 
 // CDP URL for Twitter Chrome session
@@ -268,7 +268,7 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
       url: info.url,
       message: info.ok
         ? `Twitter Chrome session active — current URL: ${info.url}`
-        : 'Twitter Chrome session not found — ensure Chrome is running with --remote-debugging-port=9223',
+        : 'Twitter Chrome session not found — ensure the canonical Chrome is running on CDP 9222',
     });
   } catch (error) {
     const msg = String(error);
@@ -742,13 +742,13 @@ app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
 const PORT = parseInt(process.env.TWITTER_DM_PORT || process.env.PORT || '3003');
 
 export function startServer(port: number = PORT): void {
-  const cdpUrl = process.env['TWITTER_CDP_URL'] || 'http://localhost:9223';
+  const cdpUrl = 'http://localhost:9222';
 
   app.listen(port, () => {
     console.log(`🐦 Twitter DM API server running on http://localhost:${port}`);
     console.log(`   Driver: Chrome/Puppeteer (CDP)`);
     console.log(`   CDP URL: ${cdpUrl}`);
-    console.log(`   Profile: ~/.chrome-automation-profiles/twitter/`);
+    console.log('   Profile: shared chrome-bridge agent singleton');
     console.log(`   Health: GET /health`);
     console.log(`   Status: GET /api/twitter/status`);
     console.log(`   Send DM: POST /api/twitter/messages/send-to`);

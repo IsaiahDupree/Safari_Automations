@@ -3,6 +3,10 @@ export interface BrowserOptions {
   screenshotOnFailure?: boolean;
   sessionPath?: string;
   headless?: boolean;
+  /** ID of a Safari WebDriver session provisioned outside this process. */
+  webdriverSessionId?: string;
+  /** HTTP endpoint of the WebDriver server that owns webdriverSessionId. */
+  webdriverUrl?: string;
 }
 
 export interface Browser {

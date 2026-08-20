@@ -19,7 +19,7 @@
  *   Safari > Develop > Allow JavaScript from Apple Events
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import {
   EXTRACT_ALL_ADS,
   READ_FILTER_STATE,
@@ -53,16 +53,55 @@ import {
 function safariExec(script: string): string {
   // Escape the script for AppleScript embedding
   const escaped = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const osascript = `osascript -e 'tell application "Safari" to do JavaScript "${escaped}" in document 1'`;
+  const osascript = `
+tell application "Safari"
+  set targetDocument to missing value
+  repeat with candidateDocument in documents
+    try
+      if (URL of candidateDocument) contains "facebook.com/ads/library" then
+        set targetDocument to candidateDocument
+        exit repeat
+      end if
+    end try
+  end repeat
+  if targetDocument is missing value then error "No shared Meta Ad Library tab is open"
+  return do JavaScript "${escaped}" in targetDocument
+end tell`;
   try {
-    return execSync(osascript, { encoding: 'utf-8', timeout: 30000 }).trim();
+    return execFileSync('osascript', ['-e', osascript], { encoding: 'utf-8', timeout: 30000 }).trim();
   } catch (e: any) {
     return `error: ${e.message}`;
   }
 }
 
 function safariOpen(url: string): void {
-  execSync(`osascript -e 'tell application "Safari" to open location "${url}"'`);
+  const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const osascript = `
+tell application "Safari"
+  if (count of windows) is 0 then error "Shared Safari window is not available"
+  set totalTabs to 0
+  repeat with candidateWindow in windows
+    set totalTabs to totalTabs + (count of tabs of candidateWindow)
+    repeat with candidateTab from 1 to count of tabs of candidateWindow
+      try
+        if (URL of tab candidateTab of candidateWindow) contains "facebook.com/ads/library" then
+          set URL of tab candidateTab of candidateWindow to "${safeUrl}"
+          set current tab of candidateWindow to tab candidateTab of candidateWindow
+          activate
+          return "reused"
+        end if
+      end try
+    end repeat
+  end repeat
+  if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
+  tell front window
+    set targetTab to make new tab with properties {URL:"${safeUrl}"}
+    set current tab to targetTab
+  end tell
+  activate
+  return "opened"
+end tell`;
+  execFileSync('osascript', ['-e', osascript], { encoding: 'utf-8', timeout: 30000 });
 }
 
 function wait(ms: number): void {
@@ -410,4 +449,7 @@ Examples:
   }
 }
 
-main().catch(console.error);
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
