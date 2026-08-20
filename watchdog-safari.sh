@@ -19,6 +19,9 @@
 SAFARI_DIR="/Users/isaiahdupree/Documents/Software/Safari Automation"
 LOG_DIR="/tmp"
 ACTP_DIR="/Users/isaiahdupree/Documents/Software/actp-worker"
+ACTP_PID_FILE="/tmp/actp-cloud-server.pid"
+ACTP_START_FILE="/tmp/actp-cloud-server.started"
+ACTP_START_GRACE_SECONDS=90
 
 # -- Shared logged-in browser (chrome-bridge "agent" profile) -----------------
 CDP_PORT=9222
@@ -71,6 +74,30 @@ launch_service() {
   else
     env ${extra:+$extra} PORT="$port" npx tsx "$pkg" >> "$LOG_DIR/safari-$port.log" 2>&1 &
   fi
+}
+
+# Own exactly one ACTP worker. A slow Python import must not cause this
+# watchdog to create another worker every cycle.
+actp_worker_pid() {
+  local pid command_line
+  [ -r "$ACTP_PID_FILE" ] || return 1
+  read -r pid < "$ACTP_PID_FILE"
+  [[ "$pid" == <-> ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  command_line=$(ps -p "$pid" -o command= 2>/dev/null)
+  [[ "$command_line" == *" -m uvicorn cloud_server:app "* ]] || return 1
+  print -r -- "$pid"
+}
+
+launch_actp_worker() {
+  cd "$ACTP_DIR" || return 1
+  # uvloop import has intermittently stalled under host pressure. The stdlib
+  # asyncio loop is deterministic here and avoids a restart storm.
+  python3 -m uvicorn cloud_server:app --host 0.0.0.0 --port 8090 --loop asyncio >> "$LOG_DIR/safari-8090.log" 2>&1 &
+  local pid=$!
+  print -r -- "$pid" > "$ACTP_PID_FILE"
+  date +%s > "$ACTP_START_FILE"
+  log ":8090 STARTING actp cloud_server (pid $pid)"
 }
 
 # -- Load .env so services inherit the shared-browser CDP config ---------------
@@ -147,12 +174,31 @@ while true; do
   # 2) ACTP worker -- uvicorn on :8090
   actp_result=$(curl -s --max-time 3 "http://localhost:8090/health" 2>/dev/null)
   if [ -z "$actp_result" ]; then
-    log ":8090 DOWN -- restarting actp cloud_server"
-    cd "$ACTP_DIR"
-    python3 -m uvicorn cloud_server:app --host 0.0.0.0 --port 8090 >> "$LOG_DIR/safari-8090.log" 2>&1 &
-    sleep 4
-    actp_recheck=$(curl -s --max-time 3 "http://localhost:8090/health" 2>/dev/null)
-    if [ -n "$actp_recheck" ]; then log ":8090 RESTORED"; else log ":8090 FAILED to restart -- check $LOG_DIR/safari-8090.log"; fi
+    actp_pid=$(actp_worker_pid 2>/dev/null)
+    if [ -n "$actp_pid" ]; then
+      actp_started=$(cat "$ACTP_START_FILE" 2>/dev/null || echo 0)
+      actp_age=$(( $(date +%s) - actp_started ))
+      if [ "$actp_age" -lt "$ACTP_START_GRACE_SECONDS" ]; then
+        log ":8090 still STARTING (pid $actp_pid, ${actp_age}s) -- not spawning a duplicate"
+      else
+        log ":8090 startup timed out after ${actp_age}s -- replacing owned pid $actp_pid"
+        kill -TERM "$actp_pid" 2>/dev/null || true
+        sleep 2
+        kill -0 "$actp_pid" 2>/dev/null && kill -KILL "$actp_pid" 2>/dev/null || true
+        launch_actp_worker
+      fi
+    else
+      launch_actp_worker
+      sleep 4
+      actp_recheck=$(curl -s --max-time 3 "http://localhost:8090/health" 2>/dev/null)
+      if [ -n "$actp_recheck" ]; then
+        log ":8090 RESTORED"
+      elif actp_pid=$(actp_worker_pid 2>/dev/null); then
+        log ":8090 still STARTING (pid $actp_pid) -- not spawning a duplicate"
+      else
+        log ":8090 FAILED to start -- check $LOG_DIR/safari-8090.log"
+      fi
+    fi
   fi
 
   # If every service came back healthy, clear the reinstall guard so a FUTURE
