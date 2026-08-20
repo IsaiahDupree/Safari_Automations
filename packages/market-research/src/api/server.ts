@@ -2433,7 +2433,7 @@ setInterval(async () => {
 // ─── Start Server ────────────────────────────────────────────────
 
 export function startServer(port: number = PORT): void {
-  app.listen(port, () => {
+  app.listen(port, '127.0.0.1', () => {
     console.log(`\n🔬 Market Research API running on http://localhost:${port}`);
     console.log(`   Auth: ${API_KEY ? 'ENABLED (X-API-Key header required)' : 'DISABLED (set RESEARCH_API_KEY to enable)'}`);
     console.log(`\n   ── RESEARCH ──`);

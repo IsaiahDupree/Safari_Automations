@@ -17,6 +17,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shlex
 import signal
 import shutil
@@ -49,6 +50,12 @@ SAFARI_CLAIMS = Path("/tmp/safari-tab-claims.json")
 BRIDGE_CLAIMS = RUNTIME_DIR / "chrome-claims.json"
 WORKSPACE = Path("/Users/isaiahdupree/Documents/Software")
 CANONICAL_CDP = "http://127.0.0.1:9222"
+SAFARI_CONTROL_URL = "http://127.0.0.1:5591"
+SAFARI_CONTROL_SOURCE = REPO_DIR / "ops" / "safari-control-broker.py"
+SAFARI_CONTROL_PROGRAM = RUNTIME_DIR / "safari-control-broker.py"
+SAFARI_CONTROL_TOKEN = RUNTIME_DIR / "safari-control.token"
+SAFARI_CONTROL_LOG = RUNTIME_DIR / "safari-control-broker.log"
+SAFARI_CONTROL_SESSION = "actp-safari-control"
 PROCESS_TABLE_CACHE_SECONDS = 0.35
 _process_table_lock = threading.Lock()
 _process_table_cache_at = 0.0
@@ -322,6 +329,23 @@ def http_json(url: str, timeout: float = 2) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
+def safari_control_json(path: str, data: dict[str, Any] | None = None, timeout: float = 4) -> Any:
+    token = SAFARI_CONTROL_TOKEN.read_text(encoding="utf-8").strip()
+    payload = json.dumps(data).encode("utf-8") if data is not None else None
+    request = urllib.request.Request(
+        f"{SAFARI_CONTROL_URL}{path}",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "ACTP-Browser-Enforcer/1",
+            "X-ACTP-Browser-Token": token,
+        },
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def port_listening(host: str, port: int, timeout: float = 1) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -351,6 +375,20 @@ def chrome_cdp_available(policy: dict[str, Any]) -> bool:
 
 
 def safari_counts() -> tuple[int, int, str | None]:
+    # The broker runs inside an already-authorized tmux identity. launchd
+    # itself may not receive AppleEvents/TCC permission, so use the broker
+    # first and retain direct control as a fallback for interactive/manual
+    # execution.
+    try:
+        value = safari_control_json("/counts", timeout=4)
+        if isinstance(value, dict) and value.get("control_available") is True:
+            windows = int(value["windows"])
+            tabs = int(value["tabs"])
+            if windows >= 0 and tabs >= 0:
+                return windows, tabs, None
+    except (KeyError, TypeError, ValueError, OSError, urllib.error.URLError, json.JSONDecodeError):
+        pass
+
     # Asking Safari for its window list can hang indefinitely when it is
     # running without a document. System Events can establish the zero-window
     # case without sending that problematic Apple event. When a window exists,
@@ -691,6 +729,15 @@ def trim_safari_tabs(policy: dict[str, Any]) -> int:
     excess = tabs - maximum
     if excess <= 0:
         return 0
+    try:
+        value = safari_control_json("/trim", {"maximum": maximum}, timeout=17)
+        if isinstance(value, dict) and value.get("control_available") is True:
+            closed = int(value.get("closed", 0))
+            if closed:
+                log(f"Safari tab cap enforced through control broker: closed={closed} max={maximum}")
+            return closed
+    except (OSError, ValueError, urllib.error.URLError, json.JSONDecodeError):
+        pass
     script = f"""
 tell application "Safari"
   set maximumTabs to {maximum}
@@ -1333,6 +1380,48 @@ def install_launch_agent(policy_path: Path) -> None:
     log(f"installed launch agent: {LAUNCH_AGENT}")
 
 
+def install_safari_control_broker() -> None:
+    """Run Safari AppleEvents behind the user's authorized tmux identity."""
+    if not SAFARI_CONTROL_SOURCE.exists():
+        raise RuntimeError(f"Safari control broker source is missing: {SAFARI_CONTROL_SOURCE}")
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SAFARI_CONTROL_SOURCE, SAFARI_CONTROL_PROGRAM)
+    SAFARI_CONTROL_PROGRAM.chmod(0o700)
+    if not SAFARI_CONTROL_TOKEN.exists():
+        SAFARI_CONTROL_TOKEN.write_text(secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+    SAFARI_CONTROL_TOKEN.chmod(0o600)
+    tmux = Path("/opt/homebrew/bin/tmux")
+    if not tmux.exists():
+        resolved_tmux = shutil.which("tmux")
+        if not resolved_tmux:
+            raise RuntimeError("tmux is required for the authorized Safari control broker")
+        tmux = Path(resolved_tmux)
+    subprocess.run([str(tmux), "kill-session", "-t", SAFARI_CONTROL_SESSION], capture_output=True)
+    broker = shlex.join([
+        "/usr/bin/nice", "-n", "8", "/usr/bin/python3", str(SAFARI_CONTROL_PROGRAM),
+        "--token-file", str(SAFARI_CONTROL_TOKEN),
+    ])
+    loop = f"while true; do {broker} >> {shlex.quote(str(SAFARI_CONTROL_LOG))} 2>&1; sleep 5; done"
+    shell_command = f"/bin/zsh -lc {shlex.quote(loop)}"
+    run([str(tmux), "new-session", "-d", "-s", SAFARI_CONTROL_SESSION, shell_command], timeout=10, check=True)
+    deadline = time.time() + 15
+    last_error = "not started"
+    while time.time() < deadline:
+        try:
+            health = safari_control_json("/health", timeout=2)
+            counts = safari_control_json("/counts", timeout=4)
+            if health.get("ok") is True and counts.get("control_available") is True:
+                log(
+                    "Safari control broker ready "
+                    f"windows={int(counts['windows'])} tabs={int(counts['tabs'])}"
+                )
+                return
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        time.sleep(0.5)
+    raise RuntimeError(f"Safari control broker failed readiness verification: {last_error}")
+
+
 def retire_legacy_fleet_watchdog() -> None:
     """Retire the service watchdog that previously duplicated lifecycle work.
 
@@ -1425,6 +1514,7 @@ def main() -> int:
     elif args.action == "install":
         configure_agents()
         if not args.no_start:
+            install_safari_control_broker()
             install_launch_agent(args.policy)
             retire_legacy_fleet_watchdog()
         else:

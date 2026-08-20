@@ -16,7 +16,7 @@ A controlled restart waits briefly for active claims, stops the browser, cools
 for 45 seconds, and only then relaunches the canonical singleton. A ten-minute
 restart backoff prevents restart loops.
 
-A separate one-second process guard terminates unauthorized Chrome profiles,
+A separate two-second process guard terminates unauthorized Chrome profiles,
 Chromium/Chrome-for-Testing, Playwright Firefox/WebKit, headless shells, and
 duplicate Safari roots. It continues running while a controlled browser restart
 is draining or cooling, and kills any browser that tries to relaunch before its
@@ -27,10 +27,18 @@ follows nested shells, conditionals, loops, functions, and `eval` so forbidden
 launches cannot hide behind shell syntax. Browser filenames remain safe to pass
 as data to inspection tools such as Git, `rg`, `sed`, and shell syntax checks.
 
-Safari AppleScript availability is reported separately as control health. A
+Safari window and tab control is served by an authenticated broker bound only
+to `127.0.0.1:5591`. The installer runs that broker inside the existing
+Apple-authorized tmux identity, while launchd reads counts and applies the cap
+through its token-protected loopback API. The token and installed broker are
+mode-restricted under the runtime directory. Apple Events are serialized so
+overlapping inspections and trims cannot race Safari.
+
+Safari control availability is reported separately as control health. A
 permission denial or transient AppleScript timeout does not by itself trigger
 a restart; CPU, memory, process, root, window, and tab limits remain the
-restart thresholds.
+restart thresholds. Installation fails if authenticated Safari counts cannot
+be read through the broker.
 
 Commands:
 
