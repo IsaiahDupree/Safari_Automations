@@ -21,6 +21,9 @@ Chromium/Chrome-for-Testing, Playwright Firefox/WebKit, headless shells, and
 duplicate Safari roots. It continues running while a controlled browser restart
 is draining or cooling, and kills any browser that tries to relaunch before its
 cooling deadline expires.
+The fast path queries exact kernel process names and confirms their full argv;
+if that targeted query fails, it completes the cycle from a full process
+snapshot instead of silently skipping enforcement.
 
 Agent command hooks call `check-command` before shell execution. The parser
 follows nested shells, conditionals, loops, functions, and `eval` so forbidden

@@ -164,24 +164,38 @@ def process_table() -> list[dict[str, Any]]:
 
 def browser_process_table() -> list[dict[str, Any]]:
     """Return only possible browser processes for the latency-sensitive guard."""
-    pattern = (
-        "Google Chrome|Chromium|Chrome for Testing|chrome-headless|headless_shell|"
-        "Firefox|MiniBrowser|WebKitTestRunner|ms-playwright|Playwright|"
-        "Safari\\.app/Contents/MacOS/Safari|Microsoft Edge|Brave Browser|"
-        "Arc\\.app/Contents/MacOS/Arc|Opera\\.app/Contents/MacOS/Opera|Vivaldi"
+    # Match kernel process names, not every full argv on the machine. The old
+    # `pgrep -f` path occasionally exceeded its deadline under load because it
+    # scanned all command lines. Include macOS's 16-character truncations for
+    # long executable names, then confirm every hit from its full argv below.
+    name_pattern = (
+        "Google Chrome|Google Chrome fo|Safari|Chromium|chrome|"
+        "chrome-headless-shell|chrome-headless-s|chromium_headless_shell|"
+        "chromium_headless|headless_shell|Firefox|firefox-bin|MiniBrowser|"
+        "WebKitTestRunner|WebKitTestRunne|Playwright|Microsoft Edge|"
+        "Brave Browser|Arc|Opera|Vivaldi"
     )
-    matches = run(["pgrep", "-if", pattern], timeout=3)
-    if matches.returncode not in (0, 1):
-        raise RuntimeError(f"browser process query failed: {matches.stderr.strip()}")
-    pids = sorted({int(value) for value in matches.stdout.split() if value.isdigit()})
-    if not pids:
-        return []
-    selected = run(
-        ["ps", "-p", ",".join(str(pid) for pid in pids), "-o", "pid=,ppid=,pcpu=,rss=,command="],
-        timeout=3,
-        check=True,
-    )
-    return parse_process_rows(selected.stdout)
+    try:
+        matches = run(["pgrep", "-ix", name_pattern], timeout=2)
+        if matches.returncode not in (0, 1):
+            raise RuntimeError(f"browser process query failed: {matches.stderr.strip()}")
+        pids = sorted({int(value) for value in matches.stdout.split() if value.isdigit()})
+        if not pids:
+            return []
+        selected = run(
+            ["ps", "-p", ",".join(str(pid) for pid in pids), "-o", "pid=,ppid=,pcpu=,rss=,command="],
+            timeout=3,
+        )
+        if selected.returncode not in (0, 1):
+            raise RuntimeError(f"browser process detail query failed: {selected.stderr.strip()}")
+        return parse_process_rows(selected.stdout)
+    except (subprocess.TimeoutExpired, OSError, RuntimeError):
+        # Never turn a query timeout into a skipped guard cycle. The slower
+        # full snapshot is an exceptional fallback and has its own 10s bound.
+        processes = process_table()
+        roots = chrome_roots(processes) + safari_roots(processes) + rogue_chromium_roots(processes)
+        root_pids = {process["pid"] for process in roots}
+        return [process for process in processes if process["pid"] in root_pids]
 
 
 def command_argv(command: str) -> list[str]:
@@ -861,7 +875,7 @@ def schedule_restart(browser: str, reason: str, state: dict[str, Any]) -> None:
 def fast_singleton_guard(policy: dict[str, Any]) -> None:
     """Kill forbidden browser roots quickly, independent of resource polling.
 
-    Many browser-backed renderers live for only a few seconds. A one-second
+    Many browser-backed renderers live for only a few seconds. A two-second
     process guard prevents those dormant or dynamically invoked paths from
     escaping the slower CPU/RSS/tab enforcement cycle.
     """
