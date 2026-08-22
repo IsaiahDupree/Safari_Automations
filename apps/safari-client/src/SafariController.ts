@@ -63,25 +63,8 @@ export class SafariController {
      * Execute AppleScript and return result
      */
     private async runAppleScript(script: string): Promise<string> {
-        try {
-            // Escape the script for shell
-            const escapedScript = script.replace(/'/g, "'\"'\"'");
-            const { stdout, stderr } = await execAsync(`osascript -e '${escapedScript}'`, {
-                timeout: this.timeout
-            });
-            
-            if (stderr && !stderr.includes('missing value')) {
-                logger.debug('AppleScript stderr:', { stderr });
-            }
-            
-            return stdout.trim();
-        } catch (error: any) {
-            logger.error('AppleScript error:', { 
-                error: error.message,
-                script: script.substring(0, 200)
-            });
-            throw error;
-        }
+        void script;
+        throw new Error('Legacy SafariController is disabled: use a lane-aware service with a Window 2 TabCoordinator claim');
     }
 
     /**
@@ -928,6 +911,9 @@ end tell`;
      * Returns the path to the screenshot file
      */
     async takeScreenshot(filename?: string): Promise<string> {
+        void filename;
+        throw new Error('Legacy SafariController screenshots are disabled; use a lane-aware owned-tab service');
+        /* c8 ignore start -- retained only for source compatibility, unreachable by policy */
         const screenshotDir = path.join(process.cwd(), 'screenshots');
         
         // Ensure screenshots directory exists
@@ -973,6 +959,7 @@ return "${screenshotPath}"
                 throw fallbackError;
             }
         }
+        /* c8 ignore stop */
     }
 
     /**

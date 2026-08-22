@@ -7,6 +7,7 @@
  */
 
 import { exec } from 'child_process';
+import { readFile } from 'node:fs/promises';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -32,15 +33,51 @@ const SEEDED_TOPICS = [
 const EXPLORE_URL = 'https://x.com/explore/tabs/trending';
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
+const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
+const CLAIM_TTL_MS = 60_000;
+
+async function getMarketResearchClaim() {
+  const client = await import('../../../shared/safari-lane-client.js');
+  await client.requireSafariLanePermit('background');
+  const raw = JSON.parse(await readFile(CLAIMS_FILE, 'utf8'));
+  const claims = Array.isArray(raw) ? raw : raw.claims;
+  const now = Date.now();
+  const claim = Array.isArray(claims) && claims.find(item =>
+    item && item.agentId === 'market-research-stable' && item.service === 'market-research' &&
+    item.windowIndex === 2 && item.agentOwned === true && Number.isInteger(item.tabIndex) &&
+    Number.isInteger(item.windowId) && item.windowId > 0 &&
+    typeof item.heartbeat === 'number' && now - item.heartbeat < CLAIM_TTL_MS
+  );
+  if (!claim) throw new Error('Trending scraper requires a live market-research claim in Safari agent Window 2');
+  const { stdout } = await execAsync(`osascript << 'ASEOF'
+tell application "Safari"
+  try
+    set agentWindow to first window whose id is ${claim.windowId}
+    if (count of tabs of agentWindow) < ${claim.tabIndex} then return "not_owned"
+    return do JavaScript "window.name" in tab ${claim.tabIndex} of agentWindow
+  on error
+    return "not_owned"
+  end try
+end tell
+ASEOF`, { timeout: 10_000 });
+  if (!stdout.trim().startsWith('__ACTP_SAFARI_AGENT_TAB__:')) {
+    throw new Error('Trending scraper claim no longer resolves to an ACTP-owned Safari tab');
+  }
+  return claim;
+}
 
 async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
 async function executeJS(script) {
+  const claim = await getMarketResearchClaim();
   const tmpFile = `/tmp/safari_trending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`;
   const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+  const appleScript = `tell application "Safari"
+set agentWindow to first window whose id is ${claim.windowId}
+return do JavaScript "${jsCode}" in tab ${claim.tabIndex} of agentWindow
+end tell`;
   const fs = await import('fs');
   fs.writeFileSync(tmpFile, appleScript);
   try {
@@ -52,8 +89,14 @@ async function executeJS(script) {
 }
 
 async function navigateSafari(url) {
+  const claim = await getMarketResearchClaim();
   const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+  await execAsync(`osascript << 'ASEOF'
+tell application "Safari"
+  set agentWindow to first window whose id is ${claim.windowId}
+  set URL of tab ${claim.tabIndex} of agentWindow to "${safeUrl}"
+end tell
+ASEOF`);
 }
 
 async function waitForPage(ms = 4000) {

@@ -385,6 +385,7 @@ Examples:
 // === MAIN ===
 
 async function main() {
+  throw new Error('Direct Safari DM CLI is disabled; use the lane-aware Instagram DM service on port 3100');
   const [cmd, ...args] = process.argv.slice(2);
   
   if (!cmd || !commands[cmd as keyof typeof commands]) {

@@ -1400,6 +1400,7 @@ class TikTokNotifications:
     
     def _run_applescript(self, script: str) -> tuple:
         """Execute AppleScript."""
+        raise RuntimeError("Legacy direct Safari TikTok activity control is disabled; use the claimed TikTok service")
         import subprocess
         try:
             result = subprocess.run(

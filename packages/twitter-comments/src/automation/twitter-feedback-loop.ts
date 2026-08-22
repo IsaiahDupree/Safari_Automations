@@ -28,6 +28,12 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
+async function requireSafariBackgroundPermit(): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
+  await client.requireSafariLanePermit('background');
+}
+
 const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
 const CHECKBACKS_HOLDER = 'twitter-feedback-loop';
 
@@ -188,6 +194,9 @@ export class TweetPerformanceTracker {
   }
 
   setTrackedTab(windowIndex: number, tabIndex: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
+      throw new Error('TweetPerformanceTracker accepts claims only in agent Window 2');
+    }
     this._trackedWindow = windowIndex;
     this._trackedTab = tabIndex;
   }
@@ -246,11 +255,13 @@ export class TweetPerformanceTracker {
       return null;
     }
     try {
+      await requireSafariBackgroundPermit();
+      if (this._trackedWindow !== 2 || !this._trackedTab) {
+        throw new Error('Twitter metric extraction requires a claimed Safari agent tab in Window 2');
+      }
       // Navigate to the tweet
       const safeUrl = tweetUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
+      const tabSpec = `tab ${this._trackedTab} of window 2`;
       await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
 
       // Smart wait: poll for tweet article to render (X is slow)
@@ -261,9 +272,7 @@ export class TweetPerformanceTracker {
           const checkTmp = path.join(os.tmpdir(), `safari_check_${Date.now()}.scpt`);
           const checkJs = `(function(){ return document.querySelector('article[data-testid="tweet"]') ? 'found' : 'waiting'; })()`;
           const checkEsc = checkJs.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-          const checkTabSpec = (this._trackedWindow && this._trackedTab)
-            ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-            : `current tab of front window`;
+          const checkTabSpec = `tab ${this._trackedTab} of window 2`;
           fs.writeFileSync(checkTmp, `tell application "Safari" to do JavaScript "${checkEsc}" in ${checkTabSpec}`);
           const { stdout } = await execAsync(`osascript "${checkTmp}"`, { timeout: 5000 });
           try { fs.unlinkSync(checkTmp); } catch {}
@@ -343,9 +352,7 @@ export class TweetPerformanceTracker {
         })()
       `.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 
-      const metricsTabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
+      const metricsTabSpec = `tab ${this._trackedTab} of window 2`;
       const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${metricsTabSpec}`;
       fs.writeFileSync(tmpFile, appleScript);
 
@@ -849,6 +856,10 @@ export class TwitterFeedbackLoop {
 
   getOffers(): OfferContext[] { return [...this.offers]; }
   getNiches(): NicheContext[] { return [...this.niches]; }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this.tracker.setTrackedTab(windowIndex, tabIndex);
+  }
 
   // ─── Step 1: Register a posted tweet ───────────────────────
 

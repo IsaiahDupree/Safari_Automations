@@ -116,12 +116,60 @@ const activeCoordinators = new Map<string, TabCoordinator>();
 
 const STABLE_AGENT_ID = 'market-research-stable';
 let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
-let stableClaim: { windowIndex: number; tabIndex: number } | null = null;
+let stableClaim: {
+  windowIndex: number;
+  windowId: number;
+  tabIndex: number;
+  ownershipMarker: string;
+} | null = null;
 setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
+
+type BackgroundSafariOperation = {
+  finish: () => Promise<void>;
+};
+
+/**
+ * Extend the response-scoped Safari lease for work that intentionally
+ * continues after res.json(). The extra ref is acquired before the response
+ * finishes, heartbeated independently, and always released by the job.
+ */
+async function beginBackgroundSafariOperation(label: string): Promise<BackgroundSafariOperation> {
+  const coordinator = stableCoord;
+  if (!coordinator) {
+    throw new Error(`Cannot start ${label}: no claimed Safari agent tab`);
+  }
+
+  await coordinator.beginOperation();
+  let finished = false;
+  const heartbeat = setInterval(() => {
+    void coordinator.heartbeat().catch((error) => {
+      console.warn(`[Safari operation:${label}] heartbeat failed:`, String(error));
+    });
+  }, 15_000);
+  heartbeat.unref?.();
+
+  return {
+    finish: async () => {
+      if (finished) return;
+      finished = true;
+      clearInterval(heartbeat);
+      await coordinator.endOperation();
+    },
+  };
+}
+
 let tabDriver: SafariDriver | null = null;
 function getTabDriver(): SafariDriver {
   if (!tabDriver) tabDriver = new SafariDriver();
   return tabDriver;
+}
+
+function pinResearcher<T extends { setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void }>(researcher: T): T {
+  if (!stableClaim || stableClaim.windowIndex !== 2 || !Number.isInteger(stableClaim.windowId)) {
+    throw new Error('Market research requires a claimed Safari agent tab in Window 2');
+  }
+  researcher.setTrackedTab(stableClaim.windowIndex, stableClaim.tabIndex, stableClaim.windowId);
+  return researcher;
 }
 
 // ─── Auth & Webhooks ─────────────────────────────────────────────
@@ -421,7 +469,7 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
 
   switch (platform) {
     case 'twitter':
-      const twitter = new TwitterResearcher({
+      const twitter = pinResearcher(new TwitterResearcher({
         tweetsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         enrichTopCreators: config.enrichTopCreators ?? 10,
@@ -429,13 +477,10 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
         ...config,
-      });
-      if (stableClaim) {
-        twitter.setTrackedTab(stableClaim.windowIndex, stableClaim.tabIndex);
-      }
+      }));
       return twitter;
     case 'threads':
-      return new ThreadsResearcher({
+      return pinResearcher(new ThreadsResearcher({
         postsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         enrichTopCreators: config.enrichTopCreators ?? 10,
@@ -443,9 +488,9 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
         ...config,
-      });
+      }));
     case 'instagram':
-      return new InstagramResearcher({
+      return pinResearcher(new InstagramResearcher({
         postsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         detailedScrapeTop: config.detailedScrapeTop || 50,
@@ -453,25 +498,25 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
         ...config,
-      });
+      }));
     case 'facebook':
-      return new FacebookResearcher({
+      return pinResearcher(new FacebookResearcher({
         postsPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         scrollPauseMs: config.scrollPauseMs || 2000,
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
         ...config,
-      });
+      }));
     case 'tiktok':
-      return new TikTokResearcher({
+      return pinResearcher(new TikTokResearcher({
         videosPerNiche: config.postsPerNiche || 1000,
         creatorsPerNiche: config.creatorsPerNiche || 100,
         scrollPauseMs: config.scrollPauseMs || 1800,
         maxScrollsPerSearch: config.maxScrollsPerSearch || 200,
         outputDir,
         ...config,
-      });
+      }));
     default:
       throw new Error(`Unknown platform: ${platform}`);
   }
@@ -564,25 +609,13 @@ app.use(authMiddleware);
 // Every automation route MUST have an active tab claim before it runs.
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+// Only in-memory status/readiness routes are exempt. Any route that may touch
+// Safari must acquire a response-scoped operation lease.
 const OPEN_URL = 'https://www.google.com';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/(?:research|scheduler|feedback)\/status$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-  if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
-    stableClaim = { windowIndex: myClaim.windowIndex, tabIndex: myClaim.tabIndex };
-    getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    next();
-    return;
-  }
-
-  // No claim — auto-claim now (open new tab if needed)
   try {
     if (!stableCoord) {
       stableCoord = new TabCoordinator(
@@ -594,9 +627,18 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
       );
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
-    const claim = await stableCoord.claim();
-    stableClaim = { windowIndex: claim.windowIndex, tabIndex: claim.tabIndex };
-    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    const claim = await stableCoord.beginRequestOperation(res);
+    if (!Number.isInteger(claim.windowId) || Number(claim.windowId) <= 0 || !claim.ownershipMarker) {
+      throw new Error('Market research claim lacks stable ownership identity');
+    }
+    stableClaim = {
+      windowIndex: claim.windowIndex,
+      windowId: Number(claim.windowId),
+      tabIndex: claim.tabIndex,
+      ownershipMarker: claim.ownershipMarker,
+    };
+    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    feedbackLoop.setTrackedTab(claim.windowIndex, claim.tabIndex);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -787,27 +829,44 @@ app.post('/api/research/:platform/niche', async (req: Request, res: Response) =>
     return;
   }
 
-  // Return immediately with job ID (async default)
-  res.json({ jobId: job.id, status: 'running', platform, niche });
-
-  // Run async
+  let backgroundOperation: BackgroundSafariOperation;
   try {
-    const researcher = createResearcher(platform, config || {});
-    const result = await (researcher as any).researchNiche(niche);
-    const filepath = await (researcher as any).saveResults([result], 'niche');
-
-    job.status = 'completed';
-    job.completedAt = new Date().toISOString();
-    job.durationMs = Date.now() - new Date(job.startedAt).getTime();
-    job.resultFile = filepath;
-    job.progress = { currentNiche: niche, nichesCompleted: 1, totalNiches: 1 };
+    backgroundOperation = await beginBackgroundSafariOperation(`niche:${job.id}`);
   } catch (e) {
     job.status = 'failed';
     job.error = String(e);
     job.completedAt = new Date().toISOString();
+    runningByPlatform.delete(platform);
+    if (currentJob?.id === job.id) currentJob = null;
+    res.status(503).json({ error: 'Unable to reserve Safari for background research', detail: String(e), jobId: job.id });
+    return;
   }
-  runningByPlatform.delete(platform);
-  if (currentJob?.id === job.id) currentJob = null;
+
+  // Return immediately with job ID (async default). The explicit operation
+  // ref above remains live after the response-scoped middleware ref releases.
+  res.json({ jobId: job.id, status: 'running', platform, niche });
+
+  try {
+    try {
+      const researcher = createResearcher(platform, config || {});
+      const result = await (researcher as any).researchNiche(niche);
+      const filepath = await (researcher as any).saveResults([result], 'niche');
+
+      job.status = 'completed';
+      job.completedAt = new Date().toISOString();
+      job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+      job.resultFile = filepath;
+      job.progress = { currentNiche: niche, nichesCompleted: 1, totalNiches: 1 };
+    } catch (e) {
+      job.status = 'failed';
+      job.error = String(e);
+      job.completedAt = new Date().toISOString();
+    }
+    runningByPlatform.delete(platform);
+    if (currentJob?.id === job.id) currentJob = null;
+  } finally {
+    await backgroundOperation.finish();
+  }
 });
 
 // ─── Multi-niche research (async, returns job ID) ────────────────
@@ -845,31 +904,46 @@ app.post('/api/research/:platform/full', async (req: Request, res: Response, nex
   jobs.set(job.id, job);
   currentJob = job;
 
-  res.json({ jobId: job.id, status: 'running', platform, niches, estimatedMinutes: niches.length * 5 });
-
-  // Run async
+  let backgroundOperation: BackgroundSafariOperation;
   try {
-    const researcher = createResearcher(platform, config || {});
-    const { results, summary } = await (researcher as any).runFullResearch(niches);
-
-    job.status = 'completed';
-    job.completedAt = new Date().toISOString();
-    job.durationMs = summary.totalDurationMs;
-    job.progress = { currentNiche: niches[niches.length - 1], nichesCompleted: niches.length, totalNiches: niches.length };
-
-    // Find the latest saved file
-    const files = listResultFiles(platform);
-    if (files.length > 0) job.resultFile = path.join(DEFAULT_OUTPUT_DIR, files[0].filename);
-
-    // Log to Supabase
-    logResearchJob({ job, niches, resultCount: results?.length ?? 0, durationMs: summary.totalDurationMs }).catch(() => {});
+    backgroundOperation = await beginBackgroundSafariOperation(`full:${job.id}`);
   } catch (e) {
     job.status = 'failed';
     job.error = String(e);
     job.completedAt = new Date().toISOString();
-    logResearchJob({ job, niches, resultCount: 0, durationMs: 0 }).catch(() => {});
+    currentJob = null;
+    res.status(503).json({ error: 'Unable to reserve Safari for background research', detail: String(e), jobId: job.id });
+    return;
   }
-  currentJob = null;
+
+  res.json({ jobId: job.id, status: 'running', platform, niches, estimatedMinutes: niches.length * 5 });
+
+  try {
+    try {
+      const researcher = createResearcher(platform, config || {});
+      const { results, summary } = await (researcher as any).runFullResearch(niches);
+
+      job.status = 'completed';
+      job.completedAt = new Date().toISOString();
+      job.durationMs = summary.totalDurationMs;
+      job.progress = { currentNiche: niches[niches.length - 1], nichesCompleted: niches.length, totalNiches: niches.length };
+
+      // Find the latest saved file
+      const files = listResultFiles(platform);
+      if (files.length > 0) job.resultFile = path.join(DEFAULT_OUTPUT_DIR, files[0].filename);
+
+      // Log to Supabase
+      logResearchJob({ job, niches, resultCount: results?.length ?? 0, durationMs: summary.totalDurationMs }).catch(() => {});
+    } catch (e) {
+      job.status = 'failed';
+      job.error = String(e);
+      job.completedAt = new Date().toISOString();
+      logResearchJob({ job, niches, resultCount: 0, durationMs: 0 }).catch(() => {});
+    }
+    currentJob = null;
+  } finally {
+    await backgroundOperation.finish();
+  }
 });
 
 // ─── Twitter top-100 creators (sync, 10 niches × 10 creators) ───
@@ -920,14 +994,14 @@ app.post('/api/research/twitter/top100', async (req: Request, res: Response) => 
   console.log(`[top100] Starting Twitter top-100: ${niches.length} niches × ${creatorsPerNiche} creators each`);
 
   try {
-    const researcher = new TwitterResearcher({
+    const researcher = pinResearcher(new TwitterResearcher({
       tweetsPerNiche: postsPerNiche,
       creatorsPerNiche,
       enrichTopCreators,
       scrollPauseMs: 1500,
       maxScrollsPerSearch: 50,
       ...extraConfig,
-    });
+    }));
 
     const allCreators: any[] = [];
     const nicheResults: any[] = [];
@@ -1036,14 +1110,14 @@ app.post('/api/research/threads/top100', async (req: Request, res: Response) => 
   console.log(`[top100-threads] Starting Threads top-100: ${niches.length} niches × ${creatorsPerNiche} creators each`);
 
   try {
-    const researcher = new ThreadsResearcher({
+    const researcher = pinResearcher(new ThreadsResearcher({
       postsPerNiche,
       creatorsPerNiche,
       enrichTopCreators,
       scrollPauseMs: 1500,
       maxScrollsPerSearch: 50,
       ...extraConfig,
-    });
+    }));
 
     const allCreators: any[] = [];
     const nicheResults: any[] = [];
@@ -1137,7 +1211,7 @@ app.post('/api/research/instagram/competitor', async (req: Request, res: Respons
   console.log(`[competitor-ig] @${handle}: maxPosts=${maxPosts} detailedTop=${detailedScrapeTop}`);
 
   try {
-    const researcher = new InstagramResearcher({ timeout: 45000 });
+    const researcher = pinResearcher(new InstagramResearcher({ timeout: 45000 }));
     const result = await researcher.competitorResearch(handle, maxPosts, detailedScrapeTop);
 
     job.status = 'completed';
@@ -1194,6 +1268,18 @@ app.post('/api/research/all/full', async (req: Request, res: Response) => {
   jobs.set(job.id, job);
   currentJob = job;
 
+  let backgroundOperation: BackgroundSafariOperation;
+  try {
+    backgroundOperation = await beginBackgroundSafariOperation(`all-full:${job.id}`);
+  } catch (e) {
+    job.status = 'failed';
+    job.error = String(e);
+    job.completedAt = new Date().toISOString();
+    currentJob = null;
+    res.status(503).json({ error: 'Unable to reserve Safari for background research', detail: String(e), jobId: job.id });
+    return;
+  }
+
   res.json({
     jobId: job.id,
     status: 'running',
@@ -1205,59 +1291,63 @@ app.post('/api/research/all/full', async (req: Request, res: Response) => {
   // Run async: one platform at a time (they share Safari)
   const allResults: Record<string, any> = {};
   try {
-    for (let pi = 0; pi < activePlatforms.length; pi++) {
-      const platform = activePlatforms[pi];
-      job.progress = {
-        currentNiche: `${platform} (${pi + 1}/${activePlatforms.length})`,
-        nichesCompleted: pi * niches.length,
-        totalNiches: activePlatforms.length * niches.length,
-      };
+    try {
+      for (let pi = 0; pi < activePlatforms.length; pi++) {
+        const platform = activePlatforms[pi];
+        job.progress = {
+          currentNiche: `${platform} (${pi + 1}/${activePlatforms.length})`,
+          nichesCompleted: pi * niches.length,
+          totalNiches: activePlatforms.length * niches.length,
+        };
 
-      try {
-        const researcher = createResearcher(platform, config || {});
-        const { results } = await (researcher as any).runFullResearch(niches);
-        allResults[platform] = results;
-      } catch (e) {
-        console.error(`[Research] ${platform} failed:`, e);
-        allResults[platform] = { error: String(e) };
+        try {
+          const researcher = createResearcher(platform, config || {});
+          const { results } = await (researcher as any).runFullResearch(niches);
+          allResults[platform] = results;
+        } catch (e) {
+          console.error(`[Research] ${platform} failed:`, e);
+          allResults[platform] = { error: String(e) };
+        }
       }
-    }
 
-    // Save combined results
-    const combinedDir = path.join(DEFAULT_OUTPUT_DIR, 'combined');
-    if (!fs.existsSync(combinedDir)) fs.mkdirSync(combinedDir, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filepath = path.join(combinedDir, `all-platforms-${timestamp}.json`);
-    const summary = summarizeCrossPlatformResults(activePlatforms, allResults);
-    fs.writeFileSync(filepath, JSON.stringify({
-      metadata: {
-        generatedAt: new Date().toISOString(),
-        platforms: activePlatforms,
-        niches,
-        status: summary.status,
-        platformReceipts: summary.receipts,
-      },
-      results: allResults,
-    }, null, 2));
+      // Save combined results
+      const combinedDir = path.join(DEFAULT_OUTPUT_DIR, 'combined');
+      if (!fs.existsSync(combinedDir)) fs.mkdirSync(combinedDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filepath = path.join(combinedDir, `all-platforms-${timestamp}.json`);
+      const summary = summarizeCrossPlatformResults(activePlatforms, allResults);
+      fs.writeFileSync(filepath, JSON.stringify({
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          platforms: activePlatforms,
+          niches,
+          status: summary.status,
+          platformReceipts: summary.receipts,
+        },
+        results: allResults,
+      }, null, 2));
 
-    job.status = summary.status;
-    job.completedAt = new Date().toISOString();
-    job.durationMs = Date.now() - new Date(job.startedAt).getTime();
-    job.resultFile = filepath;
-    job.platformReceipts = summary.receipts;
-    if (summary.status !== 'completed') {
-      const failedPlatforms = summary.receipts
-        .filter((receipt) => receipt.status === 'failed')
-        .map((receipt) => receipt.platform);
-      job.error = `Platform research failed: ${failedPlatforms.join(', ')}`;
+      job.status = summary.status;
+      job.completedAt = new Date().toISOString();
+      job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+      job.resultFile = filepath;
+      job.platformReceipts = summary.receipts;
+      if (summary.status !== 'completed') {
+        const failedPlatforms = summary.receipts
+          .filter((receipt) => receipt.status === 'failed')
+          .map((receipt) => receipt.platform);
+        job.error = `Platform research failed: ${failedPlatforms.join(', ')}`;
+      }
+      job.progress = { currentNiche: 'done', nichesCompleted: activePlatforms.length * niches.length, totalNiches: activePlatforms.length * niches.length };
+    } catch (e) {
+      job.status = 'failed';
+      job.error = String(e);
+      job.completedAt = new Date().toISOString();
     }
-    job.progress = { currentNiche: 'done', nichesCompleted: activePlatforms.length * niches.length, totalNiches: activePlatforms.length * niches.length };
-  } catch (e) {
-    job.status = 'failed';
-    job.error = String(e);
-    job.completedAt = new Date().toISOString();
+    currentJob = null;
+  } finally {
+    await backgroundOperation.finish();
   }
-  currentJob = null;
 });
 
 // ─── Job status ──────────────────────────────────────────────────
@@ -2326,8 +2416,9 @@ app.post('/api/tabs/claim', async (req, res) => {
       );
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.claim(windowIndex, tabIndex);
-    res.json({ ok: true, claim });
+    const claim = await coord.ensureOwnedTab(windowIndex, tabIndex);
+    activeCoordinators.delete(agentId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
@@ -2344,10 +2435,12 @@ app.post('/api/tabs/release', async (req, res) => {
 app.post('/api/tabs/heartbeat', async (req, res) => {
   const { agentId } = req.body;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  const coord = activeCoordinators.get(agentId);
-  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
-  await coord.heartbeat();
-  res.json({ ok: true, heartbeat: Date.now() });
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
 
 app.get('/api/session/status', (req, res) => {

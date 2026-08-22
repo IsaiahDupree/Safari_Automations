@@ -223,6 +223,10 @@ export class ThreadsAutoCommenter {
     });
   }
 
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern = 'threads.net', windowId?: number): void {
+    this.driver.setTrackedTab(windowIndex, tabIndex, urlPattern, windowId);
+  }
+
   private wait(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -259,16 +263,12 @@ export class ThreadsAutoCommenter {
 
   async extractContext(): Promise<PostContext> {
     const context = await this.driver.getContext();
-    const { stdout: urlOut } = await import('child_process').then(cp => 
-      import('util').then(util => util.promisify(cp.exec)(
-        `osascript -e 'tell application "Safari" to get URL of current tab of front window'`
-      ))
-    );
+    const currentUrl = await this.driver.getCurrentUrl();
     
     return {
       mainPost: context.mainPost,
       username: context.username,
-      postUrl: urlOut.trim(),
+      postUrl: currentUrl,
       replies: context.replies,
       likeCount: context.likeCount,
       replyCount: context.replyCount,

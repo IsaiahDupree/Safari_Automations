@@ -233,6 +233,7 @@ class SafariSessionManager:
     
     def _run_applescript(self, script: str, timeout: int = 30) -> tuple[bool, str]:
         """Run AppleScript and return success status and output."""
+        raise RuntimeError("Legacy direct Safari session inspection is disabled; use a claimed Window 2 service")
         try:
             result = subprocess.run(
                 ['osascript', '-e', script],

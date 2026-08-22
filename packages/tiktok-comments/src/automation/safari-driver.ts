@@ -12,6 +12,23 @@ import * as path from 'path';
 import type { AutomationConfig } from './types.js';
 
 const execAsync = promisify(exec);
+function dormantCompatibilityDriverDisabled(): boolean { return true; }
+
+async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
+  const clientPath = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown>;
+  };
+  await client.requireSafariLanePermit(mode);
+}
+
+async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
+  const clientPath = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T>;
+  };
+  return client.runSafariForegroundInput(activateOwnedTab, performInput);
+}
 
 export interface SessionInfo {
   found: boolean;
@@ -29,6 +46,10 @@ export class SafariDriver {
   private static SESSION_VERIFY_TTL_MS = 5000; // re-verify every 5s
 
   constructor(config: Partial<AutomationConfig> = {}) {
+    if (dormantCompatibilityDriverDisabled()) throw Object.assign(
+      new Error('Dormant generic TikTok Safari driver is disabled; use TikTokDriver with a stable TabCoordinator claim'),
+      { code: 'RAW_SAFARI_AUTOMATION_DISABLED' },
+    );
     this.config = {
       instanceType: config.instanceType || 'local',
       remoteUrl: config.remoteUrl,
@@ -45,6 +66,7 @@ export class SafariDriver {
     if (this.config.instanceType === 'remote' && this.config.remoteUrl) {
       return this.executeRemoteJS(js);
     }
+    await requireSafariPermit('background');
     return this.executeLocalJS(js);
   }
 
@@ -53,15 +75,16 @@ export class SafariDriver {
    * Uses the tracked window/tab when available — avoids "front document" ambiguity.
    */
   private async executeLocalJS(js: string): Promise<string> {
+    await requireSafariPermit('background');
+    if (this.trackedWindow !== 2 || !this.trackedTab) {
+      throw new Error('Background Safari JS requires a claimed tab in agent Window 2');
+    }
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
 
     await fs.writeFile(tempFile, cleanJS);
 
-    // Use tracked tab if we have one; otherwise fall back to front document
-    const tabSpec = (this.trackedWindow && this.trackedTab)
-      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
-      : 'front document';
+    const tabSpec = `tab ${this.trackedTab} of window ${this.trackedWindow}`;
 
     const script = `
       set jsCode to read POSIX file "${tempFile}" as «class utf8»
@@ -93,6 +116,8 @@ export class SafariDriver {
    * Execute JavaScript in a specific window+tab regardless of tracking state.
    */
   async executeJSInTab(js: string, windowIndex: number, tabIndex: number): Promise<string> {
+    await requireSafariPermit('background');
+    if (windowIndex !== 2) throw new Error('Refusing background JS outside Safari agent Window 2');
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
     const tempFile = path.join(os.tmpdir(), `safari-js-${Date.now()}-${Math.random().toString(36).substr(2, 6)}.js`);
     await fs.writeFile(tempFile, cleanJS);
@@ -143,17 +168,12 @@ export class SafariDriver {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (this.config.instanceType === 'local') {
-        if (this.trackedWindow && this.trackedTab) {
-          await execAsync(
-            `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
-            { timeout: this.config.timeout }
-          );
-        } else {
-          await execAsync(
-            `osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`,
-            { timeout: this.config.timeout }
-          );
-        }
+        if (this.trackedWindow !== 2 || !this.trackedTab) throw new Error('Navigation requires a claimed Safari agent tab');
+        await requireSafariPermit('background');
+        await execAsync(
+          `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window 2 to "${safeUrl}"'`,
+          { timeout: this.config.timeout }
+        );
       } else {
         await this.executeRemoteJS(`window.location.href = "${safeUrl}"`);
       }
@@ -173,8 +193,10 @@ export class SafariDriver {
   async getCurrentUrl(): Promise<string> {
     try {
       if (this.config.instanceType === 'local') {
+        if (this.trackedWindow !== 2 || !this.trackedTab) return '';
+        await requireSafariPermit('background');
         const { stdout } = await execAsync(
-          `osascript -e 'tell application "Safari" to get URL of front document'`
+          `osascript -e 'tell application "Safari" to get URL of tab ${this.trackedTab} of window 2'`
         );
         return stdout.trim();
       } else {
@@ -349,7 +371,7 @@ export class SafariDriver {
       return { found: false, windowIndex: 1, tabIndex: 1, url: '' };
     }
     try {
-      const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '1', 10);
+      const automationWindow = parseInt(process.env.SAFARI_AUTOMATION_WINDOW || '2', 10);
     const script = `
 tell application "Safari"
   if (count of windows) < ${automationWindow} then return "not_found:0:0:"
@@ -389,6 +411,8 @@ end tell`;
    */
   async _switchToTab(windowIndex: number, tabIndex: number): Promise<boolean> {
     try {
+      await requireSafariPermit('interactive');
+      if (windowIndex !== 2) throw new Error('Refusing to switch a human-lane Safari tab');
       const script = `
 tell application "Safari"
   set current tab of window ${windowIndex} to tab ${tabIndex} of window ${windowIndex}
@@ -408,6 +432,7 @@ end tell`;
    */
   async activateTab(windowIndex: number, tabIndex: number): Promise<boolean> {
     try {
+      if (windowIndex !== 2) throw new Error('Refusing to activate a human-lane Safari tab');
       const script = `
 tell application "Safari"
   activate
@@ -420,7 +445,10 @@ tell application "System Events"
     perform action "AXRaise" of front window of process "Safari"
   end try
 end tell`;
-      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await withSafariForegroundInput(
+        async () => { await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`); },
+        async () => undefined,
+      );
       await this.wait(300);
       return true;
     } catch (error) {
@@ -436,6 +464,8 @@ end tell`;
   async getTabUrl(windowIndex: number, tabIndex: number): Promise<string> {
     if (this.config.instanceType !== 'local') return '';
     try {
+      await requireSafariPermit('background');
+      if (windowIndex !== 2 || windowIndex !== this.trackedWindow || tabIndex !== this.trackedTab) return '';
       const { stdout } = await execAsync(
         `osascript -e 'tell application "Safari" to get URL of tab ${tabIndex} of window ${windowIndex}'`
       );
@@ -551,7 +581,10 @@ tell application "System Events"
     perform action "AXRaise" of front window of process "Safari"
   end try
 end tell`;
-      await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
+      await withSafariForegroundInput(
+        async () => { await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`); },
+        async () => undefined,
+      );
       return true;
     } catch {
       return false;

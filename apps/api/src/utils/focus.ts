@@ -53,6 +53,10 @@ function validateApp(appName: string): appName is FocusableApp {
 }
 
 function focusExistingProcess(appName: FocusableApp): boolean {
+  if (appName === 'Safari') {
+    logger.warn('[focus] Direct Safari focus is disabled; use an owned Window 2 tab through a lane-aware service');
+    return false;
+  }
   const status = readEnforcerStatus();
   if (!status) return false;
 
@@ -105,32 +109,8 @@ export function ensureAppFocused(appName: string): boolean {
     return false;
   }
 
-  let status = readEnforcerStatus();
-  if (!status) return false;
-  const remaining = coolingRemaining(status, 'safari');
-  if (remaining > 0) {
-    logger.warn(`[focus] Safari is cooling for ${remaining}s; ensure denied`);
-    return false;
-  }
-
-  if (!hasManagedRoot(status, 'Safari')) {
-    try {
-      execFileSync('/usr/bin/python3', [BROWSER_ENFORCER, 'ensure', 'safari'], {
-        timeout: 30_000,
-        stdio: 'pipe',
-      });
-    } catch (err: any) {
-      logger.warn(`[focus] Browser enforcer could not ensure Safari: ${err.message}`);
-      return false;
-    }
-    status = readEnforcerStatus();
-    if (!status || coolingRemaining(status, 'safari') > 0 || !hasManagedRoot(status, 'Safari')) {
-      logger.warn('[focus] Safari did not become available through the browser enforcer');
-      return false;
-    }
-  }
-
-  return focusExistingProcess('Safari');
+  logger.warn('[focus] Direct Safari ensure/focus is disabled; use a lane-aware service');
+  return false;
 }
 
 /** Get Safari state without causing AppleScript to launch the application. */
@@ -165,14 +145,8 @@ tell application "System Events"
 end tell
 tell application "Safari"
     set wc to count of windows
-    set u to ""
-    set t to ""
-    try
-        set u to URL of front document
-        set t to name of front document
-    end try
 end tell
-return (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t`], {
+return (isFront as text) & "|" & (wc as text)`], {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
@@ -182,8 +156,8 @@ return (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t`], {
       running: true,
       frontmost: parts[0] === 'true',
       windowCount: parseInt(parts[1], 10) || 0,
-      currentUrl: parts[2] || '',
-      pageTitle: parts[3] || '',
+      currentUrl: '',
+      pageTitle: '',
       cooling: false,
       cooldownRemainingSeconds: 0,
     };
@@ -214,23 +188,9 @@ export function getFrontmostApp(): string | null {
 
 /** Focus the sole managed Safari window. */
 export function focusSafariWindow(windowIndex: number = 1): boolean {
-  if (windowIndex !== 1 || !focusSafari()) {
-    return false;
-  }
-  const state = getSafariState();
-  if (!state.running || state.cooling || windowIndex > state.windowCount) return false;
-
-  try {
-    execFileSync('/usr/bin/osascript', ['-e', `
-tell application "Safari"
-    set index of window ${windowIndex} to 1
-end tell`], { timeout: 5000, stdio: 'pipe' });
-    logger.info(`[focus] Safari window ${windowIndex} focused`);
-    return true;
-  } catch (err: any) {
-    logger.warn(`[focus] Failed to focus Safari window: ${err.message}`);
-    return false;
-  }
+  void windowIndex;
+  logger.warn('[focus] Direct Safari window focus is disabled; Window 1 belongs to the human lane');
+  return false;
 }
 
 /** Compatibility alias; global focus manipulation is intentionally disabled. */

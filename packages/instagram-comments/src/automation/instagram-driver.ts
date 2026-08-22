@@ -10,6 +10,55 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
+  await client.requireSafariLanePermit(mode);
+}
+
+async function resolveClaimedSafariTabIndex(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive' = 'background',
+): Promise<number> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    resolveClaimedSafariTabIndex(
+      windowId: number,
+      tabIndex: number,
+      expectedOwnershipMarker?: string,
+      mode?: 'background' | 'interactive',
+    ): Promise<number>;
+  };
+  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
+}
+
+async function runClaimedSafariAppleScript(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive',
+  actionBody: string,
+  options: { preamble?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    runClaimedSafariAppleScript(
+      windowId: number,
+      tabIndex: number,
+      mode: 'background' | 'interactive',
+      actionBody: string,
+      options?: { preamble?: string; timeoutMs?: number },
+    ): Promise<string>;
+  };
+  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
+}
+
+async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
+  return client.runSafariForegroundInput(activateOwnedTab, performInput);
+}
+
 // Instagram selectors
 export const SELECTORS = {
   // Navigation
@@ -75,48 +124,33 @@ export class InstagramDriver {
   private config: InstagramConfig;
   private commentLog: { timestamp: Date }[] = [];
   private _trackedWindow: number | null = null;
+  private _trackedWindowId: number | null = null;
   private _trackedTab: number | null = null;
 
   constructor(config: Partial<InstagramConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number): void {
+  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error('InstagramDriver requires a stable agent Window 2 claim');
     this._trackedWindow = windowIndex;
+    this._trackedWindowId = Number(windowId);
     this._trackedTab = tabIndex;
   }
 
   private async executeJS(script: string): Promise<string> {
-    // Use temp file approach to avoid shell escaping issues (same as ThreadsDriver)
-    const fs = await import('fs');
-    const os = await import('os');
-    const path = await import('path');
-
-    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
-    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const tabTarget = (this._trackedWindow && this._trackedTab)
-      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-      : `current tab of front window`;
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
-    
-    fs.writeFileSync(tmpFile, appleScript);
-    try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`);
-      return stdout.trim();
-    } finally {
-      fs.unlinkSync(tmpFile);
+    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) {
+      throw new Error('Instagram background JS requires a claimed Safari agent tab');
     }
+    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    return runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `return do JavaScript "${jsCode}" in agentTab`);
   }
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Navigation requires a stable claimed Safari agent tab');
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
-      await execAsync(
-        `osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`
-      );
+      await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `set URL of agentTab to "${safeUrl}"`);
       await this.wait(3000);
       return true;
     } catch {
@@ -130,10 +164,8 @@ export class InstagramDriver {
 
   async getStatus(): Promise<InstagramStatus> {
     try {
-      const { stdout: urlOut } = await execAsync(
-        `osascript -e 'tell application "Safari" to get URL of current tab of front window'`
-      );
-      const currentUrl = urlOut.trim();
+      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Status requires a stable claimed Safari agent tab');
+      const currentUrl = await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', 'return URL of agentTab');
       const isOnInstagram = currentUrl.includes('instagram.com');
 
       const loginCheck = await this.executeJS(`
@@ -333,15 +365,16 @@ export class InstagramDriver {
     await execAsync(`printf "%s" "${escaped}" | pbcopy`).catch(() => null);
     await this.wait(200);
     
-    const script = `
-tell application "Safari" to activate
-delay 0.2
-tell application "System Events"
-    keystroke "v" using command down
-end tell`;
+    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) return false;
+    const activateOwnedTab = async (): Promise<void> => {
+      await runClaimedSafariAppleScript(this._trackedWindowId!, this._trackedTab!, 'interactive', 'activate\nset current tab of agentWindow to agentTab\nset index of agentWindow to 1');
+    };
     
     try {
-      await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      await withSafariForegroundInput(
+        activateOwnedTab,
+        async () => { await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`); },
+      );
       return true;
     } catch {
       return false;

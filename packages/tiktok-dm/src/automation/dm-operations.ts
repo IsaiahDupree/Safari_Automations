@@ -1093,11 +1093,10 @@ export async function sendDMByUsername(
     await driver.clickAtScreenPosition(sbPos.x, sbPos.y, true);
     await driver.wait(500);
 
-    // Clear any existing text then type handle
-    const { execSync } = await import('child_process');
-    try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`); } catch {}
-    await driver.wait(100);
-    try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to key code 51'`); } catch {}
+    // Clear through the claimed browser tab. This flow uses ChromeDriver; an
+    // unconditional System Events command against Safari could corrupt an
+    // unrelated human or agent session.
+    await driver.executeJS(`(function(){var el=document.activeElement;if(!el)return false;if('value' in el){el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));}else{el.textContent='';el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));}return true;})()`);
     await driver.wait(200);
     // Type handle first; if search returns no results, retry with first fragment ("zoey" from "zoey_devine1")
     await driver.typeViaKeystrokes(handle);
@@ -1111,9 +1110,7 @@ export async function sendDMByUsername(
       const frags = handle.split(/[_.]/g).filter((f: string) => f.length > 2 && !/[0-9]/.test(f));
       if (frags.length > 0) {
         console.log(`[TikTok DM]   ℹ️ Strategy B: handle search returned 0 rows, retrying with fragment "${frags[0]}"...`);
-        try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`); } catch {}
-        await driver.wait(100);
-        try { execSync(`osascript -e 'tell application "System Events" to tell process "Safari" to key code 51'`); } catch {}
+        await driver.executeJS(`(function(){var el=document.activeElement;if(!el)return false;if('value' in el){el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));}else{el.textContent='';el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));}return true;})()`);
         await driver.wait(200);
         await driver.typeViaKeystrokes(frags[0]);
         await driver.wait(3000);

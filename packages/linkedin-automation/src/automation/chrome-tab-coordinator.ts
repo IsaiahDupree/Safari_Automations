@@ -18,6 +18,7 @@ export const CHROME_CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
 export const CLAIM_TTL_MS = 60_000;
 const CHROME_CDP_BASE = 'http://127.0.0.1:9222';
 const MAX_CHROME_TABS = 8;
+function rawBrowserDisabled(): boolean { return true; }
 
 export interface ChromeTabClaim {
   agentId: string;
@@ -75,6 +76,10 @@ export class ChromeTabCoordinator {
   // ─── Discover ─────────────────────────────────────────────────────────────
 
   async findAvailableTab(): Promise<{ windowIndex: number; tabIndex: number; url: string } | null> {
+    if (rawBrowserDisabled()) throw Object.assign(
+      new Error('Legacy direct-CDP claims are disabled; use the browser broker'),
+      { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
+    );
     let matches: Array<{ windowIndex: number; tabIndex: number; url: string }> = [];
     try {
       const response = await fetch(`${CHROME_CDP_BASE}/json/list`);
@@ -102,6 +107,10 @@ export class ChromeTabCoordinator {
   // ─── Claim lifecycle ───────────────────────────────────────────────────────
 
   async claim(windowIndex?: number, tabIndex?: number): Promise<ChromeTabClaim> {
+    if (rawBrowserDisabled()) throw Object.assign(
+      new Error('Legacy direct-CDP claims are disabled; use the browser broker'),
+      { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
+    );
     let url = '';
 
     if (windowIndex != null && tabIndex != null) {
@@ -174,6 +183,10 @@ export class ChromeTabCoordinator {
   // ─── Open new tab ─────────────────────────────────────────────────────────
 
   async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
+    if (rawBrowserDisabled()) throw Object.assign(
+      new Error('Legacy direct-CDP tab allocation is disabled; use the browser broker'),
+      { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
+    );
     try {
       const listResponse = await fetch(`${CHROME_CDP_BASE}/json/list`);
       if (!listResponse.ok) throw new Error(`CDP returned ${listResponse.status}`);

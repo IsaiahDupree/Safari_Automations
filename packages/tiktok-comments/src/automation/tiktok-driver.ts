@@ -5,6 +5,55 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
 
+async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
+  await client.requireSafariLanePermit(mode);
+}
+
+async function resolveClaimedSafariTabIndex(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive' = 'background',
+): Promise<number> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    resolveClaimedSafariTabIndex(
+      windowId: number,
+      tabIndex: number,
+      expectedOwnershipMarker?: string,
+      mode?: 'background' | 'interactive',
+    ): Promise<number>;
+  };
+  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
+}
+
+async function runClaimedSafariAppleScript(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive',
+  actionBody: string,
+  options: { preamble?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    runClaimedSafariAppleScript(
+      windowId: number,
+      tabIndex: number,
+      mode: 'background' | 'interactive',
+      actionBody: string,
+      options?: { preamble?: string; timeoutMs?: number },
+    ): Promise<string>;
+  };
+  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
+}
+
+async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
+  return client.runSafariForegroundInput(activateOwnedTab, performInput);
+}
+
 export const SELECTORS = {
   COMMENT_INPUT: '[data-e2e="comment-input"]',
   COMMENT_POST: '[data-e2e="comment-post"]',
@@ -32,6 +81,7 @@ export class TikTokDriver {
   private config: TikTokConfig;
   private commentLog: { timestamp: Date }[] = [];
   private _trackedWindow: number | null = null;
+  private _trackedWindowId: number | null = null;
   private _trackedTab: number | null = null;
   private _trackedUrlPattern: string | null = null;
 
@@ -40,43 +90,26 @@ export class TikTokDriver {
   }
 
   /** Pin this driver to a specific Safari window+tab (set by TabCoordinator after claiming). */
-  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string): void {
+  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern: string, windowId?: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error('TikTokDriver requires a stable agent Window 2 claim');
     this._trackedWindow = windowIndex;
+    this._trackedWindowId = Number(windowId);
     this._trackedTab = tabIndex;
     this._trackedUrlPattern = urlPattern;
     console.log(`[TikTokDriver] Pinned to w=${windowIndex} t=${tabIndex} (${urlPattern})`);
   }
 
   async executeJS(script: string): Promise<string> {
-    // Use temp file approach to avoid shell escaping issues (same as ThreadsDriver)
-    const fs = await import('fs');
-    const os = await import('os');
-    const path = await import('path');
-    
-    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
+    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('TikTok background JS requires a stable claimed Safari agent tab');
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    // Use tracked tab if claimed; otherwise fall back to front window
-    const tabSpec = (this._trackedWindow && this._trackedTab)
-      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-      : 'current tab of front window';
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabSpec}`;
-    
-    fs.writeFileSync(tmpFile, appleScript);
-    try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`);
-      return stdout.trim();
-    } finally {
-      fs.unlinkSync(tmpFile);
-    }
+    return runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `return do JavaScript "${jsCode}" in agentTab`);
   }
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Navigation requires a stable claimed Safari agent tab');
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
+      await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `set URL of agentTab to "${safeUrl}"`);
       await new Promise(r => setTimeout(r, 3000));
       return true;
     } catch { return false; }
@@ -84,8 +117,8 @@ export class TikTokDriver {
 
   async getStatus(): Promise<{ isOnTikTok: boolean; isLoggedIn: boolean; currentUrl: string }> {
     try {
-      const { stdout } = await execAsync(`osascript -e 'tell application "Safari" to get URL of current tab of front window'`);
-      const currentUrl = stdout.trim();
+      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Status requires a stable claimed Safari agent tab');
+      const currentUrl = await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', 'return URL of agentTab');
       const isOnTikTok = currentUrl.includes('tiktok.com');
       // Check for login indicators that work on any TikTok page, not just video pages
       const loginCheck = await this.executeJS(`
@@ -233,9 +266,14 @@ export class TikTokDriver {
     try {
       await execAsync(`printf "%s" "${escaped}" | pbcopy`);
       await new Promise(r => setTimeout(r, 200));
-      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
-      await new Promise(r => setTimeout(r, 200));
-      await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
+      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) return false;
+      const activateOwnedTab = async (): Promise<void> => {
+        await runClaimedSafariAppleScript(this._trackedWindowId!, this._trackedTab!, 'interactive', 'activate\nset current tab of agentWindow to agentTab\nset index of agentWindow to 1');
+      };
+      await withSafariForegroundInput(
+        activateOwnedTab,
+        async () => { await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`); },
+      );
       return true;
     } catch { return false; }
   }

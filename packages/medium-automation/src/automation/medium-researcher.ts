@@ -94,6 +94,10 @@ export class MediumResearcher {
     if (!fs.existsSync(this.dataDir)) fs.mkdirSync(this.dataDir, { recursive: true });
   }
 
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this.driver.setTrackedTab(windowIndex, tabIndex, 'medium.com');
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // SINGLE NICHE RESEARCH
   // ═══════════════════════════════════════════════════════════════

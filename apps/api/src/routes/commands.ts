@@ -31,6 +31,7 @@ interface Command {
 // In-memory command store (last 100 commands)
 const commands: Map<string, Command> = new Map();
 const MAX_COMMANDS = 100;
+function rawBrowserDisabled(): boolean { return true; }
 
 function pruneOldCommands() {
   if (commands.size > MAX_COMMANDS) {
@@ -80,6 +81,10 @@ async function executeResearch(command: Command): Promise<void> {
 }
 
 async function scrapePublicFeed(platform: string, maxItems: number, query: string): Promise<any[]> {
+  if (rawBrowserDisabled()) throw Object.assign(
+    new Error(`Raw browser research is disabled for ${platform}; use a brokered service`),
+    { code: 'RAW_BROWSER_AUTOMATION_DISABLED', maxItems, query },
+  );
   // Attempt to use Puppeteer for real browser scraping
   let browser: any;
   let page: any;

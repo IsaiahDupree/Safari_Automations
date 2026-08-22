@@ -37,6 +37,7 @@ class SafariSoraScraper:
     
     def run_applescript(self, script: str) -> str:
         """Execute an AppleScript and return the result."""
+        raise RuntimeError("Legacy direct Safari Sora automation is disabled; use sora-automation with a Window 2 claim")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

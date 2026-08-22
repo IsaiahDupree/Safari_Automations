@@ -8,9 +8,14 @@
 #   ./scripts/open-local-to-cloud-tabs.sh --claim   # claim only (no new tabs)
 #   ./scripts/open-local-to-cloud-tabs.sh --reset   # reuse tab 1 and close task tabs
 
+if [[ "${1:-}" != "--claim" ]]; then
+  echo "Direct Safari setup/reset is disabled; service TabCoordinators exclusively allocate and recycle Window 2 tabs." >&2
+  exit 73
+fi
+
 SAFARI_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SAFARI_DIR/.env" 2>/dev/null || true
-WIN=1
+WIN=2
 MAX_SAFARI_TABS=8
 
 # ── Platform tabs: "DETECT_PATTERN|OPEN_URL" ─────────────────────────────────
@@ -76,12 +81,15 @@ except:
 
 # ── Ensure Safari Window $WIN exists ─────────────────────────────────────────
 win_count=$(osascript -e 'tell application "Safari" to return count of windows' 2>/dev/null || echo 0)
-if (( win_count < WIN )); then
-  log "ERROR: Safari Window ${WIN} not found (only ${win_count} windows open)."
-  log "  Open Safari, switch to the 'Local to Cloud' profile, then re-run."
+if (( win_count < 1 )); then
+  log "ERROR: The singleton Safari app has no human Window 1."
   exit 1
 fi
-log "Safari Window ${WIN} confirmed (${win_count} total windows)."
+if (( win_count < WIN )); then
+  log "Safari agent Window ${WIN} is absent; the first admitted service claim may create it safely."
+else
+  log "Safari agent Window ${WIN} confirmed (${win_count} total windows)."
+fi
 total_tab_count=$(total_safari_tabs || echo "invalid")
 if [[ "$total_tab_count" != <-> ]]; then
   log "ERROR: Could not read the shared Safari tab count. Refusing to open tabs."

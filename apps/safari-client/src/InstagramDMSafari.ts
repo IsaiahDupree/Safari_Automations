@@ -41,6 +41,7 @@ const LOGIN_TIMEOUT_MS = parseInt(process.env.INSTAGRAM_TIMEOUT_MS || '30000', 1
 async function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+function rawBrowserDisabled(): boolean { return true; }
 
 export class InstagramDMSafari {
     private browser: UnifiedBrowser | null = null;
@@ -54,6 +55,10 @@ export class InstagramDMSafari {
     }
 
     async initialize(): Promise<void> {
+        if (rawBrowserDisabled()) throw Object.assign(
+            new Error('Legacy in-app browser automation is disabled; use the claimed service lane'),
+            { code: 'RAW_BROWSER_AUTOMATION_DISABLED' }
+        );
         logger.info(`Initializing Instagram DM with ${this.browserType} browser`);
 
         this.browser = await launchBrowser({

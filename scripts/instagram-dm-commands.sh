@@ -19,6 +19,9 @@
 
 set -e
 
+echo "Direct Safari DM commands are disabled; use the lane-aware Instagram DM service on port 3100" >&2
+exit 73
+
 # === WORKING COMMANDS ===
 
 check_login() {

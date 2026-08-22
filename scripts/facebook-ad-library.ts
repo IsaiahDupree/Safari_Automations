@@ -343,6 +343,7 @@ function parseArgs(): { command: string; args: string[]; opts: ScrapeOptions } {
 }
 
 async function main(): Promise<void> {
+  throw new Error('Direct Safari Ad Library automation is disabled until it is migrated behind a Window 2 TabCoordinator claim');
   const { command, args, opts } = parseArgs();
 
   switch (command) {

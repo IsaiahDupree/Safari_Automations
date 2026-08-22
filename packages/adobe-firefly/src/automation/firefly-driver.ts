@@ -21,6 +21,12 @@ import * as http from 'http';
 
 const execAsync = promisify(exec);
 
+async function requireSafariBackgroundPermit(): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
+  await client.requireSafariLanePermit('background');
+}
+
 // ──────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────
@@ -112,13 +118,15 @@ export class FireflyDriver {
   // ── Low-level Safari helpers ─────────────────
 
   private async executeJS(js: string): Promise<string> {
+    await requireSafariBackgroundPermit();
+    if (this.trackedWindow !== 2 || !this.trackedTab) {
+      throw new Error('Firefly JS requires a claimed Safari agent tab in Window 2');
+    }
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
     const tempFile = path.join(os.tmpdir(), `ff-js-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.js`);
     await fs.writeFile(tempFile, cleanJS);
 
-    const tabSpec = (this.trackedWindow && this.trackedTab)
-      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
-      : 'current tab of front window';
+    const tabSpec = `tab ${this.trackedTab} of window 2`;
 
     const script = `
       set jsCode to read POSIX file "${tempFile}" as «class utf8»
@@ -139,18 +147,15 @@ export class FireflyDriver {
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      if (this.trackedWindow && this.trackedTab) {
-        await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safeUrl}"'`,
-          { timeout: this.config.timeout }
-        );
-      } else {
-        await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`,
-          { timeout: this.config.timeout }
-        );
+      await requireSafariBackgroundPermit();
+      if (this.trackedWindow !== 2 || !this.trackedTab) {
+        throw new Error('Firefly navigation requires a claimed Safari agent tab in Window 2');
       }
+      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(
+        `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window 2 to "${safeUrl}"'`,
+        { timeout: this.config.timeout }
+      );
       await this.wait(3000);
       return true;
     } catch { return false; }
@@ -196,47 +201,16 @@ export class FireflyDriver {
   }
 
   private async ensureFireflyTab(): Promise<boolean> {
-    // Try to find an existing Firefly tab
-    try {
-      const script = `
-tell application "Safari"
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      set tabURL to URL of tab t of window w
-      if tabURL contains "firefly.adobe.com" then
-        return (w as text) & ":" & (t as text)
-      end if
-    end repeat
-  end repeat
-  return "not_found"
-end tell`;
-      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`);
-      const result = stdout.trim();
-      if (result !== 'not_found') {
-        const [w, t] = result.split(':').map(Number);
-        this.trackedWindow = w;
-        this.trackedTab = t;
-        // Bring tab to front
-        const activateScript = `
-tell application "Safari"
-  activate
-  set index of window ${w} to 1
-  set current tab of window ${w} to tab ${t} of window ${w}
-end tell`;
-        await execAsync(`osascript << 'APPLESCRIPT'\n${activateScript}\nAPPLESCRIPT`);
-        return true;
-      }
-    } catch { /* ignore */ }
-    return false;
+    return this.trackedWindow === 2 && this.trackedTab !== null;
   }
 
   // ── Public API ───────────────────────────────
 
   async getStatus(): Promise<FireflyStatus> {
     try {
-      const tabSpec = (this.trackedWindow && this.trackedTab)
-        ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
-        : 'current tab of front window';
+      await requireSafariBackgroundPermit();
+      if (this.trackedWindow !== 2 || !this.trackedTab) throw new Error('Firefly status requires a claimed Safari agent tab');
+      const tabSpec = `tab ${this.trackedTab} of window 2`;
       const { stdout } = await execAsync(
         `osascript -e 'tell application "Safari" to get URL of ${tabSpec}'`
       );
@@ -370,15 +344,6 @@ end tell`;
       })()
     `);
 
-    // Fallback: use clipboard + paste
-    const escapedPrompt = prompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    await execAsync(`osascript -e 'set the clipboard to "${escapedPrompt}"'`);
-    await this.wait(200);
-    await execAsync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "a" using command down'`);
-    await this.wait(100);
-    await execAsync(`osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "v" using command down'`);
-    await this.wait(500);
-
     return true;
   }
 
@@ -410,9 +375,7 @@ end tell`;
     `);
 
     if (clicked === 'not_found') {
-      // Fallback: press Enter in the prompt field
-      await execAsync(`osascript -e 'tell application "System Events" to tell process "Safari" to key code 36'`);
-      return true;
+      return false;
     }
 
     console.log(`[Firefly] Generate triggered via: ${clicked}`);
@@ -581,5 +544,13 @@ end tell`;
 
   setConfig(config: Partial<FireflyConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
+      throw new Error('FireflyDriver accepts claims only in agent Window 2');
+    }
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
   }
 }

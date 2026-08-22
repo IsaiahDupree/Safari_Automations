@@ -26,6 +26,12 @@ import { researchRelevance } from '../../../twitter-comments/src/automation/twit
 
 const execAsync = promisify(exec);
 
+async function requireSafariBackgroundPermit(): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
+  await client.requireSafariLanePermit('background');
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -114,6 +120,8 @@ export const DEFAULT_THREADS_RESEARCH_CONFIG: ThreadsResearchConfig = {
 
 export class ThreadsResearcher {
   private config: ThreadsResearchConfig;
+  private trackedWindow: number | null = null;
+  private trackedTab: number | null = null;
 
   constructor(config: Partial<ThreadsResearchConfig> = {}) {
     this.config = { ...DEFAULT_THREADS_RESEARCH_CONFIG, ...config };
@@ -127,10 +135,14 @@ export class ThreadsResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
+    await requireSafariBackgroundPermit();
+    if (this.trackedWindow !== 2 || !this.trackedTab) {
+      throw new Error('Threads research JS requires a claimed Safari agent tab in Window 2');
+    }
     const jsFile = path.join(os.tmpdir(), `safari_threads_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.js`);
     const scptFile = jsFile.replace('.js', '.scpt');
     fs.writeFileSync(jsFile, script);
-    const appleScript = `tell application "Safari"\ntell front document\nset jsCode to read POSIX file "${jsFile}"\ndo JavaScript jsCode\nend tell\nend tell`;
+    const appleScript = `set jsCode to read POSIX file "${jsFile}" as «class utf8»\ntell application "Safari" to do JavaScript jsCode in tab ${this.trackedTab} of window 2`;
     fs.writeFileSync(scptFile, appleScript);
     try {
       const { stdout } = await execAsync(`osascript "${scptFile}"`, { timeout: this.config.timeout });
@@ -143,14 +155,26 @@ export class ThreadsResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      await requireSafariBackgroundPermit();
+      if (this.trackedWindow !== 2 || !this.trackedTab) {
+        throw new Error('Threads research navigation requires a claimed Safari agent tab in Window 2');
+      }
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window 2 to "${safeUrl}"'`);
       return true;
     } catch { return false; }
   }
 
   private async wait(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
+      throw new Error('ThreadsResearcher accepts claims only in agent Window 2');
+    }
+    this.trackedWindow = windowIndex;
+    this.trackedTab = tabIndex;
   }
 
   private async waitForSelector(selector: string, timeoutMs = 10000): Promise<boolean> {

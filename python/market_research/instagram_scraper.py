@@ -207,6 +207,7 @@ class InstagramResearchScraper:
     # ── Safari Primitives ──
 
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
+        raise RuntimeError("Legacy direct Safari research is disabled; use the claimed market-research service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

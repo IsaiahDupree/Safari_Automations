@@ -41,6 +41,7 @@ class SafariController:
         self._session_active = False
     
     def run_applescript(self, script: str, timeout: int = 30) -> Tuple[bool, str]:
+        raise RuntimeError("Legacy direct SafariController is disabled; use a claimed Window 2 service")
         """
         Execute AppleScript and return (success, output).
         

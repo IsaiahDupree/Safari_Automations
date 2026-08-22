@@ -23,6 +23,7 @@ class SafariExtensionBridge:
     
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
         """Execute AppleScript and return output."""
+        raise RuntimeError("Legacy direct Safari extension control is disabled; use the claimed TikTok service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],
@@ -350,4 +351,3 @@ if __name__ == "__main__":
         print("  1. Extension is installed in Safari")
         print("  2. Extension is enabled")
         print("  3. You're on a TikTok page")
-

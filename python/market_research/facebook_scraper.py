@@ -311,6 +311,7 @@ class FacebookResearchScraper:
 
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
         """Execute AppleScript and return output."""
+        raise RuntimeError("Legacy direct Safari research is disabled; use the claimed market-research service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

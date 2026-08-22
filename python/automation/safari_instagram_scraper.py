@@ -59,6 +59,7 @@ class SafariInstagramScraper:
     
     def run_applescript(self, script: str) -> str:
         """Execute an AppleScript and return the result."""
+        raise RuntimeError("Legacy direct Safari Instagram automation is disabled; use the claimed Instagram service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

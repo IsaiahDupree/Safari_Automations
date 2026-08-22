@@ -3,9 +3,11 @@
 This repository shares the machine-wide browser singletons. These rules are
 mandatory for every service, script, MCP server, test, and coding agent.
 
-- Chrome: use only the `chrome-bridge` `agent` profile at
-  `http://127.0.0.1:9222`. Puppeteer and Playwright must attach; they must not
-  launch a browser or create a fresh browser context.
+- Chrome: use only the `chrome-bridge` `agent` profile through the leased
+  `chrome-bridge`/browserd target API. Direct CDP access to
+  `http://127.0.0.1:9222` is reserved for those control-plane services.
+  Agents, Puppeteer, Playwright, and MCP servers must not attach directly,
+  launch a browser, or create a fresh browser context.
 - Safari: use only the installed Safari application. Reuse an existing window
   and tab. Never start WebKit, Selenium Safari, a second Safari, or an
   isolated/fallback browser session.

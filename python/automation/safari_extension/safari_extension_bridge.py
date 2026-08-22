@@ -23,6 +23,7 @@ def send_to_extension(action: str, **kwargs) -> dict:
     Since native messaging isn't trivial in Safari, we use a simpler approach:
     Send messages via the extension's popup or by executing JS in the extension context.
     """
+    raise RuntimeError("Legacy direct Safari extension control is disabled; use the claimed TikTok service")
     # For now, we'll use AppleScript to trigger the extension
     # The extension needs to be installed and active
     

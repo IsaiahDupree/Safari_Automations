@@ -22,6 +22,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+function rawSafariDisabled(): boolean { return true; }
 
 // === URLS ===
 const URLS = {
@@ -362,6 +363,10 @@ export class InstagramDM {
    * Execute JavaScript in Safari
    */
   private async execJS(js: string): Promise<string> {
+    if (rawSafariDisabled()) throw Object.assign(
+      new Error('Legacy direct Safari DM automation is disabled; use the claimed Instagram DM service'),
+      { code: 'RAW_SAFARI_AUTOMATION_DISABLED' },
+    );
     // Clean up JS: remove newlines, collapse spaces
     const cleanJS = js.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
     
@@ -395,6 +400,10 @@ export class InstagramDM {
    * Navigate Safari to URL
    */
   private async navigate(url: string): Promise<void> {
+    if (rawSafariDisabled()) throw Object.assign(
+      new Error('Legacy direct Safari navigation is disabled; use the claimed Instagram DM service'),
+      { code: 'RAW_SAFARI_AUTOMATION_DISABLED' },
+    );
     const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `tell application "Safari" to set URL of front document to "${safeUrl}"`;
     await execAsync(`osascript -e '${script}'`);

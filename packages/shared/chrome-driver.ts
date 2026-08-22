@@ -50,6 +50,7 @@ const DEFAULT_CDP_PORTS: Record<ChromePlatform, number> = {
 
 const CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
 const CLAIM_TTL_MS = 5 * 60 * 1000; // 5 minutes
+function rawBrowserDisabled(): boolean { return true; }
 
 // ─── ChromeDriver class ───────────────────────────────────────────────────────
 
@@ -67,6 +68,10 @@ export class ChromeDriver {
   // ── Internal: Browser connection ──────────────────────────────────────────
 
   private async getBrowser(): Promise<Browser> {
+    if (rawBrowserDisabled()) throw Object.assign(
+      new Error('Raw shared CDP access is disabled; use chrome-bridge claim/act/release'),
+      { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
+    );
     if (this.browser && this.browser.connected) {
       return this.browser;
     }

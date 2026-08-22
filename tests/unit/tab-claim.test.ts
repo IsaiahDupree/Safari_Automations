@@ -36,6 +36,7 @@ function makeClaim(overrides: Partial<TabClaim> = {}): TabClaim {
     pid: process.pid,
     claimedAt: now,
     heartbeat: now,
+    agentOwned: true,
     ...overrides,
   };
 }

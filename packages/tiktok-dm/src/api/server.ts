@@ -8,6 +8,7 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 // Persistent dedup file — survives server restarts.
 // __dirname in CJS = dist/api/ → go up to package root
@@ -236,36 +237,46 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): v
 
 app.use(rateLimitMiddleware);
 
-// Create Chrome/Puppeteer driver (connects to the canonical Chrome on CDP 9222)
+// Compatibility name retained for callers; the facade is backed by claimed Safari Window 2.
 const driver = new ChromeDriver({ verbose: VERBOSE });
 
-// URL pattern that identifies the TikTok Chrome session
+// URL pattern that identifies the claimed TikTok Safari lane.
 const SESSION_URL_PATTERN = 'tiktok.com';
+const OPEN_URL = 'https://www.tiktok.com/messages';
+const SERVICE_NAME = 'tiktok-dm';
+const STABLE_AGENT_ID = 'tiktok-dm-stable';
+const activeCoordinators = new Map<string, TabCoordinator>();
+let stableCoord: TabCoordinator | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 
 /**
- * Ensure the TikTok Chrome tab is available before any operation.
- * Chrome driver connects via CDP — no Safari/AppleScript tab claim needed.
+ * Ensure the TikTok Safari tab is claimed before any operation.
  */
-async function ensureTikTokSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
-  const info = await driver.ensureActiveSession(SESSION_URL_PATTERN);
-  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+async function ensureTikTokSession(res: Response): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
+  stableCoord ??= new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+  activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+  const claim = await stableCoord.beginRequestOperation(res);
+  driver.setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+  return { ok: true, windowIndex: claim.windowIndex, tabIndex: claim.tabIndex, url: claim.tabUrl };
 }
+
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/status$|^\/api\/rate-limits/;
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+  try { await ensureTikTokSession(res); next(); }
+  catch (error) { res.status(503).json({ error: 'Safari agent lane unavailable', detail: String(error) }); }
+});
 
 // Health check
 app.get('/health', async (_req: Request, res: Response) => {
-  const cdpUrl = 'http://localhost:9222';
-  let chromeConnected = false;
-  try {
-    const b = await driver.getBrowser();
-    chromeConnected = b.connected;
-  } catch { /* not yet connected */ }
+  const laneClaim = (await TabCoordinator.listClaims()).find(candidate => candidate.agentId === STABLE_AGENT_ID);
   res.json({
     status: 'ok',
     service: 'tiktok-dm',
     platform: 'tiktok',
-    driver: 'chrome-puppeteer',
-    cdpUrl,
-    chromeConnected,
+    driver: 'safari-window-2',
+    claimed: !!laneClaim,
+    currentUrl: laneClaim?.tabUrl ?? '',
     port: PORT,
   });
 });
@@ -273,30 +284,24 @@ app.get('/health', async (_req: Request, res: Response) => {
 // === SESSION MANAGEMENT ===
 
 app.get('/api/session/status', async (_req: Request, res: Response) => {
-  try {
-    const url = await driver.getCurrentUrl();
-    const connected = url !== '';
-    res.json({
-      tracked: connected,
-      driver: 'chrome-puppeteer',
-      cdpUrl: 'http://localhost:9222',
-      currentUrl: url,
-      sessionUrlPattern: SESSION_URL_PATTERN,
-    });
-  } catch {
-    res.json({ tracked: false, driver: 'chrome-puppeteer', sessionUrlPattern: SESSION_URL_PATTERN });
-  }
+  const laneClaim = (await TabCoordinator.listClaims()).find(candidate => candidate.agentId === STABLE_AGENT_ID);
+  res.json({
+    tracked: !!laneClaim,
+    driver: 'safari-window-2',
+    currentUrl: laneClaim?.tabUrl ?? '',
+    sessionUrlPattern: SESSION_URL_PATTERN,
+  });
 });
 
 app.post('/api/session/ensure', async (_req: Request, res: Response) => {
   try {
-    const info = await ensureTikTokSession();
+    const info = await ensureTikTokSession(res);
     res.json({
       ok: info.ok,
       url: info.url,
       message: info.ok
-        ? `TikTok Chrome session active: ${info.url.slice(0, 80)}`
-        : 'TikTok Chrome session not found — wait for the canonical Chrome on CDP 9222',
+        ? `TikTok Safari agent lane active: ${info.url.slice(0, 80)}`
+        : 'TikTok Safari agent lane is unavailable',
     });
   } catch (error) {
     const msg = String(error);
@@ -306,7 +311,7 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
 
 app.post('/api/session/clear', (_req: Request, res: Response) => {
   driver.clearTrackedSession();
-  res.json({ ok: true, message: 'Chrome session state cleared' });
+  res.json({ ok: true, message: 'Safari lane client state cleared' });
 });
 
 // Get TikTok status
@@ -1293,35 +1298,41 @@ app.post('/api/prospect/discover', async (req: Request, res: Response) => {
 });
 
 // === TAB MANAGEMENT ===
-// Chrome/Puppeteer driver: no Safari tab-claim file needed.
-// These endpoints are kept for API compatibility with callers that check /api/tabs/claims.
-
 app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
-  // Chrome driver: return the single active Chrome session as a pseudo-claim
+  const claims = (await TabCoordinator.listClaims()).filter(candidate => candidate.service === SERVICE_NAME);
+  res.json({ claims, count: claims.length });
+});
+
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, openUrl } = req.body as { agentId?: string; openUrl?: string };
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
   try {
-    const url = await driver.getCurrentUrl();
-    const claims = url.includes('tiktok.com')
-      ? [{ agentId: 'tiktok-dm-chrome', service: 'tiktok-dm', driver: 'chrome', url }]
-      : [];
-    res.json({ claims, count: claims.length });
-  } catch {
-    res.json({ claims: [], count: 0 });
-  }
+    const coord = new TabCoordinator(agentId, SERVICE_NAME, PORT, SESSION_URL_PATTERN, openUrl || OPEN_URL);
+    activeCoordinators.set(agentId, coord);
+    const claim = await coord.ensureOwnedTab();
+    activeCoordinators.delete(agentId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
+  } catch (error) { res.status(409).json({ ok: false, error: String(error) }); }
 });
 
-// POST /api/tabs/claim — no-op for Chrome driver (no tab claim file)
-app.post('/api/tabs/claim', (_req: Request, res: Response) => {
-  res.json({ ok: true, message: 'Chrome driver: no tab claim needed', driver: 'chrome-puppeteer' });
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const agentId = (req.body as { agentId?: string }).agentId;
+  const coord = agentId ? activeCoordinators.get(agentId) : undefined;
+  if (!coord) { res.status(404).json({ error: 'active coordinator not found' }); return; }
+  await coord.release();
+  activeCoordinators.delete(agentId!);
+  res.json({ ok: true });
 });
 
-// POST /api/tabs/release — no-op
-app.post('/api/tabs/release', (_req: Request, res: Response) => {
-  res.json({ ok: true, message: 'Chrome driver: no tab release needed' });
-});
-
-// POST /api/tabs/heartbeat — no-op
-app.post('/api/tabs/heartbeat', (_req: Request, res: Response) => {
-  res.json({ ok: true, heartbeat: Date.now(), driver: 'chrome-puppeteer' });
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const agentId = (req.body as { agentId?: string }).agentId;
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
 
 // POST /api/debug/eval — execute JS in the tracked Safari tab (debugging only)
@@ -1355,22 +1366,11 @@ function syncToCRMLite(username: string, message: string): void {
 
 // Start server
 export function startServer(port: number = PORT): void {
-  const cdpUrl = 'http://localhost:9222';
-
   app.listen(port, () => {
-    console.log(`TikTok DM API server (Chrome/Puppeteer) running on http://localhost:${port}`);
-    console.log(`   CDP: ${cdpUrl}`);
+    console.log(`TikTok DM API server (claimed Safari Window 2) running on http://localhost:${port}`);
     console.log(`   Health: GET /health`);
     console.log(`   Status: GET /api/tiktok/status`);
     console.log(`   Send DM: POST /api/tiktok/messages/send-to`);
-  });
-
-  // Warm up the Chrome connection on startup (non-fatal if Chrome isn't running yet)
-  driver.getBrowser().then(() => {
-    if (VERBOSE) console.log('[startup] Chrome CDP connection established');
-  }).catch((err) => {
-    console.warn(`[startup] Chrome not yet available at ${cdpUrl}: ${(err as Error).message}`);
-    console.warn('[startup] Canonical Chrome unavailable on CDP 9222; launch fallback is denied by browser policy');
   });
 }
 

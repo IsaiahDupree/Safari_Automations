@@ -54,6 +54,7 @@ class SafariTwitterDM:
             self.session_manager = None
 
     def _run_applescript(self, script: str, timeout: int = 30) -> Tuple[bool, str]:
+        raise RuntimeError("Legacy direct Safari Twitter automation is disabled; use the claimed Twitter DM service")
         """
         Run AppleScript and return success status and output.
 

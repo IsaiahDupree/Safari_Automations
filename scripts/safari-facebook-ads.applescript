@@ -29,6 +29,7 @@ property SCROLL_PASSES : 3
 
 -- ── Main Script ───────────────────────────────────────────────
 on run
+	error "Direct Safari Ad Library automation is disabled; use the claimed market-research service" number 73
 	-- Step 1: Get the Ad Library URL + extraction script from DemandRadar API
 	set apiParams to "q=" & urlEncode(SEARCH_QUERY) & ¬
 		"&country=" & COUNTRY & ¬

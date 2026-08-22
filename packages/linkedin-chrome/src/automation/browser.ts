@@ -2,6 +2,7 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { logInfo, logWarn, logError, logDebug } from './logger.js';
 
 const MOD = 'browser';
+function rawBrowserDisabled(): boolean { return true; }
 
 const SHARED_CDP_URL = 'http://localhost:9222';
 
@@ -25,6 +26,10 @@ async function connectToCDP(url: string): Promise<Browser> {
 }
 
 export async function getBrowser(): Promise<Browser> {
+  if (rawBrowserDisabled()) throw Object.assign(
+    new Error('Raw LinkedIn browser access is disabled; use linkedin-automation with a claimed Safari lane'),
+    { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
+  );
   if (browser && browser.connected) { logDebug(MOD, 'Reusing existing browser'); return browser; }
 
   const configured = process.env['CHROME_CDP_URL'] || SHARED_CDP_URL;

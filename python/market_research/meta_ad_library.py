@@ -268,6 +268,7 @@ class MetaAdLibraryScraper:
         self.storage = ResearchStorage()
 
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
+        raise RuntimeError("Legacy direct Safari research is disabled; use the claimed market-research service")
         try:
             r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
             return r.stdout.strip() if r.returncode == 0 else ""

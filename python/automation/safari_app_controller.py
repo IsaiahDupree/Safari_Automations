@@ -24,6 +24,7 @@ class SafariAppController:
     
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
         """Execute AppleScript and return output."""
+        raise RuntimeError("Legacy direct Safari app control is disabled; use a claimed Window 2 service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

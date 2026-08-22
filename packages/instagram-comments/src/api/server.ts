@@ -121,31 +121,18 @@ app.use(authMiddleware);
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
 const OPEN_URL = 'https://www.instagram.com';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-  if (myClaim) {
-    // Claim exists — pin both drivers to the claimed tab and proceed
-    getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
-    next();
-    return;
-  }
-
-  // No claim — auto-claim now (open new tab if needed)
   try {
     if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
-    const claim = await stableCoord.claim();
-    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
+    const claim = await stableCoord.beginRequestOperation(res);
+    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, claim.windowId);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -316,7 +303,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     uptime_human: `${Math.floor(uptimeMs / 1000)}s`,
     timestamp: new Date().toISOString(),
     chrome: {
-      cdp_url: 'http://localhost:9222',
+      cdp_url: 'disabled',
       connected: cdp.connected,
       has_instagram_tab: cdp.hasInstagramTab,
       tab_url: cdp.url,
@@ -470,15 +457,6 @@ app.get('/api/instagram/comments/rate-limits', (_req: Request, res: Response) =>
 });
 
 app.post('/api/instagram/comments/post', async (req: Request, res: Response) => {
-  const agentId = `ig-comments-${Date.now()}`;
-  let coord: TabCoordinator | null = null;
-  try {
-    coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
-    await coord.claim();
-    activeCoordinators.set(agentId, coord);
-  } catch {
-    coord = null;
-  }
   try {
     const { text, postUrl } = req.body;
 
@@ -528,11 +506,6 @@ app.post('/api/instagram/comments/post', async (req: Request, res: Response) => 
     }
   } catch (error) {
     res.status(500).json({ success: false, error: String(error) });
-  } finally {
-    if (coord) {
-      try { await coord.release(); } catch { /* ignore */ }
-      activeCoordinators.delete(agentId);
-    }
   }
 });
 
@@ -1565,11 +1538,12 @@ app.post('/api/tabs/claim', async (req, res) => {
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.claim(windowIndex, tabIndex);
-    res.json({ ok: true, claim });
+    const claim = await coord.ensureOwnedTab(windowIndex, tabIndex);
+    activeCoordinators.delete(agentId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
@@ -1586,10 +1560,12 @@ app.post('/api/tabs/release', async (req, res) => {
 app.post('/api/tabs/heartbeat', async (req, res) => {
   const { agentId } = req.body;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  const coord = activeCoordinators.get(agentId);
-  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
-  await coord.heartbeat();
-  res.json({ ok: true, heartbeat: Date.now() });
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
 
 app.get('/api/session/status', (req, res) => {
@@ -1707,15 +1683,11 @@ setInterval(async () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 export function startServer(port: number = PORT): void {
-  TabCoordinator.listClaims().then(claims => {
-    const stale = claims.filter(c => c.service === SERVICE_NAME);
-    if (stale.length > 0) {
-      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
-      import('fs/promises').then(fsp => {
-        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
-      });
+  TabCoordinator.removeStaleClaimsForService(SERVICE_NAME).then(removed => {
+    if (removed > 0) {
+      console.log(`[startup] Cleared ${removed} stale ${SERVICE_NAME} claim(s) from previous processes`);
     }
-  }).catch(() => {});
+  }).catch(error => console.warn('[startup] Safari stale-claim cleanup deferred:', error));
 
   app.listen(port, () => {
     console.log(`Instagram API v${SERVICE_VERSION} running on http://localhost:${port}`);

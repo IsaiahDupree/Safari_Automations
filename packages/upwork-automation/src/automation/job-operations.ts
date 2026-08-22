@@ -1240,18 +1240,11 @@ async function setCurrencyInput(
     await d.wait(100);
 
     // Delete selected content
-    await execAsync(
-      `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke (ASCII character 127)'`
-    );
+    if (!await d.pressKey('delete')) return false;
     await d.wait(300);
 
     // Type digits one by one via AppleScript keystrokes
-    for (const char of value) {
-      await execAsync(
-        `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${char}"'`
-      );
-      await d.wait(80);
-    }
+    if (!await d.typeNativeText(value)) return false;
     await d.wait(300);
 
     // Tab out to trigger Upwork's formatting + validation

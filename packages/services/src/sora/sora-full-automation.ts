@@ -556,10 +556,8 @@ export class SoraFullAutomation {
    */
   private async mouseWiggle(): Promise<void> {
     try {
-      // Use cliclick for reliable mouse movement on macOS
-      await execAsync(`cliclick m:+10,+0 w:50 m:+0,+10 w:50 m:-10,+0 w:50 m:+0,-10`);
-      
-      // Also trigger scroll event in browser to help load videos
+      // Physical cursor movement is forbidden because it can interrupt the
+      // human lane. A page-local event is the only safe compatibility path.
       await this.safari.executeJS(`
         (function() {
           // Scroll down slightly then back up to trigger lazy loading

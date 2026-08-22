@@ -17,6 +17,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { SoraFullAutomation } from './sora-full-automation.js';
+import { TabCoordinator } from '../../../sora-automation/src/automation/tab-coordinator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,8 +32,9 @@ const MY_URL_PATTERN = 'sora.chatgpt.com';
 
 interface TabClaim {
   agentId: string; service: string; port: number; urlPattern: string;
-  windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
+  windowId?: number; windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
   claimedAt: number; heartbeat: number;
+  agentOwned?: boolean; ownershipMarker?: string;
 }
 
 async function readActiveClaims(): Promise<TabClaim[]> {
@@ -44,53 +46,23 @@ async function readActiveClaims(): Promise<TabClaim[]> {
   } catch { return []; }
 }
 
-async function writeClaims(claims: TabClaim[]): Promise<void> {
-  fs.writeFileSync(CLAIMS_FILE, JSON.stringify(claims, null, 2));
-}
+let soraClaimCoordinator: TabCoordinator | null = null;
 
 async function acquireSoraClaim(): Promise<TabClaim | null> {
-  // Find an open Sora tab in Safari via AppleScript
-  const script = `
-tell application "Safari"
-  set result to {}
-  repeat with w from 1 to count of windows
-    repeat with t from 1 to count of tabs of window w
-      try
-        set u to URL of tab t of window w
-        if u contains "sora.chatgpt.com" then
-          set end of result to (w as string) & "," & (t as string) & "," & u
-        end if
-      end try
-    end repeat
-  end repeat
-  return result
-end tell`;
   try {
-    const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
-    const lines = stdout.trim().split(', ').filter(Boolean);
-    if (lines.length === 0) return null;
-
-    const [wStr, tStr, url] = lines[0].split(',');
-    const windowIndex = parseInt(wStr.trim());
-    const tabIndex = parseInt(tStr.trim());
-
-    const claims = await readActiveClaims();
-    const agentId = `sora-${Date.now()}`;
-    const myClaim: TabClaim = {
-      agentId, service: MY_SERVICE, port: 0, urlPattern: MY_URL_PATTERN,
-      windowIndex, tabIndex, tabUrl: url?.trim() || MY_URL_PATTERN,
-      pid: process.pid, claimedAt: Date.now(), heartbeat: Date.now(),
-    };
-    // Remove any expired sora claims, add ours
-    const filtered = claims.filter(c => c.service !== MY_SERVICE);
-    await writeClaims([...filtered, myClaim]);
-    return myClaim;
+    soraClaimCoordinator ??= new TabCoordinator(
+      `sora-mcp-${process.pid}`,
+      MY_SERVICE,
+      0,
+      'sora',
+      'https://sora.com',
+    );
+    return await soraClaimCoordinator.beginOperation();
   } catch { return null; }
 }
 
 async function releaseSoraClaim(): Promise<void> {
-  const claims = await readActiveClaims();
-  await writeClaims(claims.filter(c => c.service !== MY_SERVICE));
+  await soraClaimCoordinator?.endOperation();
 }
 
 // Refreshes the claim heartbeat every 30s so long-running scrapes don't expire.
@@ -98,9 +70,7 @@ async function releaseSoraClaim(): Promise<void> {
 function startClaimHeartbeat(): () => void {
   const interval = setInterval(async () => {
     try {
-      const claims = await readActiveClaims();
-      const idx = claims.findIndex(c => c.service === MY_SERVICE);
-      if (idx !== -1) { claims[idx].heartbeat = Date.now(); await writeClaims(claims); }
+      await soraClaimCoordinator?.heartbeat();
     } catch { /* non-fatal */ }
   }, 30_000);
   return () => clearInterval(interval);
@@ -1535,9 +1505,7 @@ async function handleSoraMaximize(args: {
 
   // Heartbeat: keep claim alive every 30s
   const heartbeatInterval = setInterval(async () => {
-    const claims = await readActiveClaims();
-    const idx = claims.findIndex(c => c.service === MY_SERVICE);
-    if (idx !== -1) { claims[idx].heartbeat = Date.now(); await writeClaims(claims); }
+    try { await soraClaimCoordinator?.heartbeat(); } catch { /* drain gate aborts new browser work */ }
   }, 30_000);
 
   try {

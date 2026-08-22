@@ -10,6 +10,18 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 import os
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+
+def run_policy_command(args, *positional, **kwargs):
+    """Deny every legacy direct Safari call; HTTP service paths remain available."""
+    executable = os.path.basename(str(args[0])) if isinstance(args, (list, tuple)) and args else ""
+    if executable == "osascript":
+        result = subprocess.CompletedProcess(args, 73, stdout="", stderr="direct Safari control disabled; use the lane-aware platform service")
+        if kwargs.get("check"):
+            raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
+        return result
+    return _ORIGINAL_SUBPROCESS_RUN(args, *positional, **kwargs)
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("CRM_SUPABASE_URL") or "https://ivhfuhxorppptyuofbgq.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("CRM_SUPABASE_ANON_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2aGZ1aHhvcnBwcHR5dW9mYmdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1Mzg5OTcsImV4cCI6MjA4NzExNDk5N30.tYXhbRaTquQWmNnhtfyKkE64e7zGI8CRBAc5dRtQR3Y"
 
@@ -141,7 +153,7 @@ def navigate_safari_to(platform, wait=5):
     )
     with open(f'/tmp/nav_{platform}.scpt', 'w') as fh:
         fh.write(scpt)
-    r = subprocess.run(['osascript', f'/tmp/nav_{platform}.scpt'], capture_output=True, text=True)
+    r = run_policy_command(['osascript', f'/tmp/nav_{platform}.scpt'], capture_output=True, text=True)
     raw = r.stdout.strip()
     try:
         parts = raw.split(',')
@@ -440,7 +452,7 @@ def ig_fetch_all_messages(conversations=None, dry_run=False):
                     f'  delay 4\nend tell\n')
         with open('/tmp/ig_tab_nav.scpt', 'w') as f:
             f.write(scpt)
-        subprocess.run(['osascript', '/tmp/ig_tab_nav.scpt'], capture_output=True)
+        run_policy_command(['osascript', '/tmp/ig_tab_nav.scpt'], capture_output=True)
         time.sleep(2.5)
 
     def scroll_list(delta=500):
@@ -685,7 +697,7 @@ def _tw_nav_to(url, wait=4):
                 f'  delay {wait}\nend tell\n')
     with open('/tmp/tw_nav.scpt', 'w') as f:
         f.write(scpt)
-    subprocess.run(['osascript', '/tmp/tw_nav.scpt'], capture_output=True)
+    run_policy_command(['osascript', '/tmp/tw_nav.scpt'], capture_output=True)
     time.sleep(1.5)
 
 
@@ -946,7 +958,7 @@ def _tk_nav_to(url, wait=4):
                 f'  delay {wait}\nend tell\n')
     with open('/tmp/tk_nav.scpt', 'w') as f:
         f.write(scpt)
-    subprocess.run(['osascript', '/tmp/tk_nav.scpt'], capture_output=True)
+    run_policy_command(['osascript', '/tmp/tk_nav.scpt'], capture_output=True)
     time.sleep(1.5)
 
 
@@ -1154,7 +1166,7 @@ def _li_nav_to(url, wait=5):
                 f'  delay {wait}\nend tell\n')
     with open('/tmp/li_nav.scpt', 'w') as f:
         f.write(scpt)
-    subprocess.run(['osascript', '/tmp/li_nav.scpt'], capture_output=True)
+    run_policy_command(['osascript', '/tmp/li_nav.scpt'], capture_output=True)
     time.sleep(2)
 
 
@@ -1173,7 +1185,7 @@ def _li_run_js(js):
             f'end tell\n')
     with open('/tmp/li_js.scpt', 'w') as f:
         f.write(scpt)
-    r = subprocess.run(['osascript', '/tmp/li_js.scpt'], capture_output=True, text=True)
+    r = run_policy_command(['osascript', '/tmp/li_js.scpt'], capture_output=True, text=True)
     return r.stdout.strip()
 
 
@@ -1355,7 +1367,7 @@ def _clipboard_paste_and_send(platform, compose_sel, send_sel, message):
     Requires _nav_state[platform] to be set.
     """
     # 1. Copy message to clipboard
-    subprocess.run(['pbcopy'], input=message.encode('utf-8'), check=True)
+    run_policy_command(['pbcopy'], input=message.encode('utf-8'), check=True)
     time.sleep(0.2)
 
     nav = _nav_state.get(platform)
@@ -1383,7 +1395,7 @@ def _clipboard_paste_and_send(platform, compose_sel, send_sel, message):
     )
     with open(f'/tmp/send_{platform}_paste.scpt', 'w') as f:
         f.write(scpt)
-    subprocess.run(['osascript', f'/tmp/send_{platform}_paste.scpt'], capture_output=True)
+    run_policy_command(['osascript', f'/tmp/send_{platform}_paste.scpt'], capture_output=True)
     time.sleep(0.5)
 
     # 3. Verify text is in box (expression, no return needed)
@@ -1611,7 +1623,7 @@ def ig_send_dm(handle, message, test_mode=True):
                 '  delay 4\nend tell\n')
     with open('/tmp/ig_send_nav.scpt', 'w') as f:
         f.write(scpt)
-    subprocess.run(['osascript', '/tmp/ig_send_nav.scpt'], capture_output=True)
+    run_policy_command(['osascript', '/tmp/ig_send_nav.scpt'], capture_output=True)
     time.sleep(2)
 
     if not _poll_for_element("instagram",
@@ -1742,7 +1754,7 @@ def scrape_instagram_all_tabs():
         nav_path = f"/tmp/ig_nav_{tab_name.lower()}.scpt"
         with open(nav_path, "w") as fh:
             fh.write(nav_scpt)
-        subprocess.run(["osascript", nav_path], capture_output=True)
+        run_policy_command(["osascript", nav_path], capture_output=True)
         time.sleep(3.5)  # wait for page to fully load
 
         # Verify the URL actually loaded (Instagram sometimes redirects)
@@ -1789,7 +1801,7 @@ def scrape_instagram_all_tabs():
             )
         with open(scpt_path, "w") as fh:
             fh.write(scpt)
-        r = subprocess.run(["osascript", scpt_path], capture_output=True, text=True)
+        r = run_policy_command(["osascript", scpt_path], capture_output=True, text=True)
         raw = r.stdout.strip()
 
         items = []
@@ -1833,7 +1845,7 @@ def scrape_instagram_all_tabs():
         back_scpt = 'tell application "Safari"\n  set URL of front document to "https://www.instagram.com/direct/inbox/"\n  delay 3\nend tell\n'
     with open('/tmp/ig_back_primary.scpt', 'w') as f:
         f.write(back_scpt)
-    subprocess.run(['osascript', '/tmp/ig_back_primary.scpt'], capture_output=True)
+    run_policy_command(['osascript', '/tmp/ig_back_primary.scpt'], capture_output=True)
     time.sleep(2)
 
     return list(all_convs.values())
@@ -1873,7 +1885,7 @@ def scrape_conversations_via_osascript(platform, scroll_rounds=3):
     with open(scpt_path, "w") as fh:
         fh.write(scpt)
 
-    r = subprocess.run(["osascript", scpt_path], capture_output=True, text=True)
+    r = run_policy_command(["osascript", scpt_path], capture_output=True, text=True)
     raw = r.stdout.strip()
     if not raw:
         if r.stderr:
@@ -1933,7 +1945,7 @@ def _run_js_in_tab(platform, js):
     path = f"/tmp/js_{platform}.scpt"
     with open(path, "w") as f:
         f.write(scpt)
-    r = subprocess.run(["osascript", path], capture_output=True, text=True)
+    r = run_policy_command(["osascript", path], capture_output=True, text=True)
     return r.stdout.strip()
 
 

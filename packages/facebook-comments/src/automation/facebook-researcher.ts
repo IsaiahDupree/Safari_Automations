@@ -30,6 +30,49 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
+async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
+  await client.requireSafariLanePermit(mode);
+}
+
+async function resolveClaimedSafariTabIndex(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive' = 'background',
+): Promise<number> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    resolveClaimedSafariTabIndex(
+      windowId: number,
+      tabIndex: number,
+      expectedOwnershipMarker?: string,
+      mode?: 'background' | 'interactive',
+    ): Promise<number>;
+  };
+  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
+}
+
+async function runClaimedSafariAppleScript(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive',
+  actionBody: string,
+  options: { preamble?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    runClaimedSafariAppleScript(
+      windowId: number,
+      tabIndex: number,
+      mode: 'background' | 'interactive',
+      actionBody: string,
+      options?: { preamble?: string; timeoutMs?: number },
+    ): Promise<string>;
+  };
+  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -109,6 +152,9 @@ export const DEFAULT_FB_RESEARCH_CONFIG: FacebookResearchConfig = {
 
 export class FacebookResearcher {
   private config: FacebookResearchConfig;
+  private trackedWindow: number | null = null;
+  private trackedWindowId: number | null = null;
+  private trackedTab: number | null = null;
 
   constructor(config: Partial<FacebookResearchConfig> = {}) {
     this.config = { ...DEFAULT_FB_RESEARCH_CONFIG, ...config };
@@ -117,13 +163,13 @@ export class FacebookResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
+    if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) {
+      throw new Error('Facebook research JS requires a claimed Safari agent tab in Window 2');
+    }
     const tmpFile = path.join(os.tmpdir(), `safari_fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
-    fs.writeFileSync(tmpFile, appleScript);
     try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
-      return stdout.trim();
+      return await runClaimedSafariAppleScript(this.trackedWindowId, this.trackedTab, 'background', `return do JavaScript "${jsCode}" in agentTab`, { timeoutMs: this.config.timeout });
     } finally {
       try { fs.unlinkSync(tmpFile); } catch {}
     }
@@ -131,14 +177,26 @@ export class FacebookResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) {
+        throw new Error('Facebook research navigation requires a claimed Safari agent tab in Window 2');
+      }
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      await runClaimedSafariAppleScript(this.trackedWindowId, this.trackedTab, 'background', `set URL of agentTab to "${safeUrl}"`);
       return true;
     } catch { return false; }
   }
 
   private async wait(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) {
+      throw new Error('FacebookResearcher requires a stable agent Window 2 claim');
+    }
+    this.trackedWindow = windowIndex;
+    this.trackedWindowId = Number(windowId);
+    this.trackedTab = tabIndex;
   }
 
   private async waitForSelector(selector: string, timeoutMs = 12000): Promise<boolean> {

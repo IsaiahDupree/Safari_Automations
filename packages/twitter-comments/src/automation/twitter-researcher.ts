@@ -25,6 +25,12 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
+async function requireSafariBackgroundPermit(): Promise<void> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
+  await client.requireSafariLanePermit('background');
+}
+
 const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
 const RESEARCH_HOLDER = 'twitter-researcher';
 
@@ -194,6 +200,9 @@ export class TwitterResearcher {
   }
 
   setTrackedTab(windowIndex: number, tabIndex: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
+      throw new Error('TwitterResearcher accepts claims only in agent Window 2');
+    }
     this._trackedWindow = windowIndex;
     this._trackedTab = tabIndex;
   }
@@ -201,11 +210,13 @@ export class TwitterResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
+    await requireSafariBackgroundPermit();
+    if (this._trackedWindow !== 2 || !this._trackedTab) {
+      throw new Error('Twitter research JS requires a claimed Safari agent tab in Window 2');
+    }
     const tmpFile = path.join(os.tmpdir(), `safari_research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const tabTarget = (this._trackedWindow && this._trackedTab)
-      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-      : `current tab of front window`;
+    const tabTarget = `tab ${this._trackedTab} of window 2`;
     const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
     fs.writeFileSync(tmpFile, appleScript);
     try {
@@ -218,10 +229,12 @@ export class TwitterResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      await requireSafariBackgroundPermit();
+      if (this._trackedWindow !== 2 || !this._trackedTab) {
+        throw new Error('Twitter research navigation requires a claimed Safari agent tab in Window 2');
+      }
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
+      const tabSpec = `tab ${this._trackedTab} of window 2`;
       await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
       return true;
     } catch { return false; }

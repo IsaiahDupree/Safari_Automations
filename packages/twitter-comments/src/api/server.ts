@@ -176,7 +176,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     version: '1.0.0',
     uptime: process.uptime(),
     chrome: {
-      cdp_url: 'http://localhost:9222',
+      cdp_url: 'disabled',
       connected: cdp.connected,
       has_twitter_tab: cdp.hasTwitterTab,
       tab_url: cdp.url,
@@ -192,33 +192,20 @@ app.use('/api', authMiddleware);
 // Every automation route MUST have an active tab claim before it runs.
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+// Live platform status and session ensure routes require marker-bound claims.
 const OPEN_URL = 'https://x.com';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/(?:status|clear)$|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-  if (myClaim) {
-    // Claim exists — pin both drivers to the claimed tab and proceed
-    getTabDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
-    next();
-    return;
-  }
-
-  // No claim — auto-claim now (open new tab if needed)
   try {
     if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN);
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
-    const claim = await stableCoord.claim();
-    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex);
+    const claim = await stableCoord.beginRequestOperation(res);
+    getTabDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, claim.windowId);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -939,11 +926,12 @@ app.post('/api/tabs/claim', async (req, res) => {
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.claim(windowIndex, tabIndex);
-    res.json({ ok: true, claim });
+    const claim = await coord.ensureOwnedTab(windowIndex, tabIndex);
+    activeCoordinators.delete(agentId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
@@ -960,10 +948,12 @@ app.post('/api/tabs/release', async (req, res) => {
 app.post('/api/tabs/heartbeat', async (req, res) => {
   const { agentId } = req.body;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  const coord = activeCoordinators.get(agentId);
-  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
-  await coord.heartbeat();
-  res.json({ ok: true, heartbeat: Date.now() });
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
 
 app.get('/api/session/status', (req, res) => {
@@ -1023,15 +1013,11 @@ setInterval(async () => {
 app.use(errorHandler);
 
 export function startServer(port = PORT) {
-  TabCoordinator.listClaims().then(claims => {
-    const stale = claims.filter(c => c.service === SERVICE_NAME);
-    if (stale.length > 0) {
-      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
-      import('fs/promises').then(fsp => {
-        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
-      });
+  TabCoordinator.removeStaleClaimsForService(SERVICE_NAME).then(removed => {
+    if (removed > 0) {
+      console.log(`[startup] Cleared ${removed} stale ${SERVICE_NAME} claim(s) from previous processes`);
     }
-  }).catch(() => {});
+  }).catch(error => console.warn('[startup] Safari stale-claim cleanup deferred:', error));
   app.listen(port, () => console.log(`🐦 Twitter Comments API running on http://localhost:${port}`));
 }
 if (process.argv[1]?.includes('server')) startServer();

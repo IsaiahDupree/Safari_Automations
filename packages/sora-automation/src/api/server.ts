@@ -70,6 +70,20 @@ import type { CommandPayload, CommandType, TelemetryEvent } from '../automation/
 
 const execFileAsync = promisify(execFile);
 
+async function requireSafariInteractivePermit(): Promise<void> {
+  const clientPath = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    requireSafariLanePermit(mode: 'interactive'): Promise<unknown>;
+  };
+  await client.requireSafariLanePermit('interactive');
+}
+
+async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
+  const clientPath = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
+  return client.runSafariForegroundInput(activateOwnedTab, performInput);
+}
+
 const PORT = parseInt(process.env.SORA_PORT || '7070', 10);
 const WS_PORT = PORT + 1;
 const SERVICE_NAME = 'sora-automation';
@@ -99,6 +113,11 @@ async function readEnforcerStatus(): Promise<EnforcerStatus> {
 }
 
 async function focusManagedSafari(): Promise<void> {
+  await requireSafariInteractivePermit();
+  const claim = await ensureTabClaim();
+  if (!claim || claim.windowIndex !== 2 || !Number.isInteger(claim.windowId) || Number(claim.windowId) <= 0) {
+    throw new Error('Sora focus requires a stable claimed Safari agent tab in Window 2');
+  }
   let status = await readEnforcerStatus();
   let remaining = Math.max(
     0,
@@ -124,19 +143,30 @@ async function focusManagedSafari(): Promise<void> {
     }
   }
 
-  // System Events can focus an existing process without asking LaunchServices
-  // or AppleScript to create another browser application.
-  await execFileAsync('/usr/bin/osascript', [
-    '-e',
-    'tell application "System Events" to set frontmost of process "Safari" to true',
-  ], { timeout: 5000, encoding: 'utf8' });
+  const activateScript = `
+tell application "Safari"
+  set agentWindow to first window whose id is ${claim.windowId}
+  set agentTab to tab ${claim.tabIndex} of agentWindow
+  activate
+  set current tab of agentWindow to agentTab
+  set index of agentWindow to 1
+end tell
+tell application "System Events"
+  set frontmost of process "Safari" to true
+end tell`;
+  await withSafariForegroundInput(
+    async () => {
+      await execFileAsync('/usr/bin/osascript', ['-e', activateScript], { timeout: 5000, encoding: 'utf8' });
+    },
+    async () => undefined,
+  );
 }
 
-async function ensureTabClaim(): Promise<{ windowIndex: number; tabIndex: number } | null> {
+async function ensureTabClaim(): Promise<{ windowId?: number; windowIndex: number; tabIndex: number } | null> {
   const claims = await TabCoordinator.listClaims();
   const myClaim = claims.find(c => c.service === SERVICE_NAME);
   if (myClaim) {
-    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
+    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, myClaim.windowId);
     return myClaim;
   }
   return null;
@@ -175,25 +205,27 @@ async function executeCommand(commandId: string): Promise<void> {
   queue.markRunning(commandId);
   emit('status.changed', { status: 'RUNNING' });
 
+  let operationCoord: TabCoordinator | null = null;
+  let operationHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let operationAgentId: string | null = null;
+
   try {
     const payload: CommandPayload = cmd.payload;
 
-    // Ensure we have a Sora tab claimed
-    const claim = await ensureTabClaim();
-    if (!claim) {
-      // Try to find an existing sora.com tab or open a new one
-      const found = await driver.findTab(SORA_PATTERN);
-      if (found) {
-        driver.setTrackedTab(found.windowIndex, found.tabIndex);
-        const autoId = `sora-auto-${Date.now()}`;
-        const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SORA_PATTERN, OPEN_URL);
-        activeCoordinators.set(autoId, coord);
-        await coord.claim(found.windowIndex, found.tabIndex);
-      } else {
-        throw new Error(
-          'No reusable sora.com tab found. Run "/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh"; it reuses shared Safari tabs and enforces the eight-tab cap.'
-        );
-      }
+    if (cmd.type === 'sora.generate' || cmd.type === 'sora.generate.clean') {
+      const autoId = `sora-auto-${Date.now()}`;
+      operationAgentId = autoId;
+      operationCoord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SORA_PATTERN, OPEN_URL);
+      activeCoordinators.set(autoId, operationCoord);
+      const operationClaim = await operationCoord.beginOperation();
+      driver.setTrackedTab(
+        operationClaim.windowIndex,
+        operationClaim.tabIndex,
+        operationClaim.windowId,
+      );
+      operationHeartbeat = setInterval(() => {
+        void operationCoord?.heartbeat().catch(() => {});
+      }, 15_000);
     }
 
     // ── sora.generate ───────────────────────────────────────────────────────
@@ -262,6 +294,12 @@ async function executeCommand(commandId: string): Promise<void> {
     queue.markFailed(commandId, message);
     broadcastEvent({ type: 'status.changed', commandId, timestamp: new Date().toISOString(), data: { status: 'FAILED', error: message } });
     logSoraCommand(queue.get(commandId)!).catch(() => {});
+  } finally {
+    if (operationHeartbeat) clearInterval(operationHeartbeat);
+    if (operationCoord) {
+      if (operationAgentId) activeCoordinators.delete(operationAgentId);
+      try { await operationCoord.endOperation(); } catch { /* drain cleanup retries on next startup */ }
+    }
   }
 }
 

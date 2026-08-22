@@ -11,8 +11,52 @@ import * as path from 'path';
 
 const execAsync = promisify(exec);
 
+async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
+  const clientPath = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
+  await client.requireSafariLanePermit(mode);
+}
+
+async function resolveClaimedSafariTabIndex(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive' = 'background',
+): Promise<number> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    resolveClaimedSafariTabIndex(
+      windowId: number,
+      tabIndex: number,
+      expectedOwnershipMarker?: string,
+      mode?: 'background' | 'interactive',
+    ): Promise<number>;
+  };
+  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
+}
+
+async function runClaimedSafariAppleScript(
+  windowId: number,
+  tabIndex: number,
+  mode: 'background' | 'interactive',
+  actionBody: string,
+  options: { preamble?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  const clientPath: string = '../../../shared/safari-lane-client.js';
+  const client = await import(clientPath) as {
+    runClaimedSafariAppleScript(
+      windowId: number,
+      tabIndex: number,
+      mode: 'background' | 'interactive',
+      actionBody: string,
+      options?: { preamble?: string; timeoutMs?: number },
+    ): Promise<string>;
+  };
+  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
+}
+
 export class SafariDriver {
   private trackedWindow: number | null = null;
+  private trackedWindowId: number | null = null;
   private trackedTab: number | null = null;
   private readonly timeout: number;
 
@@ -20,51 +64,35 @@ export class SafariDriver {
     this.timeout = opts.timeout ?? 60_000;
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number): void {
+  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
+    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error('Sora SafariDriver requires a stable agent Window 2 claim');
     this.trackedWindow = windowIndex;
+    this.trackedWindowId = Number(windowId);
     this.trackedTab = tabIndex;
   }
 
-  private get tabSpec(): string {
-    return (this.trackedWindow && this.trackedTab)
-      ? `tab ${this.trackedTab} of window ${this.trackedWindow}`
-      : 'front document';
-  }
-
   async executeJS(js: string): Promise<string> {
+    if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) throw new Error('Sora automation requires a claimed Safari agent tab in Window 2');
     const tmp = path.join(os.tmpdir(), `sora-js-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.js`);
     await fs.writeFile(tmp, js.trim());
-    const script = `
-      set jsCode to read POSIX file "${tmp}" as «class utf8»
-      tell application "Safari" to do JavaScript jsCode in ${this.tabSpec}
-    `;
     try {
-      const { stdout } = await execAsync(
-        `osascript -e '${script.replace(/'/g, "'\"'\"'")}'`,
-        { timeout: this.timeout }
+      return await runClaimedSafariAppleScript(
+        this.trackedWindowId,
+        this.trackedTab,
+        'background',
+        'return do JavaScript jsCode in agentTab',
+        { preamble: `set jsCode to read POSIX file "${tmp}" as «class utf8»`, timeoutMs: this.timeout },
       );
+    } finally {
       await fs.unlink(tmp).catch(() => {});
-      return stdout.trim();
-    } catch (err) {
-      await fs.unlink(tmp).catch(() => {});
-      throw err;
     }
   }
 
   async navigateTo(url: string): Promise<boolean> {
     try {
+      if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) throw new Error('Navigation requires a stable claimed Safari agent tab');
       const safe = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      if (this.trackedWindow && this.trackedTab) {
-        await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window ${this.trackedWindow} to "${safe}"'`,
-          { timeout: this.timeout }
-        );
-      } else {
-        await execAsync(
-          `osascript -e 'tell application "Safari" to set URL of front document to "${safe}"'`,
-          { timeout: this.timeout }
-        );
-      }
+      await runClaimedSafariAppleScript(this.trackedWindowId, this.trackedTab, 'background', `set URL of agentTab to "${safe}"`, { timeoutMs: this.timeout });
       await this.wait(2500);
       return true;
     } catch {
@@ -74,10 +102,8 @@ export class SafariDriver {
 
   async getCurrentUrl(): Promise<string> {
     try {
-      const { stdout } = await execAsync(
-        `osascript -e 'tell application "Safari" to get URL of ${this.tabSpec}'`
-      );
-      return stdout.trim();
+      if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) return '';
+      return await runClaimedSafariAppleScript(this.trackedWindowId, this.trackedTab, 'background', 'return URL of agentTab');
     } catch {
       return '';
     }
@@ -91,62 +117,16 @@ export class SafariDriver {
    * Open a new Safari tab and return its window+tab index.
    */
   async openNewTab(url: string): Promise<{ windowIndex: number; tabIndex: number }> {
-    const safe = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const script = `
-tell application "Safari"
-  if (count of windows) is 0 then error "Shared Safari window is not available"
-  set totalTabs to 0
-  repeat with existingWindow in windows
-    set totalTabs to totalTabs + (count of tabs of existingWindow)
-  end repeat
-  if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
-  activate
-  tell front window
-    set newTab to make new tab with properties {URL:"${safe}"}
-    set current tab to newTab
-    set tabIndex to index of newTab
-    set windowIndex to index
-  end tell
-  return (windowIndex as text) & ":" & (tabIndex as text)
-end tell`;
-    const { stdout } = await execAsync(`osascript << 'ASEOF'\n${script}\nASEOF`, { timeout: 15_000 });
-    const [windowText, tabText] = stdout.trim().split(':');
-    const windowIndex = parseInt(windowText, 10);
-    const tabIndex = parseInt(tabText, 10);
-    if (isNaN(windowIndex) || isNaN(tabIndex)) {
-      throw new Error(`Unexpected osascript output: ${stdout.trim()}`);
-    }
-    return { windowIndex, tabIndex };
+    throw new Error(`Direct Sora tab allocation is disabled for '${url}'; use TabCoordinator`);
   }
 
   /**
    * Find a tab whose URL matches pattern across all Safari windows.
    */
   async findTab(urlPattern: string): Promise<{ windowIndex: number; tabIndex: number; url: string } | null> {
-    const safe = urlPattern.replace(/"/g, '\\"');
-    const script = `
-tell application "Safari"
-  set tabList to {}
-  repeat with w in windows
-    repeat with t from 1 to count of tabs of w
-      set u to URL of tab t of w
-      if u contains "${safe}" then
-        set end of tabList to ((index of w as text) & "||" & (t as text) & "||" & u)
-      end if
-    end repeat
-  end repeat
-  return tabList
-end tell`;
-    try {
-      const { stdout } = await execAsync(`osascript << 'ASEOF'\n${script}\nASEOF`, { timeout: 10_000 });
-      const items = stdout.trim().split(', ').filter(Boolean);
-      for (const item of items) {
-        const parts = item.split('||');
-        if (parts.length >= 3) {
-          return { windowIndex: parseInt(parts[0], 10), tabIndex: parseInt(parts[1], 10), url: parts.slice(2).join('||') };
-        }
-      }
-    } catch { /* Safari not running */ }
+    if (this.trackedWindow !== 2 || !this.trackedWindowId || !this.trackedTab) return null;
+    const url = await this.getCurrentUrl();
+    if (url.includes(urlPattern)) return { windowIndex: 2, tabIndex: this.trackedTab, url };
     return null;
   }
 }

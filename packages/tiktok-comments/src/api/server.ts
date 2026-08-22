@@ -70,31 +70,19 @@ app.use(authMiddleware);
 // Every automation route MUST have an active tab claim before it runs.
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
-// Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits
+// Browser-touching platform status is intentionally not exempt.
 const OPEN_URL = 'https://www.tiktok.com';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/status$|^\/api\/[^\/]+\/rate-limits/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/rate-limits/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
-
-  if (myClaim) {
-    // Claim exists — pin driver to the claimed tab and proceed
-    getDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
-    next();
-    return;
-  }
-
-  // No claim — auto-discover an existing tiktok.com tab only (never opens a new window)
   try {
     if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
-    const claim = await stableCoord.claim();
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    const claim = await stableCoord.beginRequestOperation(res);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -161,7 +149,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     port: PORT,
     timestamp: new Date().toISOString(),
     chrome: {
-      cdp_url: 'http://localhost:9222',
+      cdp_url: 'disabled',
       connected: cdp.connected,
       has_tiktok_tab: cdp.hasTikTokTab,
       tab_url: cdp.url,
@@ -197,12 +185,13 @@ app.post('/api/tabs/claim', async (req: Request, res: Response) => {
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.claim(windowIndex, tabIndex);
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
-    res.json({ ok: true, claim, message: `Tab ${claim.windowIndex}:${claim.tabIndex} claimed by '${agentId}'` });
+    const claim = await coord.ensureOwnedTab(windowIndex, tabIndex);
+    activeCoordinators.delete(agentId);
+    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true, message: `Owned tab ${claim.windowIndex}:${claim.tabIndex} ensured for '${agentId}'` });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
@@ -225,14 +214,12 @@ app.post('/api/tabs/release', async (req: Request, res: Response) => {
 app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
   const { agentId } = req.body as { agentId: string };
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  try {
-    const coord = activeCoordinators.get(agentId);
-    if (!coord?.activeClaim) { res.status(404).json({ error: `No active claim for '${agentId}'` }); return; }
-    await coord.heartbeat();
-    res.json({ ok: true, heartbeat: Date.now() });
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1281,15 +1268,11 @@ app.post('/api/tiktok/self-poll', async (_req: Request, res: Response) => {
 });
 
 export function startServer(port = PORT) {
-  TabCoordinator.listClaims().then(claims => {
-    const stale = claims.filter(c => c.service === SERVICE_NAME);
-    if (stale.length > 0) {
-      console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
-      import('fs/promises').then(fsp => {
-        fsp.writeFile('/tmp/safari-tab-claims.json', JSON.stringify(claims.filter(c => c.service !== SERVICE_NAME), null, 2)).catch(() => {});
-      });
+  TabCoordinator.removeStaleClaimsForService(SERVICE_NAME).then(removed => {
+    if (removed > 0) {
+      console.log(`[startup] Cleared ${removed} stale ${SERVICE_NAME} claim(s) from previous processes`);
     }
-  }).catch(() => {});
+  }).catch(error => console.warn('[startup] Safari stale-claim cleanup deferred:', error));
   app.listen(port, () => console.log(`🎵 TikTok Comments API running on http://localhost:${port}`));
 }
 if (process.argv[1]?.includes('server')) startServer();

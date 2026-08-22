@@ -173,6 +173,7 @@ def run_dm_send(username: str, message: str):
 
 
 def main():
+    raise RuntimeError("Legacy direct Safari TikTok CLI is disabled; use the claimed TikTok services")
     parser = argparse.ArgumentParser(
         description='TikTok Safari Automation - Full Feature CLI',
         formatter_class=argparse.RawDescriptionHelpFormatter,

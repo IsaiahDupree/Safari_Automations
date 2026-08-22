@@ -22,6 +22,16 @@ from datetime import datetime, timezone
 
 import yaml  # pip install pyyaml
 
+def run_policy_command(args, *positional, **kwargs):
+    """Deny legacy direct Safari control while preserving non-browser helpers."""
+    executable = os.path.basename(str(args[0])) if isinstance(args, (list, tuple)) and args else ""
+    if executable == "osascript":
+        result = subprocess.CompletedProcess(args, 73, stdout="", stderr="direct Safari control disabled; use linkedin-automation service")
+        if kwargs.get("check"):
+            raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
+        return result
+    return subprocess.run(args, *positional, **kwargs)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE  = os.path.join(SCRIPT_DIR, "prospect_config.yaml")
@@ -245,14 +255,14 @@ def _li_js(js: str) -> str:
         'set jsCode to read POSIX file "/tmp/li_p_extract.js" as \xabclass utf8\xbb\n'
         'tell application "Safari" to do JavaScript jsCode in front document\n'
     )
-    r = subprocess.run(['osascript', '-e', scpt], capture_output=True, text=True, timeout=20)
+    r = run_policy_command(['osascript', '-e', scpt], capture_output=True, text=True, timeout=20)
     return r.stdout.strip()
 
 
 def _li_nav(url: str, wait: float = 5.0):
     """Navigate front Safari document to url, wait for it to load."""
     safe = url.replace('"', '%22')
-    subprocess.run(
+    run_policy_command(
         ['osascript', '-e',
          f'tell application "Safari"\n'
          f'  set URL of front document to "{safe}"\n'
@@ -488,7 +498,7 @@ def li_send_connection_request(profile: dict, note: str, dry_run: bool = False) 
             _li_js('(function(){var t=document.querySelector("#custom-message,textarea[name=message],textarea");if(t){t.click();t.focus();}})()')
             time.sleep(0.3)
             subprocess.run(['pbcopy'], input=note.encode('utf-8'), check=True)
-            subprocess.run(
+            run_policy_command(
                 ['osascript', '-e',
                  'tell application "Safari" to activate\n'
                  'delay 0.2\n'

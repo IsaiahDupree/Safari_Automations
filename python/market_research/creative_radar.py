@@ -1752,6 +1752,7 @@ class CreativeRadar:
 
     def _safari_extract_media(self, url: str, platform: str) -> List[str]:
         """Navigate Safari to a URL and extract all image/video media URLs."""
+        raise RuntimeError("Legacy direct Safari media extraction is disabled; use the claimed market-research service")
         import subprocess as _sp
 
         # Navigate

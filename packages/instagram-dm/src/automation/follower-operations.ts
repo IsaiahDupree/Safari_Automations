@@ -3,33 +3,21 @@
  * PAP-002: Extract followers from a creator's profile
  */
 
-import { getPage } from './chrome-driver.js';
+import { getDefaultDriver } from './safari-driver.js';
 
 /**
- * Chrome/Puppeteer shim for the old AppleScript execSafari calls.
- * Navigates the Chrome Instagram page and runs JS via page.evaluate().
+ * Reuse the broker-owned Safari Window 2 tab.
  */
 async function execSafariNav(url: string): Promise<string> {
-  const p = await getPage();
-  await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  const driver = getDefaultDriver();
+  const navigated = await driver.navigateTo(url);
+  if (!navigated) throw new Error('Safari navigation was denied or failed');
   await new Promise(r => setTimeout(r, 3000));
-  return p.url();
+  return driver.getCurrentUrl();
 }
 
 async function execSafariJS(js: string): Promise<string> {
-  const p = await getPage();
-  const result = await p.evaluate((code: string) => {
-    try {
-      // eslint-disable-next-line no-eval
-      const val = eval(code);
-      if (val === null || val === undefined) return '';
-      if (typeof val === 'object') return JSON.stringify(val);
-      return String(val);
-    } catch (e) {
-      return JSON.stringify({ error: (e as Error).message });
-    }
-  }, js);
-  return String(result ?? '');
+  return getDefaultDriver().executeJS(js);
 }
 
 export interface FollowerProfile {

@@ -22,6 +22,7 @@ import { MediumOperations } from '../automation/medium-operations.js';
 import type { PostDraft } from '../automation/medium-operations.js';
 import { MonetizationEngine } from '../automation/monetization-engine.js';
 import { MediumResearcher } from '../automation/medium-researcher.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 
 const app = express();
 app.use(cors());
@@ -32,10 +33,62 @@ const medium = new MediumOperations();
 const monetization = new MonetizationEngine(medium);
 const researcher = new MediumResearcher();
 
+const SERVICE_NAME = 'medium-automation';
+const SESSION_URL_PATTERN = 'medium.com';
+const OPEN_URL = 'https://medium.com';
+const STABLE_AGENT_ID = 'medium-automation-stable';
+let stableCoordinator: TabCoordinator | null = null;
+
+function pinClaim(claim: { windowIndex: number; tabIndex: number }): void {
+  medium.setTrackedTab(claim.windowIndex, claim.tabIndex);
+  monetization.setTrackedTab(claim.windowIndex, claim.tabIndex);
+  researcher.setTrackedTab(claim.windowIndex, claim.tabIndex);
+}
+
+// session/ensure uses only the coordinator's atomic allocation path; all
+// driver-backed routes, including platform status, require an operation lease.
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/ensure$/;
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+  try {
+    stableCoordinator ??= new TabCoordinator(
+      STABLE_AGENT_ID,
+      SERVICE_NAME,
+      PORT,
+      SESSION_URL_PATTERN,
+      OPEN_URL,
+    );
+    const claim = await stableCoordinator.beginRequestOperation(res);
+    pinClaim(claim);
+    next();
+  } catch (error) {
+    res.status(503).json({ error: 'No safe Safari agent tab available for medium-automation', detail: String(error) });
+  }
+});
+
+setInterval(async () => {
+  try { if (stableCoordinator) await stableCoordinator.heartbeat(); } catch { stableCoordinator = null; }
+}, 30_000);
+
 // ─── Health ──────────────────────────────────────────────────
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', service: 'medium-automation', port: PORT });
+});
+
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  res.json(await TabCoordinator.listClaims());
+});
+
+app.post('/api/session/ensure', async (_req: Request, res: Response) => {
+  try {
+    stableCoordinator ??= new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, PORT, SESSION_URL_PATTERN, OPEN_URL);
+    const claim = await stableCoordinator.ensureOwnedTab();
+    pinClaim(claim);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
+  } catch (error) {
+    res.status(503).json({ ok: false, error: String(error) });
+  }
 });
 
 // ─── Status (login check) ───────────────────────────────────

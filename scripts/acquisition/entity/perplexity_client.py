@@ -198,6 +198,9 @@ class SafariPerplexityFallback:
         Returns:
             dict with 'content' (extracted text) and empty 'citations'
         """
+        raise PerplexityNotConfiguredError(
+            "Direct Safari fallback is disabled; configure PERPLEXITY_API_KEY or use a lane-aware browser service"
+        )
         encoded = urllib.parse.quote(query)
         url = f"https://www.perplexity.ai/?q={encoded}"
 

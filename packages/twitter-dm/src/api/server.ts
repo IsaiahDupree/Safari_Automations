@@ -95,7 +95,7 @@ import {
   getProfileInfo,
   DEFAULT_RATE_LIMITS,
 } from '../automation/index.js';
-import { getCDPStatus } from '../automation/chrome-driver.js';
+import { TabCoordinator } from '../automation/tab-coordinator.js';
 import type { DMTab, RateLimitConfig } from '../automation/types.js';
 import { isWithinActiveHours } from '../utils/index.js';
 import { initDMLogger, logDM, getDMStats } from '../utils/dm-logger.js';
@@ -119,12 +119,17 @@ let lastHourReset = Date.now();
 let lastDayReset = Date.now();
 let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 
-// Chrome driver instance (replaces SafariDriver)
-// Connects to the canonical Chrome singleton via CDP 9222; never launches Chrome.
+// Compatibility class name retained; its implementation is the claimed Safari driver.
 let driver: ChromeDriver | null = null;
 
-// CDP URL for Twitter Chrome session
+// URL pattern for the claimed Twitter Safari lane.
 const SESSION_URL_PATTERN = 'x.com';
+const OPEN_URL = 'https://x.com/messages';
+const SERVICE_NAME = 'twitter-dm';
+const STABLE_AGENT_ID = 'twitter-dm-stable';
+const activeCoordinators = new Map<string, TabCoordinator>();
+let stableCoord: TabCoordinator | null = null;
+setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 
 function getDriver(): ChromeDriver {
   if (!driver) {
@@ -136,12 +141,14 @@ function getDriver(): ChromeDriver {
 }
 
 /**
- * Ensure the Twitter Chrome session is alive.
- * For Chrome/Puppeteer this simply checks if we can read the current URL.
+ * Ensure the Twitter Safari agent lane is claimed and pinned by stable window ID.
  */
-async function ensureTwitterSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
-  const info = await getDriver().ensureActiveSession(SESSION_URL_PATTERN);
-  return { ok: info.found, windowIndex: info.windowIndex, tabIndex: info.tabIndex, url: info.url };
+async function ensureTwitterSession(res: Response): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
+  stableCoord ??= new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, 3003, SESSION_URL_PATTERN, OPEN_URL);
+  activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
+  const claim = await stableCoord.beginRequestOperation(res);
+  await getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+  return { ok: true, windowIndex: claim.windowIndex, tabIndex: claim.tabIndex, url: claim.tabUrl };
 }
 
 // Rate limit check middleware
@@ -193,23 +200,26 @@ function recordMessageSent(): void {
   messagesSentToday++;
 }
 
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/status$|^\/api\/rate-limits/;
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+  try { await ensureTwitterSession(res); next(); }
+  catch (error) { res.status(503).json({ error: 'Safari agent lane unavailable', detail: String(error) }); }
+});
+
 // Chrome/Puppeteer does not require a Safari tab claim.
 // No requireTabClaim middleware needed.
 
 // === HEALTH ===
 
 app.get('/health', async (_req: Request, res: Response) => {
-  const cdp = await getCDPStatus();
+  const laneClaim = (await TabCoordinator.listClaims()).find(candidate => candidate.agentId === STABLE_AGENT_ID);
   res.json({
     status: 'ok',
     service: 'twitter-dm',
-    driver: 'chrome-puppeteer',
-    cdp: {
-      connected: cdp.connected,
-      url: cdp.url,
-      tabCount: cdp.tabCount,
-      currentUrl: cdp.currentUrl,
-    },
+    driver: 'safari-window-2',
+    claimed: !!laneClaim,
+    currentUrl: laneClaim?.tabUrl ?? '',
     timestamp: new Date().toISOString(),
   });
 });
@@ -218,57 +228,67 @@ app.get('/health', async (_req: Request, res: Response) => {
 // Kept for API compatibility with external callers (watchdog, daemons).
 
 // GET /api/tabs/claims — returns empty list (Chrome needs no tab claims)
-app.get('/api/tabs/claims', (_req: Request, res: Response) => {
-  res.json({ claims: [], count: 0, note: 'Chrome mode — Safari tab claims not used' });
+app.get('/api/tabs/claims', async (_req: Request, res: Response) => {
+  const claims = (await TabCoordinator.listClaims()).filter(candidate => candidate.service === SERVICE_NAME);
+  res.json({ claims, count: claims.length });
 });
 
-// POST /api/tabs/claim — no-op in Chrome mode
-app.post('/api/tabs/claim', (req: Request, res: Response) => {
-  const { agentId } = req.body as { agentId?: string };
+app.post('/api/tabs/claim', async (req: Request, res: Response) => {
+  const { agentId, openUrl } = req.body as { agentId?: string; openUrl?: string };
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  res.json({ ok: true, message: `Chrome mode — no tab claim needed for '${agentId}'` });
+  try {
+    const coord = new TabCoordinator(agentId, SERVICE_NAME, 3003, SESSION_URL_PATTERN, openUrl || OPEN_URL);
+    activeCoordinators.set(agentId, coord);
+    const claim = await coord.ensureOwnedTab();
+    activeCoordinators.delete(agentId);
+    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
+  } catch (error) { res.status(409).json({ ok: false, error: String(error) }); }
 });
 
-// POST /api/tabs/release — no-op in Chrome mode
-app.post('/api/tabs/release', (req: Request, res: Response) => {
-  const { agentId } = req.body as { agentId?: string };
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  res.json({ ok: true, message: `Chrome mode — no tab claim to release for '${agentId}'` });
+app.post('/api/tabs/release', async (req: Request, res: Response) => {
+  const agentId = (req.body as { agentId?: string }).agentId;
+  const coord = agentId ? activeCoordinators.get(agentId) : undefined;
+  if (!coord) { res.status(404).json({ error: 'active coordinator not found' }); return; }
+  await coord.release();
+  activeCoordinators.delete(agentId!);
+  res.json({ ok: true });
 });
 
-// POST /api/tabs/heartbeat — no-op in Chrome mode
-app.post('/api/tabs/heartbeat', (req: Request, res: Response) => {
-  const { agentId } = req.body as { agentId?: string };
+app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
+  const agentId = (req.body as { agentId?: string }).agentId;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  res.json({ ok: true, heartbeat: Date.now(), note: 'Chrome mode — heartbeat is a no-op' });
+  res.status(410).json({
+    ok: false,
+    operationLease: false,
+    deprecatedManualClaim: true,
+    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
+  });
 });
+
 // ────────────────────────────────────────────────────────────────────────────
 
 
 // === SESSION MANAGEMENT ===
 
 app.get('/api/session/status', async (_req: Request, res: Response) => {
-  const cdp = await getCDPStatus();
+  const laneClaim = (await TabCoordinator.listClaims()).find(candidate => candidate.agentId === STABLE_AGENT_ID);
   res.json({
-    tracked: cdp.connected,
-    driver: 'chrome-puppeteer',
-    cdpConnected: cdp.connected,
-    cdpUrl: cdp.url,
-    tabCount: cdp.tabCount,
-    currentUrl: cdp.currentUrl,
+    tracked: !!laneClaim,
+    driver: 'safari-window-2',
+    currentUrl: laneClaim?.tabUrl ?? '',
     sessionUrlPattern: SESSION_URL_PATTERN,
   });
 });
 
 app.post('/api/session/ensure', async (_req: Request, res: Response) => {
   try {
-    const info = await ensureTwitterSession();
+    const info = await ensureTwitterSession(res);
     res.json({
       ok: info.ok,
       url: info.url,
       message: info.ok
-        ? `Twitter Chrome session active — current URL: ${info.url}`
-        : 'Twitter Chrome session not found — ensure the canonical Chrome is running on CDP 9222',
+        ? `Twitter Safari agent lane active — current URL: ${info.url}`
+        : 'Twitter Safari agent lane is unavailable',
     });
   } catch (error) {
     const msg = String(error);
@@ -278,7 +298,7 @@ app.post('/api/session/ensure', async (_req: Request, res: Response) => {
 
 app.post('/api/session/clear', (_req: Request, res: Response) => {
   getDriver().clearTrackedSession();
-  res.json({ ok: true, message: 'Session state cleared (Chrome mode — no-op)' });
+  res.json({ ok: true, message: 'Safari lane client state cleared' });
 });
 
 // === STATUS ===
@@ -652,7 +672,7 @@ app.post('/api/twitter/ai/generate', async (req: Request, res: Response) => {
 // === PROSPECT DISCOVERY ===
 
 app.post('/api/twitter/prospect/discover', async (req: Request, res: Response) => {
-  // Chrome mode: no tab claim needed — Puppeteer manages the browser directly
+  // Request middleware has already pinned the claimed Safari lane.
   const params = req.body || {};
   try {
     const result = await discoverProspects(params);
@@ -742,13 +762,9 @@ app.get('/api/self-poll/trigger', async (_req: Request, res: Response) => {
 const PORT = parseInt(process.env.TWITTER_DM_PORT || process.env.PORT || '3003');
 
 export function startServer(port: number = PORT): void {
-  const cdpUrl = 'http://localhost:9222';
-
   app.listen(port, () => {
     console.log(`🐦 Twitter DM API server running on http://localhost:${port}`);
-    console.log(`   Driver: Chrome/Puppeteer (CDP)`);
-    console.log(`   CDP URL: ${cdpUrl}`);
-    console.log('   Profile: shared chrome-bridge agent singleton');
+    console.log(`   Driver: claimed Safari Window 2`);
     console.log(`   Health: GET /health`);
     console.log(`   Status: GET /api/twitter/status`);
     console.log(`   Send DM: POST /api/twitter/messages/send-to`);

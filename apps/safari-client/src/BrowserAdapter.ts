@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 dotenv.config();
+function rawBrowserDisabled(): boolean { return true; }
 
 // Setup puppeteer stealth
 puppeteer.use(StealthPlugin());
@@ -181,6 +182,10 @@ function wrapPlaywrightPage(page: PlaywrightPage, browserType: BrowserType): Uni
  * Launch a browser with the specified configuration
  */
 async function launchBrowser(config: BrowserConfig): Promise<UnifiedBrowser> {
+    if (rawBrowserDisabled()) throw Object.assign(
+        new Error('Legacy browser adapter is disabled; use a brokered browser service'),
+        { code: 'RAW_BROWSER_AUTOMATION_DISABLED' }
+    );
     const { browserType } = config;
 
     logger.info(`Attaching to shared ${browserType} browser`, {

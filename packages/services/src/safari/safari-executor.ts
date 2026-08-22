@@ -25,21 +25,12 @@ export class SafariExecutor {
    * Execute AppleScript and return result
    */
   async runAppleScript(script: string): Promise<{ success: boolean; output: string; error?: string }> {
-    try {
-      const escapedScript = script.replace(/'/g, "'\"'\"'");
-      const { stdout, stderr } = await execAsync(`osascript -e '${escapedScript}'`, {
-        timeout: this.config.timeout,
-      });
-
-      if (stderr && !stderr.includes('missing value')) {
-        console.debug('AppleScript stderr:', stderr);
-      }
-
-      return { success: true, output: stdout.trim() };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { success: false, output: '', error: message };
-    }
+    void script;
+    return {
+      success: false,
+      output: '',
+      error: 'Legacy SafariExecutor is disabled: use a lane-aware service with a Window 2 TabCoordinator claim',
+    };
   }
 
   /**
@@ -291,6 +282,10 @@ do shell script "screencapture -R" & x & "," & y & "," & w & "," & h & " ${filep
    * Type text using clipboard paste (supports emojis)
    */
   async typeViaClipboard(text: string): Promise<boolean> {
+    void text;
+    return false;
+    /* istanbul ignore next -- retained unreachable legacy reference */
+    /*
     // Copy to clipboard using printf (echo -n is unreliable on macOS)
     const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/%/g, '%%');
     await execAsync(`printf "%s" "${escaped}" | pbcopy`).catch(() => null);
@@ -307,6 +302,7 @@ end tell`;
 
     const result = await this.runAppleScript(script);
     return result.success;
+    */
   }
 
   /**

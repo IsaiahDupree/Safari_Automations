@@ -98,12 +98,7 @@ def exec_navigate(params):
         r, err = svc(port, "POST", f"/api/{platform}/navigate", {"url": url}, timeout=10)
         if r and r.get("success"):
             return True, f"navigated via service to {url}"
-    # Fallback: direct osascript
-    scpt = f'tell application "Safari" to set URL of front document to "{url}"'
-    res = subprocess.run(["osascript", "-e", scpt], capture_output=True, text=True, timeout=8)
-    if res.returncode == 0:
-        return True, f"navigated via osascript to {url}"
-    return False, res.stderr.strip()[:80]
+    return False, "lane-aware service navigation unavailable; direct Safari fallback is disabled"
 
 def exec_send_dm(params, cmd_platform=""):
     """Send a DM on the specified platform."""

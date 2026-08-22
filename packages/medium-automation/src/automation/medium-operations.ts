@@ -144,6 +144,10 @@ export class MediumOperations {
     this.driver = new MediumSafariDriver();
   }
 
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
+    this.driver.setTrackedTab(windowIndex, tabIndex, 'medium.com');
+  }
+
   // ─── Check Login Status ────────────────────────────────────
 
   async checkStatus(): Promise<{ loggedIn: boolean; url: string; notifications: number }> {

@@ -418,6 +418,7 @@ async function syncHiddenRequests(): Promise<{ contacts: number; messages: numbe
 }
 
 async function main() {
+  throw new Error('Direct Safari CRM sync is disabled; use the lane-aware Instagram DM service and ACTP worker sync');
   const args = process.argv.slice(2);
   const specificTab = args.find(a => !a.startsWith('--'));
   const fullSync = args.includes('--full');

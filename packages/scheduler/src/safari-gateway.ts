@@ -390,21 +390,15 @@ tell application "System Events"
 end tell
 tell application "Safari"
     set wc to count of windows
-    set u to ""
-    set t to ""
-    try
-        set u to URL of front document
-        set t to name of front document
-    end try
 end tell
-return (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+return (isFront as text) & "|" & (wc as text)'`);
     const parts = stateResult.stdout.trim().split('|');
     return {
       running: true,
       frontmost: parts[0] === 'true',
       windowCount: parseInt(parts[1], 10) || 0,
-      currentUrl: parts[2] || '',
-      pageTitle: parts[3] || '',
+      currentUrl: '',
+      pageTitle: '',
       cooling: false,
       cooldownRemainingSeconds: 0,
     };
@@ -433,57 +427,14 @@ async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Pro
   currentUrl: string;
   error?: string;
 }> {
-  try {
-    await ensureManagedSafari();
-
-    // System Events focuses an existing process without launching Safari.
-    await execAsync(`osascript -e '
-tell application "System Events"
-    set frontmost of process "Safari" to true
-end tell'`);
-    await new Promise(r => setTimeout(r, 200));
-
-    // Create one window only when the managed application has none.
-    if (opts?.ensureWindow !== false) {
-      await execAsync(`osascript -e '
-tell application "Safari"
-    set wc to count of windows
-    if wc = 0 then
-        make new document
-    end if
-end tell'`);
-
-      await execAsync(`osascript -e '
-tell application "System Events"
-    tell process "Safari"
-        try
-            perform action "AXRaise" of front window
-        end try
-    end tell
-end tell'`).catch(() => null);
-    }
-
-    if (opts?.url) {
-      const parsedUrl = new URL(opts.url);
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        throw new Error('Safari navigation only accepts http(s) URLs');
-      }
-      const safeUrl = parsedUrl.toString().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`);
-    }
-
-    await new Promise(r => setTimeout(r, 300));
-    const state = await readSafariUiState();
-    return {
-      success: state.running && !state.cooling,
-      frontmost: state.frontmost,
-      windowCount: state.windowCount,
-      currentUrl: state.currentUrl,
-      error: state.error,
-    };
-  } catch (e: any) {
-    return { success: false, frontmost: false, windowCount: 0, currentUrl: '', error: e.message };
-  }
+  void opts;
+  return {
+    success: false,
+    frontmost: false,
+    windowCount: 0,
+    currentUrl: '',
+    error: 'Direct Safari focus/navigation is disabled. Use a service TabCoordinator claim in agent Window 2.',
+  };
 }
 
 /**
