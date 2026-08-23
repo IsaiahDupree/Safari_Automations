@@ -62,6 +62,16 @@ EXTRA_ENV[3107]="UPWORK_PORT=3107"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
+# -- Passive-pause coordination (ops/safari-passive.py) -----------------------
+# During an ACTIVE Safari automation (ASC App Privacy, DM send, …), passive
+# data-gathering services are paused so they can't hijack the shared Safari tab.
+# While paused, this watchdog skips restarting the passive ports; safari-passive
+# .py's guardian restores them (launchd + ports) after the 30-min cooldown.
+# Fail-open: if the check errors, we treat it as NOT paused (fleet stays healthy).
+PASSIVE_PAUSE_PORTS=" 3005 3006 3007 3004 3008 3106 3107 7070 3108 "
+passive_paused() { python3 "$SAFARI_DIR/ops/safari-passive.py" is-paused >/dev/null 2>&1; }
+is_passive_port() { [[ "$PASSIVE_PAUSE_PORTS" == *" $1 "* ]]; }
+
 # Launch a service space-safely. The repo path contains a space ("Safari
 # Automation"), so we must NOT build the command via eval/word-splitting — use
 # `env` with a quoted tsx path instead. Prefer the repo-local tsx; fall back to npx.
@@ -152,7 +162,12 @@ while true; do
   # ensure_agent_chrome
 
   # 1) platform HTTP services
+  # Check the passive-pause flag ONCE per cycle (cheap) — skip passive restarts while paused.
+  if passive_paused; then PASSIVE_PAUSED=1; else PASSIVE_PAUSED=0; fi
   for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do
+    if [ "$PASSIVE_PAUSED" = 1 ] && is_passive_port "$port"; then
+      continue   # passive service intentionally paused for an active Safari automation
+    fi
     result=$(curl -s --max-time 3 "http://localhost:$port/health" 2>/dev/null)
     if [ -z "$result" ]; then
       pkg="${SERVICES[$port]}"
