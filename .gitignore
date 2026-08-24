@@ -55,3 +55,4 @@ temp/
 Thumbs.db
 .env.production
 .env.development
+ops/safari-passive.py.bak.*
