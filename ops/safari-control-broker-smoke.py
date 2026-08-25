@@ -554,6 +554,13 @@ def test_token_scope_and_transport(broker) -> None:
             str(expected_policy),
             "daemon",
         ], expected_program)
+        assert broker.canonical_enforcer_argv([
+            str(broker.CANONICAL_ENFORCER_PYTHON_APP),
+            str(expected_program),
+            "--policy",
+            str(expected_policy),
+            "daemon",
+        ], expected_program)
         assert not broker.canonical_enforcer_argv([
             "/usr/bin/python3",
             str(expected_program),

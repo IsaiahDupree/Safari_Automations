@@ -68,6 +68,10 @@ READ_TOKEN_FILENAME = "safari-presence.token"
 TRIM_SOCKET_FILENAME = "safari-trim.sock"
 ENFORCER_LAUNCHD_LABEL = "com.isaiah.actp-browser-enforcer"
 CANONICAL_ENFORCER_PYTHON = Path("/opt/homebrew/bin/python3")
+CANONICAL_ENFORCER_PYTHON_APP = Path(
+    "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/Current/"
+    "Resources/Python.app/Contents/MacOS/Python"
+)
 DARWIN_SOL_LOCAL = 0
 DARWIN_LOCAL_PEERPID = 0x002
 CTL_KERN = 1
@@ -1003,7 +1007,10 @@ def canonical_enforcer_argv(arguments: list[str], expected_program: Path) -> boo
         return False
     try:
         resolved_runtime = Path(arguments[0]).resolve(strict=True)
-        expected_runtime = CANONICAL_ENFORCER_PYTHON.resolve(strict=True)
+        expected_runtimes = {
+            CANONICAL_ENFORCER_PYTHON.resolve(strict=True),
+            CANONICAL_ENFORCER_PYTHON_APP.resolve(strict=True),
+        }
         resolved_program = expected_program.resolve(strict=True)
         expected_policy = resolved_program.with_name("browser-policy.json").resolve(strict=True)
         supplied_program = Path(arguments[1]).resolve(strict=True)
@@ -1011,7 +1018,7 @@ def canonical_enforcer_argv(arguments: list[str], expected_program: Path) -> boo
     except OSError:
         return False
     return (
-        resolved_runtime == expected_runtime
+        resolved_runtime in expected_runtimes
         and supplied_program == resolved_program
         and arguments[2] == "--policy"
         and supplied_policy == expected_policy

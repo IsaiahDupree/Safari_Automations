@@ -1025,7 +1025,11 @@ def publish_control_readiness() -> dict[str, Any]:
             and observed.get("transport") == "unix_peer_attested"
         )}
     except Exception as exc:
-        value["chrome"] = {"ok": False, "error": type(exc).__name__}
+        value["chrome"] = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "detail": str(exc)[-300:],
+        }
     try:
         observed = unix_control_json(
             SAFARI_TRIM_SOCKET,
@@ -1040,7 +1044,11 @@ def publish_control_readiness() -> dict[str, Any]:
             and observed.get("authorized") is True
         )}
     except Exception as exc:
-        value["safari"] = {"ok": False, "error": type(exc).__name__}
+        value["safari"] = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "detail": str(exc)[-300:],
+        }
     atomic_write_json(CONTROL_READINESS_FILE, value)
     return value
 
@@ -6201,7 +6209,11 @@ def install_launch_agent(policy_path: Path) -> None:
             break
         time.sleep(0.5)
     else:
-        raise RuntimeError(f"browser enforcer launch agent failed readiness verification; inspect {RUNTIME_DIR}")
+        readiness = load_json(CONTROL_READINESS_FILE, None)
+        raise RuntimeError(
+            "browser enforcer launch agent failed readiness verification "
+            f"receipt={json.dumps(readiness, sort_keys=True)}; inspect {RUNTIME_DIR}"
+        )
     log(f"installed launch agent: {LAUNCH_AGENT}")
 
 
