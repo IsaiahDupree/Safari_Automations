@@ -37,6 +37,22 @@ SHELL_TOOL_NAMES = frozenset({
 })
 
 
+SAFE_CONTENT_TOOLS = {
+    "apply_patch",
+    "update_plan",
+    "update_goal",
+    "get_goal",
+    "create_goal",
+    "mcp__supabase__apply_migration",
+    "collaborationspawn_agent",
+    "collaborationfollowup_task",
+    "collaborationsend_message",
+    "collaborationlist_agents",
+    "collaborationwait_agent",
+    "collaborationinterrupt_agent",
+}
+
+
 def shell_tool_name(tool_name: str) -> bool:
     lowered = tool_name.strip().lower()
     return lowered in SHELL_TOOL_NAMES or lowered.endswith("__exec_command")
@@ -251,6 +267,9 @@ def main() -> int:
     try:
         value = load_input(client)
         tool_name, command, serialized_input = extract_command(value)
+        safe_content_tool = tool_name.strip().lower() in SAFE_CONTENT_TOOLS
+        if safe_content_tool:
+            serialized_input = ""
     except (ValueError, json.JSONDecodeError) as exc:
         deny(client, f"invalid hook input ({type(exc).__name__})")
 
@@ -269,7 +288,7 @@ def main() -> int:
     if not command:
         return 0
 
-    reason = browser_policy_denial(command)
+    reason = None if safe_content_tool else browser_policy_denial(command)
     status, damage_reason = ("blocked", reason) if reason else damage_decision(command)
     if status == "blocked":
         audit(status, tool_name, command, damage_reason)

@@ -18,6 +18,39 @@ SPEC.loader.exec_module(HOOK)
 
 
 class BrowserCommandHookTests(unittest.TestCase):
+    def test_noninteractive_content_tools_ignore_name_substrings_but_keep_damage_checks(self) -> None:
+        payloads = (
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {"command": "update an API search operation"},
+            },
+            {
+                "tool_name": "mcp__supabase__apply_migration",
+                "tool_input": {"query": "create a search operation index"},
+            },
+        )
+        for payload in payloads:
+            stdout = io.StringIO()
+            with self.subTest(tool_name=payload["tool_name"]), mock.patch(
+                "sys.argv", ["hook", "--client", "codex"]
+            ), mock.patch(
+                "sys.stdin", io.StringIO(json.dumps(payload) + "\n")
+            ), mock.patch("sys.stdout", stdout), mock.patch.object(
+                HOOK, "leased_tool_policy_denial"
+            ) as leased_check, mock.patch.object(
+                HOOK, "browser_policy_denial"
+            ) as command_check, mock.patch.object(
+                HOOK, "damage_decision", return_value=("safe", "")
+            ) as damage_check:
+                self.assertEqual(HOOK.main(), 0)
+                self.assertEqual(stdout.getvalue(), "")
+                leased_check.assert_not_called()
+                command_check.assert_not_called()
+                if "command" in payload["tool_input"]:
+                    damage_check.assert_called_once_with(payload["tool_input"]["command"])
+                else:
+                    damage_check.assert_not_called()
+
     def test_policy_runtime_failure_blocks_every_shell_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(HOOK, "BROWSER_ENFORCER", Path(directory) / "missing.py"), mock.patch.object(
