@@ -661,6 +661,35 @@ def safari_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [p for p in processes if any(command_starts_executable(p["command"], prefix) for prefix in prefixes)]
 
 
+WATERFOX_BINARY = "/Applications/Waterfox.app/Contents/MacOS/waterfox"
+WATERFOX_CANONICAL_PROFILE = str(
+    Path.home() / "Documents" / "Software" / "waterfox-bridge" / "profiles" / "agent"
+)
+# Command-hook counterpart to waterfox_roots(). Lowercased because the hook
+# matches against lowercased tokens. Without this the enforcer contradicts
+# itself: the daemon sanctions the lane while the hook forbids operating it.
+WATERFOX_CANONICAL_BRIDGE = str(
+    Path.home() / "Documents" / "Software" / "waterfox-bridge"
+).lower()
+
+
+def waterfox_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanctioned Waterfox automation lane (waterfox-bridge).
+
+    Only Waterfox running against the dedicated waterfox-bridge agent profile
+    is sanctioned. A Waterfox started against any other profile stays rogue, so
+    the singleton guarantee protecting the human's browsing still holds.
+    """
+    sanctioned: list[dict[str, Any]] = []
+    for process in processes:
+        command = process["command"]
+        if not command_starts_executable(command, WATERFOX_BINARY):
+            continue
+        if WATERFOX_CANONICAL_PROFILE in command:
+            sanctioned.append(process)
+    return sanctioned
+
+
 def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     exact_paths = {
         str(Path("/Applications") / ("Google " + "Chrome Beta.app") / "Contents" / "MacOS" / ("Google " + "Chrome Beta")),
@@ -668,8 +697,6 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
         str(Path("/Applications") / ("Google " + "Chrome Canary.app") / "Contents" / "MacOS" / ("Google " + "Chrome Canary")),
         str(Path("/Applications") / ("Safari Technology " + "Preview.app") / "Contents" / "MacOS" / ("Safari Technology " + "Preview")),
         str(Path("/Applications") / "Waterfox.app" / "Contents" / "MacOS" / "waterfox"),
-        "/opt/homebrew/bin/geckodriver",
-        "/usr/local/bin/geckodriver",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
         "/Applications/Firefox.app/Contents/MacOS/firefox",
@@ -693,7 +720,7 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
     }
     root_names = {
         "google chrome beta", "google chrome dev", "google chrome canary",
-        "safari technology preview", "waterfox", "geckodriver",
+        "safari technology preview", "waterfox",
         "chromium", "chrome", "chrome-headless-shell", "chromium_headless_shell",
         "headless_shell", "google chrome for testing", "firefox", "firefox-bin",
         "minibrowser", "webkittestrunner", "microsoft edge", "brave browser",
@@ -704,7 +731,7 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
     cached_root_names = root_names | {"playwright"}
     browser_hints = (
         "chrome beta", "chrome dev", "chrome canary", "safari technology preview",
-        "waterfox", "geckodriver",
+        "waterfox",
         "chrome", "chromium", "firefox", "webkit", "minibrowser",
         "headless", "playwright", "microsoft edge", "brave browser",
         "/arc.app/", "/opera.app/", "vivaldi", "/comet.app/", "/dia.app/",
@@ -716,7 +743,11 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
     for process in processes:
         command = process["command"]
         lowered_command = command.lower()
-        allowed_singleton_root = bool(chrome_roots([process]) or safari_roots([process]))
+        allowed_singleton_root = bool(
+            chrome_roots([process])
+            or safari_roots([process])
+            or waterfox_roots([process])
+        )
         generic_browser_root = bool(
             not allowed_singleton_root
             and macos_browser_command(command)
@@ -733,6 +764,9 @@ def rogue_chromium_roots(processes: list[dict[str, Any]]) -> list[dict[str, Any]
         basename = Path(executable).name.lower()
         cached_playwright = "/ms-playwright/" in executable.lower() and basename in cached_root_names
         if generic_browser_root or executable in exact_paths or basename in root_names or cached_playwright:
+            if allowed_singleton_root:
+                # Sanctioned singleton lane (canonical Chrome / Safari / Waterfox).
+                continue
             candidates.append(process)
 
     candidate_ids = {p["pid"] for p in candidates}
@@ -1250,6 +1284,17 @@ def chrome_targets(policy: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def chrome_cdp_available(policy: dict[str, Any]) -> bool:
+    # browserd is the only approved CDP client (see approved_cdp_client). Ask it
+    # first, exactly as safari_counts() prefers the broker: probing 9222 from
+    # this process makes the enforcer an unauthorized raw client by its own
+    # rule, and the fast guard then SIGKILLs the daemon it is running inside.
+    # The direct probe stays as a fallback for when browserd itself is down.
+    try:
+        health = browserd_control_json("GET", "/health", timeout=3)
+        if isinstance(health, dict) and isinstance(health.get("chrome_up"), bool):
+            return health["chrome_up"]
+    except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError):
+        pass
     port = int(policy["chrome"]["debug_port"])
     if not port_listening("127.0.0.1", port):
         return False
@@ -2794,6 +2839,10 @@ def cdp_policy_offenders() -> dict[int, str]:
         process = by_pid.get(pid)
         if process is not None and not approved_cdp_client(process):
             offenders[pid] = "unauthorized raw client connected directly to Chrome CDP 9222"
+    # Never enforce against the enforcer. A fallback probe from this process
+    # would otherwise make the fast guard SIGKILL its own daemon, and launchd
+    # KeepAlive would respawn it into the same kill within seconds.
+    offenders.pop(os.getpid(), None)
     return offenders
 
 
@@ -5414,8 +5463,16 @@ def command_denial(command: str, state: dict[str, Any], depth: int = 0) -> str |
         if browser_executable:
             return "Direct browser-engine launch denied; use the canonical Chrome on CDP 9222 or installed Safari singleton"
 
-        if executable in {"python", "python3", "uvicorn"} and any(
-            marker in joined for marker in ("waterfox_bridge", "waterfox-bridge", "geckodriver")
+        if (
+            executable in {"python", "python3", "uvicorn"}
+            and any(
+                marker in joined
+                for marker in ("waterfox_bridge", "waterfox-bridge", "geckodriver")
+            )
+            # The canonical waterfox-bridge is a sanctioned lane (see
+            # waterfox_roots()); operating it must stay possible. Any other
+            # Waterfox/geckodriver bridge remains denied.
+            and WATERFOX_CANONICAL_BRIDGE not in joined
         ):
             return "Alternate browser bridge denied; all agent work must use the leased Chrome/Safari lanes"
 
