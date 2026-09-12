@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: Printables Publisher API
+  version: 0.1.0
+  description: Loopback-only, draft-first release orchestration through the managed Safari agent lane.
+servers:
+  - url: http://127.0.0.1:3112
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /api/health:
+    get:
+      summary: Read service liveness without account or job details
+      responses:
+        "200": { description: Service is running }
+  /api/printables/browser/status:
+    get:
+      summary: Read managed Safari and selector-contract availability
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Browser readiness result }
+  /api/printables/browser/inspect:
+    get:
+      summary: Inspect controls in the claimed Printables Safari tab
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Read-only page and control inventory }
+        "503": { description: Managed Safari lane unavailable }
+  /api/printables/selector-contract:
+    get:
+      summary: Read the versioned Printables selector contract
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Selector contract }
+  /api/printables/jobs:
+    get:
+      summary: List local publication jobs
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Local jobs with approval secrets redacted }
+    post:
+      summary: Create a job for one staged release bundle
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundlePath]
+              properties:
+                bundlePath: { type: string }
+      responses:
+        "201": { description: Job created without browser activity }
+  /api/printables/jobs/{jobId}:
+    get:
+      summary: Read one local publication job
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Job and append-only event history }
+  /api/printables/jobs/{jobId}/validate:
+    post:
+      summary: Validate containment, metadata, and SHA-256 coverage
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Release validated }
+        "409": { description: Release gate failed }
+  /api/printables/jobs/{jobId}/prepare-draft:
+    post:
+      summary: Freeze a validated release for browser draft entry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Draft prepared; no Printables write yet }
+  /api/printables/jobs/{jobId}/execute-draft:
+    post:
+      summary: Create an unpublished Printables draft after selector verification
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Browser draft created and read back }
+        "409": { description: Selector or release contract is not verified }
+  /api/printables/jobs/{jobId}/approve-publish:
+    post:
+      summary: Authorize publication of the exact browser draft and release digest
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundleDigest, statement]
+              properties:
+                bundleDigest: { type: string, pattern: "^[a-f0-9]{64}$" }
+                statement: { const: "I approve publishing this exact release" }
+      responses:
+        "200": { description: Returns a one-time plaintext approval nonce }
+        "409": { description: No matching verified browser draft }
+  /api/printables/jobs/{jobId}/publish:
+    post:
+      summary: Publish only the separately approved exact draft
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approvalNonce]
+              properties:
+                approvalNonce: { type: string }
+      responses:
+        "200": { description: Published listing receipt }
+        "409": { description: Publication or approval gate failed }
+  /api/printables/jobs/{jobId}/cancel:
+    post:
+      summary: Cancel a nonterminal local job
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Job cancelled }
