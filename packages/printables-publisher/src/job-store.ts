@@ -96,13 +96,20 @@ export class JobStore {
 
   async approve(id: string, bundleDigest: string, statement: string): Promise<{ job: PublishJob; approvalNonce: string }> {
     const job = await this.get(id);
-    if (job.state !== 'browser_draft_created') throw new Error('Only a verified browser draft can be approved for publication');
+    if (!['browser_draft_created', 'publish_approved'].includes(job.state)) {
+      throw new Error('Only a verified browser draft can be approved for publication');
+    }
     if (!job.release || job.release.bundleDigest !== bundleDigest) throw new Error('Approval digest does not match the validated release');
     if (statement !== APPROVAL_STATEMENT) throw new Error(`Approval statement must be exactly: ${APPROVAL_STATEMENT}`);
+    const isRetry = job.state === 'publish_approved';
     const nonce = randomBytes(32).toString('base64url');
     job.approval = { bundleDigest, statement, nonceHash: nonceHash(nonce), approvedAt: now() };
     job.state = 'publish_approved';
-    job.events.push({ at: now(), type: 'publish.approved', detail: { bundleDigest } });
+    job.events.push({
+      at: now(),
+      type: isRetry ? 'publish.approval_rotated' : 'publish.approved',
+      detail: { bundleDigest },
+    });
     await this.save(job);
     return { job, approvalNonce: nonce };
   }

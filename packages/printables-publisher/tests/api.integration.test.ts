@@ -154,6 +154,19 @@ describe('Printables publisher loopback API', () => {
       expect(approved.approvalNonce.length).toBeGreaterThan(32);
       expect(approved.job.state).toBe('publish_approved');
 
+      const rotatedResponse = await fetch(`${service.base}/api/printables/jobs/${created.id}/approve-publish`, {
+        method: 'POST', headers, body: JSON.stringify({
+          bundleDigest: validated.release.bundleDigest,
+          statement: 'I approve publishing this exact release',
+        }),
+      });
+      expect(rotatedResponse.status).toBe(200);
+      const rotated = await rotatedResponse.json() as { approvalNonce: string; job: { state: string } };
+      expect(rotated.approvalNonce).not.toBe(approved.approvalNonce);
+      const latest = await service.store.get(created.id);
+      expect(() => service.store.verifyApproval(latest, approved.approvalNonce)).toThrow('Invalid publication approval nonce');
+      expect(() => service.store.verifyApproval(latest, rotated.approvalNonce)).not.toThrow();
+
       const completed = await service.store.recordPublished(created.id, 'https://www.printables.com/model/1234567/example');
       expect(completed.state).toBe('published');
       expect(completed.printablesPublishedUrl).toBe('https://www.printables.com/model/1234567/example');
