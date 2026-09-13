@@ -122,4 +122,43 @@ describe('Printables publisher loopback API', () => {
       await new Promise<void>((resolve, reject) => service.server.close(error => error ? reject(error) : resolve()));
     }
   });
+
+  it('binds later publication approval to the exact validated draft digest', async () => {
+    const service = await startService();
+    try {
+      const headers = { authorization: `Bearer ${service.token}`, 'content-type': 'application/json' };
+      const created = await (await fetch(`${service.base}/api/printables/jobs`, {
+        method: 'POST', headers, body: JSON.stringify({ bundlePath: service.bundlePath }),
+      })).json() as { id: string };
+      const validated = await (await fetch(`${service.base}/api/printables/jobs/${created.id}/validate`, {
+        method: 'POST', headers,
+      })).json() as { release: { bundleDigest: string } };
+      await service.store.transition(created.id, ['validated'], 'draft_prepared', 'draft.prepared');
+      await service.store.recordBrowserDraft(created.id, 'https://www.printables.com/model/1234567/edit');
+
+      const rejected = await fetch(`${service.base}/api/printables/jobs/${created.id}/approve-publish`, {
+        method: 'POST', headers, body: JSON.stringify({
+          bundleDigest: '0'.repeat(64), statement: 'I approve publishing this exact release',
+        }),
+      });
+      expect(rejected.status).toBe(409);
+
+      const approvedResponse = await fetch(`${service.base}/api/printables/jobs/${created.id}/approve-publish`, {
+        method: 'POST', headers, body: JSON.stringify({
+          bundleDigest: validated.release.bundleDigest,
+          statement: 'I approve publishing this exact release',
+        }),
+      });
+      expect(approvedResponse.status).toBe(200);
+      const approved = await approvedResponse.json() as { approvalNonce: string; job: { state: string } };
+      expect(approved.approvalNonce.length).toBeGreaterThan(32);
+      expect(approved.job.state).toBe('publish_approved');
+
+      const completed = await service.store.recordPublished(created.id, 'https://www.printables.com/model/1234567/example');
+      expect(completed.state).toBe('published');
+      expect(completed.printablesPublishedUrl).toBe('https://www.printables.com/model/1234567/example');
+    } finally {
+      await new Promise<void>((resolve, reject) => service.server.close(error => error ? reject(error) : resolve()));
+    }
+  });
 });

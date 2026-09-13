@@ -85,6 +85,15 @@ export class JobStore {
     return this.save(job);
   }
 
+  async recordPublished(id: string, publishedUrl: string): Promise<PublishJob> {
+    const job = await this.get(id);
+    if (job.state !== 'publish_approved') throw new Error('Job must be publish_approved');
+    job.state = 'published';
+    job.printablesPublishedUrl = publishedUrl;
+    job.events.push({ at: now(), type: 'publish.completed', detail: { publishedUrl } });
+    return this.save(job);
+  }
+
   async approve(id: string, bundleDigest: string, statement: string): Promise<{ job: PublishJob; approvalNonce: string }> {
     const job = await this.get(id);
     if (job.state !== 'browser_draft_created') throw new Error('Only a verified browser draft can be approved for publication');

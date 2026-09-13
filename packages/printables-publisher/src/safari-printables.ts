@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { TabCoordinator } from '../../medium-automation/src/automation/tab-coordinator.js';
 import type { PublishJob, SelectorContract } from './types.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -29,7 +28,7 @@ function delay(milliseconds: number): Promise<void> {
 
 export class PrintablesSafari {
   constructor(
-    private readonly port: number,
+    _port: number,
     private readonly contractPath = process.env.PRINTABLES_SELECTOR_CONTRACT || DEFAULT_CONTRACT,
   ) {}
 
@@ -45,21 +44,21 @@ export class PrintablesSafari {
     return stdout.trim();
   }
 
-  private async runClaimed(windowId: number, tabIndex: number, actionBody: string): Promise<string> {
+  private async runTargeted(windowId: number, tabIndex: number, actionBody: string): Promise<string> {
     if (!Number.isInteger(windowId) || windowId <= 0 || !Number.isInteger(tabIndex) || tabIndex <= 0) {
       throw new Error('Safari target has an invalid window or tab identity');
     }
     return this.runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  if (count of tabs of agentWindow) < ${tabIndex} then error "Claimed Safari tab is unavailable"
+  if (count of tabs of agentWindow) < ${tabIndex} then error "Safari target tab is unavailable"
   set agentTab to tab ${tabIndex} of agentWindow
   ${actionBody}
 end tell`);
   }
 
   private async javascript(windowId: number, tabIndex: number, script: string): Promise<string> {
-    return this.runClaimed(windowId, tabIndex, `return do JavaScript ${jsLiteral(script)} in agentTab`);
+    return this.runTargeted(windowId, tabIndex, `return do JavaScript ${jsLiteral(script)} in agentTab`);
   }
 
   private requireContract(contract: SelectorContract, includePublish = false): void {
@@ -82,31 +81,29 @@ end tell`);
     }
   }
 
-  /** Claim exactly one tab in the pre-existing Safari automation Window 2. */
-  private async withClaim<T>(
+  /** Find a matching Printables tab across all Safari windows, or open one. */
+  private async withTarget<T>(
     createUrl: string,
     operation: (target: { windowId: number; tabIndex: number }) => Promise<T>,
   ): Promise<T> {
-    process.env.SAFARI_AUTOMATION_WINDOW = '2';
-    process.env.SAFARI_CONTROLLER_URL = 'http://127.0.0.1:1';
-    const requestedWindowId = Number.parseInt(process.env.SAFARI_AUTOMATION_WINDOW_ID || '0', 10);
-    const windowSelection = Number.isInteger(requestedWindowId) && requestedWindowId > 0
-      ? `if not (exists (first window whose id is ${requestedWindowId})) then error "Configured Safari automation window is unavailable"\n  set agentWindow to first window whose id is ${requestedWindowId}\n  set index of agentWindow to 2`
-      : 'set agentWindow to window 2';
     const targetText = await this.runAppleScript(`
 tell application "Safari"
-  if (count of windows) < 2 then error "Safari automation Window 2 is unavailable"
-  ${windowSelection}
-  set targetTab to 0
-  repeat with t from 1 to count of tabs of agentWindow
-    try
-      if URL of tab t of agentWindow contains "printables.com/model/create" then
-        set targetTab to t
-        exit repeat
-      end if
-    end try
+  repeat with candidateWindow in windows
+    repeat with t from 1 to count of tabs of candidateWindow
+      try
+        if URL of tab t of candidateWindow contains "printables.com/model/create" then
+          return (id of candidateWindow as text) & "||" & (t as text)
+        end if
+      end try
+    end repeat
   end repeat
-  if targetTab is 0 then
+
+  if (count of windows) is 0 then
+    make new document with properties {URL:"${appleScriptString(createUrl)}"}
+    set agentWindow to front window
+    set targetTab to 1
+  else
+    set agentWindow to front window
     tell agentWindow to make new tab with properties {URL:"${appleScriptString(createUrl)}"}
     set targetTab to count of tabs of agentWindow
   end if
@@ -116,32 +113,51 @@ end tell`);
     const windowId = Number.parseInt(windowIdText, 10);
     const tabIndex = Number.parseInt(tabText, 10);
     if (!Number.isInteger(windowId) || !Number.isInteger(tabIndex)) {
-      throw new Error(`Safari returned an invalid Window 2 target: ${targetText}`);
+      throw new Error(`Safari returned an invalid target: ${targetText}`);
     }
+    return operation({ windowId, tabIndex });
+  }
 
-    const coordinator = new TabCoordinator(
-      `printables-publisher-${process.pid}`,
-      'printables-publisher',
-      this.port,
-      'printables.com/model/create',
-    );
-    const claim = await coordinator.claim(2, tabIndex);
-    try {
-      if (claim.windowIndex !== 2 || claim.tabIndex !== tabIndex) {
-        throw new Error('Safari claim escaped the exact Printables Window 2 tab');
-      }
-      const stableId = Number.parseInt(await this.runAppleScript('tell application "Safari" to return id of window 2'), 10);
-      if (stableId !== windowId) throw new Error('Safari Window 2 changed during claim acquisition');
-      return await operation({ windowId, tabIndex });
-    } finally {
-      await this.runAppleScript(`
-tell application "Safari"
-  if (count of windows) >= 2 and exists (first window whose id is ${windowId}) then
-    set index of (first window whose id is ${windowId}) to 2
-  end if
-end tell`).catch(() => undefined);
-      await coordinator.release();
+  /** Resolve one exact existing Printables model editor, or open that URL in Safari. */
+  private async withModelTarget<T>(
+    targetUrl: string,
+    operation: (target: { windowId: number; tabIndex: number }) => Promise<T>,
+  ): Promise<T> {
+    const target = new URL(targetUrl);
+    if (target.protocol !== 'https:' || target.hostname !== 'www.printables.com'
+      || !/^\/model\/\d+\/edit$/.test(target.pathname)) {
+      throw new Error('Printables draft URL is not an exact model editor URL');
     }
+    const targetText = await this.runAppleScript(`
+tell application "Safari"
+  repeat with candidateWindow in windows
+    repeat with t from 1 to count of tabs of candidateWindow
+      try
+        if URL of tab t of candidateWindow is "${appleScriptString(target.href)}" then
+          return (id of candidateWindow as text) & "||" & (t as text)
+        end if
+      end try
+    end repeat
+  end repeat
+
+  if (count of windows) is 0 then
+    make new document with properties {URL:"${appleScriptString(target.href)}"}
+    set agentWindow to front window
+    set targetTab to 1
+  else
+    set agentWindow to front window
+    tell agentWindow to make new tab with properties {URL:"${appleScriptString(target.href)}"}
+    set targetTab to count of tabs of agentWindow
+  end if
+  return (id of agentWindow as text) & "||" & (targetTab as text)
+end tell`);
+    const [windowIdText, tabText] = targetText.split('||');
+    const windowId = Number.parseInt(windowIdText, 10);
+    const tabIndex = Number.parseInt(tabText, 10);
+    if (!Number.isInteger(windowId) || !Number.isInteger(tabIndex)) {
+      throw new Error(`Safari returned an invalid model target: ${targetText}`);
+    }
+    return operation({ windowId, tabIndex });
   }
 
   private async waitForForm(windowId: number, tabIndex: number, selector: string): Promise<void> {
@@ -164,6 +180,28 @@ end tell`).catch(() => undefined);
       await delay(750);
     }
     throw new Error('Timed out waiting for the authenticated Printables create-model form');
+  }
+
+  private async waitForModelForm(windowId: number, tabIndex: number, expectedUrl: string, selector: string): Promise<void> {
+    const deadline = Date.now() + 45_000;
+    let stableSince = 0;
+    while (Date.now() < deadline) {
+      const output = await this.javascript(windowId, tabIndex, `JSON.stringify({
+        url: location.href,
+        ready: document.readyState,
+        signedIn: Boolean(document.querySelector('[data-testid="user-avatar"]')),
+        form: Boolean(document.querySelector(${jsLiteral(selector)}))
+      })`);
+      const state = JSON.parse(output) as { url: string; ready: string; signedIn: boolean; form: boolean };
+      if (state.url === expectedUrl && state.ready === 'complete' && state.signedIn && state.form) {
+        if (stableSince === 0) stableSince = Date.now();
+        if (Date.now() - stableSince >= 2_000) return;
+      } else {
+        stableSince = 0;
+      }
+      await delay(750);
+    }
+    throw new Error('Timed out waiting for the authenticated Printables model editor');
   }
 
   private async selectExactOption(
@@ -329,10 +367,10 @@ return "opened"`, 45_000);
     const contract = await this.contract();
     if (!contract.createUrl) return { available: false, selectorContract: contract.status };
     try {
-      return await this.withClaim(contract.createUrl, async claim => {
-        const output = await this.runClaimed(claim.windowId, claim.tabIndex, 'return (URL of agentTab) & "||" & (name of agentTab)');
+      return await this.withTarget(contract.createUrl, async target => {
+        const output = await this.runTargeted(target.windowId, target.tabIndex, 'return (URL of agentTab) & "||" & (name of agentTab)');
         const [url, title] = output.split('||');
-        return { available: true, window: 2, url, title, selectorContract: contract.status };
+        return { available: true, windowId: target.windowId, url, title, selectorContract: contract.status };
       });
     } catch (error) {
       return { available: false, error: String(error), selectorContract: contract.status };
@@ -342,7 +380,7 @@ return "opened"`, 45_000);
   async inspect(): Promise<Record<string, unknown>> {
     const contract = await this.contract();
     if (!contract.createUrl) throw new Error('Printables selector contract has no create URL');
-    return this.withClaim(contract.createUrl, async claim => {
+    return this.withTarget(contract.createUrl, async target => {
       const script = `
 const inputs = [...document.querySelectorAll('input,textarea,select,button,[contenteditable="true"]')].map((el, index) => ({
   index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), name: el.getAttribute('name'),
@@ -350,7 +388,7 @@ const inputs = [...document.querySelectorAll('input,textarea,select,button,[cont
   text: (el.innerText || '').trim().slice(0, 120)
 }));
 JSON.stringify({ url: location.href, title: document.title, inputs });`;
-      return JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, script)) as Record<string, unknown>;
+      return JSON.parse(await this.javascript(target.windowId, target.tabIndex, script)) as Record<string, unknown>;
     });
   }
 
@@ -361,8 +399,8 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
     this.requireContract(contract);
     const selectors = contract.selectors as Record<string, string>;
 
-    return this.withClaim(contract.createUrl!, async claim => {
-      const existing = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `JSON.stringify({
+    return this.withTarget(contract.createUrl!, async target => {
+      const existing = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
         url:location.href,
         title:document.querySelector(${jsLiteral(selectors.title)})?.value || ''
       })`)) as { url: string; title: string };
@@ -371,13 +409,13 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       }
       const resumeExisting = existing.url.startsWith(contract.createUrl!) && existing.title === release.title;
       if (!existing.url.startsWith(contract.createUrl!)) {
-        await this.runClaimed(claim.windowId, claim.tabIndex, `set URL of agentTab to "${appleScriptString(contract.createUrl!)}"`);
+        await this.runTargeted(target.windowId, target.tabIndex, `set URL of agentTab to "${appleScriptString(contract.createUrl!)}"`);
       }
-      await this.waitForForm(claim.windowId, claim.tabIndex, selectors.title);
+      await this.waitForForm(target.windowId, target.tabIndex, selectors.title);
 
       let uploadedNames = [path.basename(release.files[0].absolutePath), ...release.previews.map(file => path.basename(file.absolutePath))];
       if (!resumeExisting) {
-      const filled = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `(() => {
+      const filled = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const setValue = (selector, value) => {
           const element = document.querySelector(selector);
           if (!element) return false;
@@ -405,16 +443,16 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       })()`)) as Record<string, boolean>;
       if (!Object.values(filled).every(Boolean)) throw new Error(`Printables metadata entry failed: ${JSON.stringify(filled)}`);
 
-      await this.enterTags(claim.windowId, claim.tabIndex, selectors.tags, release.tags);
+      await this.enterTags(target.windowId, target.tabIndex, selectors.tags, release.tags);
 
-      await this.selectExactOption(claim.windowId, claim.tabIndex, selectors.category, release.category);
-      await this.selectExactOption(claim.windowId, claim.tabIndex, selectors.license, release.license);
+      await this.selectExactOption(target.windowId, target.tabIndex, selectors.category, release.category);
+      await this.selectExactOption(target.windowId, target.tabIndex, selectors.license, release.license);
 
       const uploadPaths = [release.files[0].absolutePath, ...release.previews.map(file => file.absolutePath)];
-      uploadedNames = await this.uploadFiles(claim.windowId, claim.tabIndex, selectors.fileInput, uploadPaths);
+      uploadedNames = await this.uploadFiles(target.windowId, target.tabIndex, selectors.fileInput, uploadPaths);
       }
 
-      const preflight = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `(() => {
+      const preflight = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
         const title = document.querySelector(${jsLiteral(selectors.title)})?.value || '';
         const summary = document.querySelector(${jsLiteral(selectors.summary)})?.value || '';
@@ -453,7 +491,7 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       ].filter(Boolean);
       if (failures.length) throw new Error(`Printables draft preflight failed: ${failures.join(', ')}`);
 
-      const clickResult = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `(() => {
+      const clickResult = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const normalize = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
         const matches = [...document.querySelectorAll(${jsLiteral(selectors.saveDraft)})]
           .filter(el => el.getClientRects().length && normalize(el.textContent) === 'save draft');
@@ -468,7 +506,7 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       let lastText = '';
       while (Date.now() < deadline) {
         await delay(1_000);
-        const state = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `JSON.stringify({
+        const state = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
           url: location.href, text: document.body?.innerText || '', title: document.title,
           modelTitle:document.querySelector(${jsLiteral(selectors.title)})?.value || '',
           archivePresent:[...document.querySelectorAll('input')]
@@ -494,7 +532,131 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
   async publish(job: PublishJob): Promise<{ publishedUrl: string }> {
     const contract = await this.contract();
     this.requireContract(contract, true);
-    void job;
-    throw new Error('Printables publication remains disabled until a separately approved publish implementation is verified');
+    if (!job.release) throw new Error('Job has no validated release');
+    if (!job.printablesDraftUrl) throw new Error('Job has no verified Printables draft URL');
+    const release = job.release;
+    const selectors = contract.selectors as Record<string, string>;
+    const editUrl = new URL(job.printablesDraftUrl);
+    if (editUrl.hostname !== contract.host || !/^\/model\/\d+\/edit$/.test(editUrl.pathname)) {
+      throw new Error('Verified Printables draft URL is outside the expected model editor');
+    }
+    const publicUrl = `${editUrl.origin}${editUrl.pathname.replace(/\/edit$/, '')}`;
+
+    return this.withModelTarget(editUrl.href, async target => {
+      await this.waitForModelForm(target.windowId, target.tabIndex, editUrl.href, selectors.title);
+      const preflight = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
+        const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+        const title = document.querySelector(${jsLiteral(selectors.title)})?.value || '';
+        const summary = document.querySelector(${jsLiteral(selectors.summary)})?.value || '';
+        const category = normalize(document.querySelector(${jsLiteral(selectors.category)})?.textContent);
+        const license = normalize(document.querySelector(${jsLiteral(selectors.license)})?.textContent);
+        const description = document.querySelector(${jsLiteral(selectors.description)})?.innerText || '';
+        const tagText = document.querySelector(${jsLiteral(selectors.tags)})?.parentElement?.innerText || '';
+        const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[0]?.checked);
+        const ai = Boolean(document.querySelectorAll(${jsLiteral(selectors.aiUsed)})[${release.aiUsed ? 0 : 1}]?.checked);
+        const publish = document.querySelector(${jsLiteral(selectors.publish)});
+        const archivePresent = [...document.querySelectorAll('input')]
+          .some(input => input.type === 'text' && input.value === ${jsLiteral(path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath)))});
+        const photoCount = [...document.querySelectorAll('img')]
+          .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length;
+        const primary = [...document.querySelectorAll('button')].filter(button =>
+          button.getClientRects().length && button.classList.contains('btn-primary') && button.classList.contains('btn-bold')
+        );
+        return JSON.stringify({title, summary, category, license, description, tagText, origin, ai,
+          publishChecked:Boolean(publish?.checked), publishDisabled:Boolean(publish?.disabled),
+          archivePresent, photoCount, primaryCount:primary.length, primaryDisabled:Boolean(primary[0]?.disabled)});
+      })()`)) as {
+        title: string; summary: string; category: string; license: string; description: string; tagText: string;
+        origin: boolean; ai: boolean; publishChecked: boolean; publishDisabled: boolean;
+        archivePresent: boolean; photoCount: number; primaryCount: number; primaryDisabled: boolean;
+      };
+      const normalized = (value: string) => value.replace(/\s+/g, ' ').trim();
+      const failures = [
+        preflight.title !== release.title && 'title',
+        preflight.summary !== release.summary && 'summary',
+        normalized(preflight.category) !== normalized(release.category) && 'category',
+        normalized(preflight.license) !== normalized(release.license) && 'license',
+        !normalized(preflight.description).includes(normalized(release.description.slice(0, 100))) && 'description',
+        !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
+        !preflight.origin && 'origin', !preflight.ai && 'ai',
+        preflight.publishChecked && 'already-published', preflight.publishDisabled && 'publish-disabled',
+        !preflight.archivePresent && 'archive', preflight.photoCount < release.previews.length && 'previews',
+        preflight.primaryCount !== 1 && 'primary-submit', preflight.primaryDisabled && 'submit-disabled',
+      ].filter(Boolean);
+      if (failures.length) throw new Error(`Printables publication preflight failed: ${failures.join(', ')}`);
+
+      const armed = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
+        const publish = document.querySelector(${jsLiteral(selectors.publish)});
+        if (!publish || publish.disabled || publish.checked) return JSON.stringify({ok:false,checked:Boolean(publish?.checked)});
+        publish.click();
+        return JSON.stringify({ok:Boolean(publish.checked),checked:Boolean(publish.checked)});
+      })()`)) as { ok: boolean; checked: boolean };
+      if (!armed.ok || !armed.checked) throw new Error('Printables public-state control did not arm');
+      await delay(500);
+
+      const submission = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
+        const publish = document.querySelector(${jsLiteral(selectors.publish)});
+        const primary = [...document.querySelectorAll('button')].filter(button =>
+          button.getClientRects().length && button.classList.contains('btn-primary') && button.classList.contains('btn-bold')
+        );
+        const text = (primary[0]?.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!publish?.checked || primary.length !== 1 || primary[0].disabled) {
+          if (publish?.checked) publish.click();
+          return JSON.stringify({ok:false,count:primary.length,disabled:Boolean(primary[0]?.disabled),text});
+        }
+        primary[0].click();
+        return JSON.stringify({ok:true,text});
+      })()`)) as { ok: boolean; count?: number; disabled?: boolean; text: string };
+      if (!submission.ok) throw new Error(`Could not activate the unique Printables publish submission: ${JSON.stringify(submission)}`);
+
+      const saveDeadline = Date.now() + 90_000;
+      const submittedAt = Date.now();
+      let sawBusy = false;
+      let saved = false;
+      let lastText = '';
+      while (Date.now() < saveDeadline) {
+        await delay(1_000);
+        const state = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
+          url:location.href,
+          text:document.body?.innerText || '',
+          publishChecked:Boolean(document.querySelector(${jsLiteral(selectors.publish)})?.checked),
+          busy:[...document.querySelectorAll('button')].some(button =>
+            button.classList.contains('btn-primary') && button.classList.contains('btn-bold') && button.disabled)
+        })`)) as { url: string; text: string; publishChecked: boolean; busy: boolean };
+        lastText = state.text;
+        sawBusy ||= state.busy;
+        const validationError = state.text.split('\n').some(line => /^(required|error|failed|invalid)\b/i.test(line.trim()));
+        if (validationError) throw new Error('Printables rejected the publication form');
+        if (!state.busy && (state.publishChecked || !state.url.endsWith('/edit'))
+          && (sawBusy || Date.now() - submittedAt >= 5_000)) {
+          saved = true;
+          break;
+        }
+      }
+      if (!saved) throw new Error('Timed out waiting for Printables to save the public state');
+
+      await this.runTargeted(target.windowId, target.tabIndex, `set URL of agentTab to "${appleScriptString(publicUrl)}"`);
+      const publicDeadline = Date.now() + 90_000;
+      let lastUrl = publicUrl;
+      while (Date.now() < publicDeadline) {
+        await delay(1_000);
+        const state = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
+          url:location.href,
+          ready:document.readyState,
+          text:document.body?.innerText || '',
+          heading:document.querySelector('h1')?.innerText || ''
+        })`)) as { url: string; ready: string; text: string; heading: string };
+        lastUrl = state.url;
+        lastText = state.text;
+        if (state.ready === 'complete' && state.url.startsWith(publicUrl)
+          && normalized(state.heading) === normalized(release.title)
+          && /download/i.test(state.text)
+          && !/(^|\n)\s*DRAFT\s*(\n|$)/i.test(state.text)) {
+          return { publishedUrl: state.url };
+        }
+      }
+      const errors = lastText.split('\n').filter(line => /required|error|failed|invalid|not found/i.test(line)).slice(0, 8);
+      throw new Error(`Printables publication did not read back as public (last URL ${lastUrl}; ${errors.join(' | ')})`);
+    });
   }
 }
