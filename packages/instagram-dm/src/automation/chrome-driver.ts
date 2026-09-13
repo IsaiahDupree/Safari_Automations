@@ -1,6 +1,6 @@
 /**
- * Compatibility facade. Direct CDP access is forbidden; callers are routed to
- * the broker-owned Safari lane implementation.
+ * Compatibility facade. Local Chrome stays behind its resource-capped broker;
+ * callers here use independently targeted Safari automation.
  */
 export {
   Safari\u0044river as ChromeDriver,
@@ -14,7 +14,7 @@ export interface LegacyPage {
 }
 
 function disabled(): Error {
-  return Object.assign(new Error('Direct Chrome page access is disabled; use the claimed Safari lane'), {
+  return Object.assign(new Error('Direct local-Chrome access is disabled here; use open Safari automation or the resource-capped Chrome broker'), {
     code: 'RAW_CHROME_DISABLED',
   });
 }

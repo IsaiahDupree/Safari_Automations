@@ -189,7 +189,7 @@ app.get('/health', async (_req: Request, res: Response) => {
 app.use('/api', authMiddleware);
 
 // ── Tab claim enforcement ─────────────────────────────────────────────────────
-// Every automation route MUST have an active tab claim before it runs.
+// Automation routes resolve an independent Safari target; no global claim is required.
 // On first request: auto-claims an existing tab OR opens a new one.
 // Subsequent requests: validates the claim is still alive.
 // Routes exempt: /health, /api/tabs/*, /api/*/status, /api/*/rate-limits

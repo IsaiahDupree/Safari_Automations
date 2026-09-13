@@ -27,7 +27,7 @@ async function connectToCDP(url: string): Promise<Browser> {
 
 export async function getBrowser(): Promise<Browser> {
   if (rawBrowserDisabled()) throw Object.assign(
-    new Error('Raw LinkedIn browser access is disabled; use linkedin-automation with a claimed Safari lane'),
+    new Error('Raw local-Chrome access is disabled here; use open Safari/Waterfox automation or the resource-capped Chrome broker'),
     { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
   );
   if (browser && browser.connected) { logDebug(MOD, 'Reusing existing browser'); return browser; }
@@ -35,7 +35,7 @@ export async function getBrowser(): Promise<Browser> {
   const configured = process.env['CHROME_CDP_URL'] || SHARED_CDP_URL;
   if (!/^http:\/\/(localhost|127\.0\.0\.1):9222\/?$/.test(configured)) {
     throw Object.assign(
-      new Error(`Chrome endpoint denied by singleton policy: ${configured}`),
+      new Error(`Unmanaged local Chrome endpoint denied by the resource-cap policy: ${configured}`),
       { code: 'BROWSER_POLICY_DENIED', hint: `Use ${SHARED_CDP_URL}` },
     );
   }

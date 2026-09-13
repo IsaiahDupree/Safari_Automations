@@ -1,9 +1,8 @@
 #!/usr/bin/env npx tsx
-/** Capture Printables create-model controls inside the claimed Safari Window 2 tab. */
+/** Capture Printables create-model controls in any available Safari target. */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { TabCoordinator } from '../../medium-automation/src/automation/tab-coordinator.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,7 +18,7 @@ async function runAppleScript(script: string): Promise<string> {
   return stdout.trim();
 }
 
-async function claimedJavaScript(windowId: number, tabIndex: number, script: string): Promise<string> {
+async function targetedJavaScript(windowId: number, tabIndex: number, script: string): Promise<string> {
   return runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
@@ -29,7 +28,7 @@ end tell`);
 }
 
 async function snapshot(windowId: number, tabIndex: number): Promise<Record<string, unknown>> {
-  const output = await claimedJavaScript(windowId, tabIndex, `
+  const output = await targetedJavaScript(windowId, tabIndex, `
 JSON.stringify({
   url: location.href,
   title: document.title,
@@ -65,33 +64,48 @@ async function main(): Promise<void> {
   if (openMenu && !['license', 'category'].includes(openMenu)) {
     throw new Error('--open-menu must be license or category');
   }
-  const coordinator = new TabCoordinator(
-    `printables-form-capture-${process.pid}`,
-    'printables-form-capture',
-    3115,
-    'printables.com/model/create',
-    'https://www.printables.com/model/create',
-  );
-  const claim = await coordinator.claim();
-  try {
-    const windowId = Number.parseInt(
-      await runAppleScript(`tell application "Safari" to return id of window ${claim.windowIndex}`),
-      10,
-    );
+  const targetText = await runAppleScript(`
+tell application "Safari"
+  repeat with candidateWindow in windows
+    repeat with t from 1 to count of tabs of candidateWindow
+      if URL of tab t of candidateWindow contains "printables.com/model/create" then
+        return (id of candidateWindow as text) & "||" & (t as text)
+      end if
+    end repeat
+  end repeat
+
+  if (count of windows) is 0 then
+    make new document with properties {URL:"https://www.printables.com/model/create"}
+    set agentWindow to front window
+    set targetTab to 1
+  else
+    set agentWindow to front window
+    tell agentWindow to make new tab with properties {URL:"https://www.printables.com/model/create"}
+    set targetTab to count of tabs of agentWindow
+  end if
+  return (id of agentWindow as text) & "||" & (targetTab as text)
+end tell`);
+  const [windowIdText, tabIndexText] = targetText.split('||');
+  const windowId = Number.parseInt(windowIdText, 10);
+  const tabIndex = Number.parseInt(tabIndexText, 10);
+  if (!Number.isInteger(windowId) || !Number.isInteger(tabIndex)) {
+    throw new Error(`Safari returned an invalid Printables target: ${targetText}`);
+  }
+  {
     await new Promise(resolve => setTimeout(resolve, 3_000));
-    let current = await snapshot(windowId, claim.tabIndex);
+    let current = await snapshot(windowId, tabIndex);
     if (openMenu) {
       if (!String(current.url).includes('/model/create')) {
         await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  set URL of tab ${claim.tabIndex} of agentWindow to "https://www.printables.com/model/create"
+  set URL of tab ${tabIndex} of agentWindow to "https://www.printables.com/model/create"
 end tell`);
         await new Promise(resolve => setTimeout(resolve, 5_000));
-        current = await snapshot(windowId, claim.tabIndex);
+        current = await snapshot(windowId, tabIndex);
       }
       const prefix = openMenu === 'license' ? 'f-license-' : 'f-category-';
-      const menuResult = await claimedJavaScript(windowId, claim.tabIndex, `
+      const menuResult = await targetedJavaScript(windowId, tabIndex, `
 (() => {
   const button = document.querySelector('button[id^="${prefix}"]');
   if (!button || !button.getClientRects().length) return JSON.stringify({ ok: false });
@@ -100,14 +114,14 @@ end tell`);
 })()`);
       if (!(JSON.parse(menuResult) as { ok: boolean }).ok) throw new Error(`${openMenu} control not found`);
       await new Promise(resolve => setTimeout(resolve, 1_200));
-      console.log(JSON.stringify({ stage: `${openMenu}-menu`, ...(await snapshot(windowId, claim.tabIndex)) }));
+      console.log(JSON.stringify({ stage: `${openMenu}-menu`, ...(await snapshot(windowId, tabIndex)) }));
       return;
     }
     if (String(current.url).includes('/create') || String(current.url).includes('/upload')) {
       console.log(JSON.stringify({ stage: 'create-form', ...current }));
       return;
     }
-    const clickOutput = await claimedJavaScript(windowId, claim.tabIndex, `
+    const clickOutput = await targetedJavaScript(windowId, tabIndex, `
 (() => {
   const candidates = [...document.querySelectorAll('button,[role="button"],a[href]')].filter(el =>
     (el.textContent || '').trim() === 'Create' && el.getClientRects().length > 0
@@ -119,9 +133,7 @@ end tell`);
     const clickResult = JSON.parse(clickOutput) as { ok: boolean; count?: number };
     if (!clickResult.ok) throw new Error(`expected one visible Create control; found ${clickResult.count}`);
     await new Promise(resolve => setTimeout(resolve, 1_500));
-    console.log(JSON.stringify({ stage: 'create-menu', ...(await snapshot(windowId, claim.tabIndex)) }));
-  } finally {
-    await coordinator.release();
+    console.log(JSON.stringify({ stage: 'create-menu', ...(await snapshot(windowId, tabIndex)) }));
   }
 }
 

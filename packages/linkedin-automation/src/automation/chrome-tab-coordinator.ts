@@ -1,9 +1,9 @@
 /**
- * ChromeTabCoordinator — Cross-process Chrome tab claim registry.
+ * Chrome target coordinator compatibility adapter.
  *
- * Parallel to TabCoordinator (safari-tab-claims.json) but targets Google Chrome.
- * Claims are stored in /tmp/chrome-tab-claims.json.
- * Claims expire after CLAIM_TTL_MS without a heartbeat.
+ * Cross-process claims are retired. Local Chrome access remains routed through
+ * the separately resource-capped browser broker; this adapter never serializes
+ * agents or writes a registry file.
  *
  * Usage:
  *   const coord = new ChromeTabCoordinator('li-dm-123', 'linkedin-chrome', 3105, 'linkedin.com');
@@ -12,9 +12,8 @@
  *   await coord.release();     // on clean exit
  */
 
-import * as fs from 'fs/promises';
-
-export const CHROME_CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
+/** @deprecated no Chrome claim registry exists. */
+export const CHROME_CLAIMS_FILE = '';
 export const CLAIM_TTL_MS = 60_000;
 const CHROME_CDP_BASE = 'http://127.0.0.1:9222';
 const MAX_CHROME_TABS = 8;
@@ -52,14 +51,7 @@ export class ChromeTabCoordinator {
   // ─── Read ─────────────────────────────────────────────────────────────────
 
   static async listClaims(): Promise<ChromeTabClaim[]> {
-    try {
-      const raw = await fs.readFile(CHROME_CLAIMS_FILE, 'utf-8');
-      const all: ChromeTabClaim[] = JSON.parse(raw);
-      const now = Date.now();
-      return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
-    } catch {
-      return [];
-    }
+    return [];
   }
 
   static async getConflict(
@@ -67,10 +59,10 @@ export class ChromeTabCoordinator {
     tabIndex: number,
     excludeAgentId: string
   ): Promise<ChromeTabClaim | null> {
-    const claims = await ChromeTabCoordinator.listClaims();
-    return claims.find(
-      c => c.agentId !== excludeAgentId && c.windowIndex === windowIndex && c.tabIndex === tabIndex
-    ) ?? null;
+    void windowIndex;
+    void tabIndex;
+    void excludeAgentId;
+    return null;
   }
 
   // ─── Discover ─────────────────────────────────────────────────────────────
@@ -94,14 +86,7 @@ export class ChromeTabCoordinator {
 
     if (matches.length === 0) return null;
 
-    const claims = await ChromeTabCoordinator.listClaims();
-    const takenKeys = new Set(
-      claims
-        .filter(c => c.agentId !== this.agentId)
-        .map(c => `${c.windowIndex}:${c.tabIndex}`)
-    );
-
-    return matches.find(m => !takenKeys.has(`${m.windowIndex}:${m.tabIndex}`)) ?? null;
+    return matches[0] ?? null;
   }
 
   // ─── Claim lifecycle ───────────────────────────────────────────────────────
@@ -114,12 +99,7 @@ export class ChromeTabCoordinator {
     let url = '';
 
     if (windowIndex != null && tabIndex != null) {
-      const conflict = await ChromeTabCoordinator.getConflict(windowIndex, tabIndex, this.agentId);
-      if (conflict) {
-        throw new Error(
-          `Chrome tab ${windowIndex}:${tabIndex} already claimed by '${conflict.agentId}' (${conflict.service} :${conflict.port})`
-        );
-      }
+      url = this.urlPattern;
     } else {
       const found = await this.findAvailableTab();
       if (!found) {
@@ -133,7 +113,7 @@ export class ChromeTabCoordinator {
         } else {
           throw new Error(
             `No available Chrome tab matching '${this.urlPattern}'. ` +
-            `Open Chrome and navigate to the site, or check ${CHROME_CLAIMS_FILE} for existing claims.`
+            `Open Chrome and navigate to the site, or use the resource-capped browser broker.`
           );
         }
       } else {
@@ -157,7 +137,6 @@ export class ChromeTabCoordinator {
       heartbeat: now,
     };
 
-    await this._writeClaim(newClaim);
     this._claim = newClaim;
     return newClaim;
   }
@@ -165,14 +144,10 @@ export class ChromeTabCoordinator {
   async heartbeat(): Promise<void> {
     if (!this._claim) return;
     this._claim.heartbeat = Date.now();
-    await this._writeClaim(this._claim);
   }
 
   async release(): Promise<void> {
     if (!this._claim) return;
-    const claims = await ChromeTabCoordinator.listClaims();
-    const updated = claims.filter(c => c.agentId !== this.agentId);
-    await this._atomicWrite(updated);
     this._claim = null;
   }
 
@@ -208,20 +183,4 @@ export class ChromeTabCoordinator {
 
   // ─── Internal ─────────────────────────────────────────────────────────────
 
-  private async _writeClaim(claim: ChromeTabClaim): Promise<void> {
-    const claims = await ChromeTabCoordinator.listClaims();
-    const idx = claims.findIndex(c => c.agentId === claim.agentId);
-    if (idx >= 0) {
-      claims[idx] = claim;
-    } else {
-      claims.push(claim);
-    }
-    await this._atomicWrite(claims);
-  }
-
-  private async _atomicWrite(claims: ChromeTabClaim[]): Promise<void> {
-    const tmp = `${CHROME_CLAIMS_FILE}.tmp.${process.pid}`;
-    await fs.writeFile(tmp, JSON.stringify(claims, null, 2));
-    await fs.rename(tmp, CHROME_CLAIMS_FILE);
-  }
 }

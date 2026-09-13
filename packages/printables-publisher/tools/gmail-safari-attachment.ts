@@ -1,11 +1,10 @@
 #!/usr/bin/env npx tsx
-/** Inspect or download one attachment from an exact Gmail subject in an independent Safari target. */
+/** Inspect or download one attachment from an exact Gmail subject in any Safari target. */
 
 import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { TabCoordinator } from '../../medium-automation/src/automation/tab-coordinator.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +31,7 @@ async function runAppleScript(script: string): Promise<string> {
   return stdout.trim();
 }
 
-async function claimedJavaScript(windowId: number, tabIndex: number, script: string): Promise<string> {
+async function targetedJavaScript(windowId: number, tabIndex: number, script: string): Promise<string> {
   return runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
@@ -45,38 +44,44 @@ async function main(): Promise<void> {
   const subject = value('--subject');
   const action = value('--action', 'inspect');
   if (!['inspect', 'download', 'extract'].includes(action)) throw new Error('--action must be inspect, download, or extract');
-  process.env.SAFARI_CONTROLLER_URL = 'http://127.0.0.1:1';
   const query = `subject:"${subject}" has:attachment`;
   const searchUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(query)}`;
-  const coordinator = new TabCoordinator(
-    `gmail-attachment-${process.pid}`,
-    'gmail-attachment',
-    3114,
-    'mail.google.com',
-  );
-  const tabIndex = Number.parseInt(await runAppleScript(`
+  const targetText = await runAppleScript(`
 tell application "Safari"
-  if (count of windows) < 2 then error "Safari Window 2 is unavailable"
-  repeat with t from 1 to count of tabs of window 2
-    if URL of tab t of window 2 contains "mail.google.com" then return t
+  repeat with candidateWindow in windows
+    repeat with t from 1 to count of tabs of candidateWindow
+      if URL of tab t of candidateWindow contains "mail.google.com" then
+        return (id of candidateWindow as text) & "||" & (t as text)
+      end if
+    end repeat
   end repeat
-  tell window 2 to make new tab with properties {URL:"${appleScriptString(searchUrl)}"}
-  return count of tabs of window 2
-end tell`), 10);
-  const claim = await coordinator.claim(2, tabIndex);
-  try {
-    const windowId = Number.parseInt(
-      await runAppleScript(`tell application "Safari" to return id of window ${claim.windowIndex}`),
-      10,
-    );
+
+  if (count of windows) is 0 then
+    make new document with properties {URL:"${appleScriptString(searchUrl)}"}
+    set agentWindow to front window
+    set targetTab to 1
+  else
+    set agentWindow to front window
+    tell agentWindow to make new tab with properties {URL:"${appleScriptString(searchUrl)}"}
+    set targetTab to count of tabs of agentWindow
+  end if
+  return (id of agentWindow as text) & "||" & (targetTab as text)
+end tell`);
+  const [windowIdText, tabIndexText] = targetText.split('||');
+  const windowId = Number.parseInt(windowIdText, 10);
+  const tabIndex = Number.parseInt(tabIndexText, 10);
+  if (!Number.isInteger(windowId) || !Number.isInteger(tabIndex)) {
+    throw new Error(`Safari returned an invalid Gmail target: ${targetText}`);
+  }
+  {
     await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  set URL of tab ${claim.tabIndex} of agentWindow to "${appleScriptString(searchUrl)}"
+  set URL of tab ${tabIndex} of agentWindow to "${appleScriptString(searchUrl)}"
 end tell`);
     await new Promise(resolve => setTimeout(resolve, 7_000));
 
-    const openResult = await claimedJavaScript(windowId, claim.tabIndex, `
+    const openResult = await targetedJavaScript(windowId, tabIndex, `
 (() => {
   const subject = ${jsString(subject)};
   const subjectNodes = [...document.querySelectorAll('span,div')].filter(el =>
@@ -91,7 +96,7 @@ end tell`);
     if (!opened.ok) throw new Error(JSON.stringify(opened));
     await new Promise(resolve => setTimeout(resolve, 6_000));
 
-    const inspection = await claimedJavaScript(windowId, claim.tabIndex, `
+    const inspection = await targetedJavaScript(windowId, tabIndex, `
 (() => {
   const controls = [...document.querySelectorAll('a[href],button,[role="button"]')].map((el, index) => ({
     index,
@@ -132,7 +137,7 @@ end tell`);
       downloadUrl.searchParams.set('disp', 'att');
       if (action === 'extract') {
         const outputPath = path.resolve(value('--output'));
-        const extraction = await claimedJavaScript(windowId, claim.tabIndex, `
+        const extraction = await targetedJavaScript(windowId, tabIndex, `
 (() => {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', ${jsString(downloadUrl.toString())}, false);
@@ -192,14 +197,12 @@ end tell`);
       await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  set URL of tab ${claim.tabIndex} of agentWindow to "${appleScriptString(downloadUrl.toString())}"
+  set URL of tab ${tabIndex} of agentWindow to "${appleScriptString(downloadUrl.toString())}"
 end tell`);
       console.log(JSON.stringify({ ...result, download: { ok: true, stage: 'download', method: 'attachment-url' } }));
     } else {
       console.log(JSON.stringify(result));
     }
-  } finally {
-    await coordinator.release();
   }
 }
 

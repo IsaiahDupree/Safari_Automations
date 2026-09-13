@@ -10,7 +10,6 @@
  */
 
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -18,19 +17,12 @@ import { execSync } from 'child_process';
 export type ChromePlatform = 'instagram' | 'twitter' | 'tiktok' | 'threads' | 'linkedin';
 
 export interface ChromeDriverOptions {
-  /** Platform name — used for logging and claim management */
+  /** Platform name — used for logging */
   platform: ChromePlatform;
   /** CDP port the Chrome instance is listening on */
   cdpPort: number;
   /** Optional URL pattern to prefer when selecting a tab (e.g. 'instagram.com') */
   urlPattern?: string;
-}
-
-export interface TabClaim {
-  platform: string;
-  claimedAt: number;
-  claimedBy: string;
-  cdpPort: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -48,8 +40,6 @@ const DEFAULT_CDP_PORTS: Record<ChromePlatform, number> = {
   linkedin:  SHARED_CDP_PORT,
 };
 
-const CLAIMS_FILE = '/tmp/chrome-tab-claims.json';
-const CLAIM_TTL_MS = 5 * 60 * 1000; // 5 minutes
 function rawBrowserDisabled(): boolean { return true; }
 
 // ─── ChromeDriver class ───────────────────────────────────────────────────────
@@ -69,7 +59,7 @@ export class ChromeDriver {
 
   private async getBrowser(): Promise<Browser> {
     if (rawBrowserDisabled()) throw Object.assign(
-      new Error('Raw shared CDP access is disabled; use chrome-bridge claim/act/release'),
+      new Error('Raw local CDP access is disabled here; use the resource-capped Chrome broker API'),
       { code: 'RAW_BROWSER_AUTOMATION_DISABLED' },
     );
     if (this.browser && this.browser.connected) {
@@ -268,64 +258,6 @@ export class ChromeDriver {
   }
 
   // ── Public: Tab claim system ──────────────────────────────────────────────
-  // Mirrors the Safari tab-claim format so the same tooling can check both.
-
-  /** Claim this platform's Chrome tab. Throws if already claimed by another process. */
-  claim(claimedBy = `pid:${process.pid}`): void {
-    const claims = this.readClaims();
-    const existing = claims[this.opts.platform];
-
-    // Check if an active claim already exists
-    if (existing && Date.now() - existing.claimedAt < CLAIM_TTL_MS && existing.claimedBy !== claimedBy) {
-      throw Object.assign(
-        new Error(`Chrome tab for ${this.opts.platform} already claimed by ${existing.claimedBy}`),
-        { code: 'TAB_CLAIMED', claimedBy: existing.claimedBy }
-      );
-    }
-
-    claims[this.opts.platform] = {
-      platform: this.opts.platform,
-      claimedAt: Date.now(),
-      claimedBy,
-      cdpPort: this.opts.cdpPort,
-    };
-    this.writeClaims(claims);
-    console.log(`[chrome-driver:${this.opts.platform}] Tab claimed by ${claimedBy}`);
-  }
-
-  /** Release the claim for this platform. No-op if not claimed. */
-  release(claimedBy = `pid:${process.pid}`): void {
-    const claims = this.readClaims();
-    const existing = claims[this.opts.platform];
-    if (existing && existing.claimedBy === claimedBy) {
-      delete claims[this.opts.platform];
-      this.writeClaims(claims);
-      console.log(`[chrome-driver:${this.opts.platform}] Tab claim released`);
-    }
-  }
-
-  /** Check if this platform's tab is currently claimed (by anyone). */
-  isClaimed(): boolean {
-    const claims = this.readClaims();
-    const existing = claims[this.opts.platform];
-    return !!(existing && Date.now() - existing.claimedAt < CLAIM_TTL_MS);
-  }
-
-  private readClaims(): Record<string, TabClaim> {
-    try {
-      if (existsSync(CLAIMS_FILE)) {
-        return JSON.parse(readFileSync(CLAIMS_FILE, 'utf8')) as Record<string, TabClaim>;
-      }
-    } catch {
-      // Ignore parse errors — start fresh
-    }
-    return {};
-  }
-
-  private writeClaims(claims: Record<string, TabClaim>): void {
-    writeFileSync(CLAIMS_FILE, JSON.stringify(claims, null, 2), 'utf8');
-  }
-
   // ── Public: Lifecycle ─────────────────────────────────────────────────────
 
   /** Disconnect from Chrome (does NOT close the browser window). */
@@ -369,4 +301,4 @@ function platformUrlPattern(platform: ChromePlatform): string {
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { DEFAULT_CDP_PORTS, CLAIMS_FILE };
+export { DEFAULT_CDP_PORTS };

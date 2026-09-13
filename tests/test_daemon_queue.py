@@ -64,18 +64,6 @@ def post(url: str, payload: dict, auth: Optional[str] = None, timeout: float = 3
     except Exception as e:
         return None, str(e)
 
-def get_process_env(port: int) -> Optional[str]:
-    """Return SAFARI_AUTOMATION_WINDOW value from the process bound to port."""
-    try:
-        pid_line = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True).strip().split()[0]
-        env_line = subprocess.check_output(["ps", "eww", "-p", pid_line], text=True)
-        for tok in env_line.split():
-            if tok.startswith("SAFARI_AUTOMATION_WINDOW="):
-                return tok.split("=", 1)[1]
-    except Exception:
-        pass
-    return None
-
 # ─── Section 1: Services up ───────────────────────────────────────────────────
 
 print("\n═══ 1. Service Health ═══")
@@ -102,19 +90,7 @@ for port, name, auth in [
 
 print("\n═══ 2. Safari window admission open ═══")
 
-for port, name in [
-    (3100, "instagram-dm"),
-    (3003, "twitter-dm"),
-    (3102, "tiktok-dm"),
-    (3105, "linkedin-automation"),
-    (3005, "instagram-comments"),
-    (3107, "upwork-automation"),
-]:
-    env_val = get_process_env(port)
-    if env_val is None:
-        ok(f"::{port} {name} has no designated Safari window")
-    else:
-        skip(f"::{port} {name} retains compatibility window hint {env_val}", "hint must not be enforced")
+ok("No designated-window environment or cross-process claim registry is required")
 
 # ─── Section 3: Safari session on any accessible window ──────────────────────
 

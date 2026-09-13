@@ -214,7 +214,7 @@ app.get('/health', async (_req: Request, res: Response) => {
   });
 });
 
-// ── Tab claim registry stubs (Chrome mode — no Safari tab coordination needed) ─
+// ── Open-admission compatibility endpoints ─────────────────────────────────
 // Kept for API compatibility with external callers (watchdog, daemons).
 
 // GET /api/tabs/claims — returns empty list (Chrome needs no tab claims)

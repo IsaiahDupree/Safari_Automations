@@ -50,11 +50,11 @@ Each criterion includes:
 
 ## PRD 2: Safari Automation Management (PRD_Safari_Automation_Management.md)
 
-### SAFARI-001: Browser Queue Manager
+### SAFARI-001: Independent Browser Target Manager
 | Criterion | Test Method | Anti-False-Positive |
 |-----------|-------------|---------------------|
-| Only one Safari operation at a time | Queue 3 tasks, verify sequential execution | Log timestamps must show no overlap |
-| Queue state persists across restarts | Queue tasks, restart, verify queue preserved | Must verify task IDs match before/after |
+| Concurrent Safari operations | Run 3 tasks on separate targets | Log timestamps must show overlap without target cross-talk |
+| No lock or human-presence admission gate | Run while locked or human-active | No admission denial based on session state |
 | Failed tasks retry with backoff | Force failure, verify retry with increasing delay | Delay must increase (not constant) |
 
 ### SAFARI-002: Comment Engine

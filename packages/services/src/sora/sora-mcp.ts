@@ -24,18 +24,15 @@ const __dirname = path.dirname(__filename);
 const execAsync = promisify(exec);
 
 // ─── Local target metadata (no cross-process admission gate) ────────────────
-const MY_SERVICE = 'sora';
 const MY_URL_PATTERN = 'sora.chatgpt.com';
 
-interface TabClaim {
-  agentId: string; service: string; port: number; urlPattern: string;
-  windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
-  claimedAt: number; heartbeat: number;
+interface SafariTarget {
+  windowIndex: number;
+  tabIndex: number;
+  tabUrl: string;
 }
 
-async function readActiveClaims(): Promise<TabClaim[]> { return []; }
-
-async function acquireSoraClaim(): Promise<TabClaim | null> {
+async function findOrOpenSoraTarget(): Promise<SafariTarget | null> {
   // Find an open Sora tab in Safari via AppleScript
   const script = `
 tell application "Safari"
@@ -50,7 +47,17 @@ tell application "Safari"
       end try
     end repeat
   end repeat
-  return result
+  if (count of result) > 0 then return result
+  if (count of windows) is 0 then
+    make new document with properties {URL:"https://sora.chatgpt.com"}
+    set targetWindow to front window
+    set targetTab to 1
+  else
+    set targetWindow to front window
+    tell targetWindow to make new tab with properties {URL:"https://sora.chatgpt.com"}
+    set targetTab to count of tabs of targetWindow
+  end if
+  return (index of targetWindow as string) & "," & (targetTab as string) & ",https://sora.chatgpt.com"
 end tell`;
   try {
     const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
@@ -61,28 +68,15 @@ end tell`;
     const windowIndex = parseInt(wStr.trim());
     const tabIndex = parseInt(tStr.trim());
 
-    const agentId = `sora-${Date.now()}`;
-    const myClaim: TabClaim = {
-      agentId, service: MY_SERVICE, port: 0, urlPattern: MY_URL_PATTERN,
+    const target: SafariTarget = {
       windowIndex, tabIndex, tabUrl: url?.trim() || MY_URL_PATTERN,
-      pid: process.pid, claimedAt: Date.now(), heartbeat: Date.now(),
     };
-    return myClaim;
+    return target;
   } catch { return null; }
 }
 
-async function releaseSoraClaim(): Promise<void> {
-  // Compatibility no-op: targets are no longer globally claimed.
-}
-
-// Refreshes the claim heartbeat every 30s so long-running scrapes don't expire.
-// Returns a stop function — call it in your finally block.
-function startClaimHeartbeat(): () => void {
-  return () => {};
-}
-
-async function checkConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  return { conflict: false };
+async function releaseSoraTarget(): Promise<void> {
+  // Compatibility no-op: targets are not globally claimed.
 }
 
 // ─── State: daily generation tracking ─────────────────────────────────────────
@@ -490,12 +484,11 @@ const SERVER_VERSION = '1.0.0';
 const TOOLS = [
   {
     name: 'sora_generate',
-    description: 'Generate a Sora video from a prompt. Claims the Safari Sora tab, submits the prompt, polls until done, downloads the MP4, and auto-sends to Telegram. Returns file path when complete.',
+    description: 'Generate a Sora video from a prompt using a discovered or newly opened Safari target, poll until done, download the MP4, and optionally send it to Telegram.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Video generation prompt (do not include @isaiahdupree prefix — it is added automatically)' },
-        skip_claim_check: { type: 'boolean', description: 'Skip Safari tab conflict check (default false)' },
         send_telegram: { type: 'boolean', description: 'Auto-send completed video to Telegram (default true)' },
         skip_youtube: { type: 'boolean', description: 'Skip YouTube upload (default false)' },
         youtube_title: { type: 'string', description: 'Custom YouTube title (default: auto-generated from AI analysis)' },
@@ -643,7 +636,7 @@ const TOOLS = [
   },
   {
     name: 'sora_maximize',
-    description: 'Persistent maximize session: acquires Safari tab claim, runs sora_check_usage to read the real daily cap, then generates videos continuously (draining queue + auto-filling with trend prompts) until all gens are used. Holds the tab claim with a heartbeat throughout. Reports reset date when done.',
+    description: 'Persistent maximize session: discovers or opens a Safari Sora target, runs sora_check_usage to read the real daily cap, then generates videos continuously until all generations are used. No global claim, presence check, or lock-state gate is used.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -976,7 +969,7 @@ async function processVideoFull(opts: {
 
 // ─── Tool Handlers ────────────────────────────────────────────────────────────
 
-async function handleSoraGenerate(args: { prompt: string; skip_claim_check?: boolean; send_telegram?: boolean; skip_youtube?: boolean; youtube_title?: string; trilogyId?: string; trilogyPart?: number }): Promise<string> {
+async function handleSoraGenerate(args: { prompt: string; send_telegram?: boolean; skip_youtube?: boolean; youtube_title?: string; trilogyId?: string; trilogyPart?: number }): Promise<string> {
   const state = loadState();
   const sendTg = args.send_telegram !== false; // default true
 
@@ -989,19 +982,10 @@ async function handleSoraGenerate(args: { prompt: string; skip_claim_check?: boo
     });
   }
 
-  // Check Safari tab conflict
-  if (!args.skip_claim_check) {
-    const conflict = await checkConflict();
-    if (conflict.conflict) {
-      return JSON.stringify({
-        success: false,
-        error: `Safari tab conflict: ${conflict.blocker.service} is using the same tab (window ${conflict.blocker.windowIndex}, tab ${conflict.blocker.tabIndex}). Wait for it to finish or use sora_claim_status to investigate.`,
-        blocker: conflict.blocker,
-      });
-    }
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
-
-  const claim = await acquireSoraClaim();
 
   try {
     const result = await runSoraGenerate(args.prompt);
@@ -1069,7 +1053,7 @@ async function handleSoraGenerate(args: { prompt: string; skip_claim_check?: boo
       }
 
       saveState(state);
-      await releaseSoraClaim();
+      await releaseSoraTarget();
       return JSON.stringify({
         success: true,
         video_id: internalId,
@@ -1087,11 +1071,11 @@ async function handleSoraGenerate(args: { prompt: string; skip_claim_check?: boo
       state.failedToday++;
       if (sendTg) await telegramSendText(`Sora generation failed: ${result.error?.slice(0, 100)}`);
       saveState(state);
-      await releaseSoraClaim();
+      await releaseSoraTarget();
       return JSON.stringify({ success: false, error: result.error, generated_today: state.generatedToday });
     }
   } catch (e) {
-    await releaseSoraClaim();
+    await releaseSoraTarget();
     state.failedToday++;
     saveState(state);
     return JSON.stringify({ success: false, error: e instanceof Error ? e.message : String(e) });
@@ -1455,9 +1439,9 @@ async function handleSoraNotifications(args: {
 }
 
 async function handleSoraCheckUsage(): Promise<string> {
-  const claim = await acquireSoraClaim();
-  if (!claim) {
-    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first' });
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
   try {
     const usage = await runSoraGetUsage();
@@ -1484,7 +1468,7 @@ async function handleSoraCheckUsage(): Promise<string> {
     }
     return JSON.stringify({ success: false, error: usage.error || 'Could not read usage dialog' });
   } finally {
-    await releaseSoraClaim();
+    await releaseSoraTarget();
   }
 }
 
@@ -1495,15 +1479,13 @@ async function handleSoraMaximize(args: {
   const trendPlatform = args.trend_platform || 'tiktok';
 
   // 1. Resolve an available Sora target without taking a global claim.
-  const claim = await acquireSoraClaim();
-  if (!claim) {
-    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first' });
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
 
   const sessionStart = new Date().toISOString();
   const results: Array<{ prompt: string; success: boolean; videoId?: string; error?: string }> = [];
-
-  const heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   try {
     // 2. Check real Sora usage to know actual cap
@@ -1574,8 +1556,8 @@ async function handleSoraMaximize(args: {
 
       if (!prompt) break;
 
-      // Generate (skip_claim_check since we already hold the claim)
-      const genResult = JSON.parse(await handleSoraGenerate({ prompt, skip_claim_check: true, send_telegram: true, skip_youtube: skipYt }));
+      // Generate in the independently discovered target.
+      const genResult = JSON.parse(await handleSoraGenerate({ prompt, send_telegram: true, skip_youtube: skipYt }));
       gensUsed++;
 
       results.push({ prompt: prompt.slice(0, 80), success: genResult.success, videoId: genResult.video_id, error: genResult.error });
@@ -1628,8 +1610,7 @@ async function handleSoraMaximize(args: {
     });
 
   } finally {
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
-    await releaseSoraClaim();
+    await releaseSoraTarget();
     const s = loadState();
     s.maximizeSessionActive = false;
     saveState(s);
@@ -1839,12 +1820,10 @@ async function handleSoraScrapeCreators(args: {
     }
   }
 
-  // Claim Safari tab
-  const claim = await acquireSoraClaim();
-  if (!claim) {
-    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
-  const stopHeartbeat = startClaimHeartbeat();
 
   const allRows: Array<{ id: string; username: string; prompt: string; post_href: string; views: number | null; likes: number | null; comments: number | null; video_url: string | null }> = [];
   const creatorResults: Array<{ username: string; scraped: number; saved: number; top_prompt: string; error?: string }> = [];
@@ -1911,18 +1890,15 @@ async function handleSoraScrapeCreators(args: {
         : undefined,
     });
   } finally {
-    stopHeartbeat();
-    await releaseSoraClaim();
+    await releaseSoraTarget();
   }
 }
 
 async function handleSoraScrapePlatformLeaderboard(): Promise<string> {
-  // Acquire tab claim before touching Safari — prevents conflicts with other services
-  const claim = await acquireSoraClaim();
-  if (!claim) {
-    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
-  const stopHeartbeat = startClaimHeartbeat();
   try {
     const sora = new SoraFullAutomation();
     const result = await sora.getPlatformLeaderboard();
@@ -1954,18 +1930,15 @@ async function handleSoraScrapePlatformLeaderboard(): Promise<string> {
       error: result.error,
     });
   } finally {
-    stopHeartbeat();
-    await releaseSoraClaim();
+    await releaseSoraTarget();
   }
 }
 
 async function handleSoraScrapeMyStats(args: { limit?: number }): Promise<string> {
-  // Acquire tab claim before touching Safari — prevents conflicts with other services
-  const claim = await acquireSoraClaim();
-  if (!claim) {
-    return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' });
+  const target = await findOrOpenSoraTarget();
+  if (!target) {
+    return JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' });
   }
-  const stopHeartbeat = startClaimHeartbeat();
   try {
     const sora = new SoraFullAutomation();
     const result = await sora.getMyVideoStats(args.limit ?? 20);
@@ -2002,8 +1975,7 @@ async function handleSoraScrapeMyStats(args: { limit?: number }): Promise<string
     }
     return JSON.stringify({ success: false, error: result.error });
   } finally {
-    stopHeartbeat();
-    await releaseSoraClaim();
+    await releaseSoraTarget();
   }
 }
 
@@ -2145,7 +2117,7 @@ async function handleSoraStatus(): Promise<string> {
       next_up: state.queue.find(q => q.status === 'pending')?.prompt?.slice(0, 80) || null,
     },
     recent_outputs: outputs.slice(0, 5),
-    active_claims: await readActiveClaims(),
+    browser_admission: { mode: 'open', global_claims: false, presence_gate: false, screen_lock_gate: false },
     hint: state.gensLeft === undefined ? 'Run sora_check_usage to read real gens from Sora, then sora_maximize to use them all.' : undefined,
   });
 }
@@ -2175,16 +2147,12 @@ async function handleSoraListOutputs(args: { limit?: number }): Promise<string> 
 }
 
 async function handleSoraClaimStatus(): Promise<string> {
-  const claims = await readActiveClaims();
-  const soraClaim = claims.find(c => c.service === MY_SERVICE);
-  const conflicts = soraClaim
-    ? claims.filter(c => c.service !== MY_SERVICE && c.windowIndex === soraClaim.windowIndex && c.tabIndex === soraClaim.tabIndex)
-    : [];
+  const target = await findOrOpenSoraTarget();
   return JSON.stringify({
-    sora_claimed: !!soraClaim,
-    sora_claim: soraClaim || null,
-    conflicts,
-    all_claims: claims,
+    admission: 'open',
+    global_claims: false,
+    target,
+    conflicts: [],
   });
 }
 
@@ -2219,7 +2187,7 @@ async function handleRequest(req: { id?: unknown; method: string; params?: { nam
     const args = (params?.arguments || {}) as Record<string, unknown>;
     let content: string;
     try {
-      if (name === 'sora_generate') content = await handleSoraGenerate(args as { prompt: string; skip_claim_check?: boolean; send_telegram?: boolean });
+      if (name === 'sora_generate') content = await handleSoraGenerate(args as { prompt: string; send_telegram?: boolean });
       else if (name === 'sora_queue_batch') content = await handleSoraQueueBatch(args as { prompts: string[]; source?: string });
       else if (name === 'sora_get_trends') content = await handleSoraGetTrends(args as { count?: number; platform?: string; auto_queue?: boolean });
       else if (name === 'sora_status') content = await handleSoraStatus();

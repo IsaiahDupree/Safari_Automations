@@ -1,4 +1,4 @@
-/** Legacy direct-CDP surface. Production uses the claimed Safari lane. */
+/** Legacy local-Chrome surface. Use open Safari/Waterfox automation or the resource-capped Chrome broker. */
 const disabled = () => Object.assign(new Error('Direct Chrome automation is disabled'), { code: 'RAW_CHROME_DISABLED' });
 export async function getPage(): Promise<never> { throw disabled(); }
 export async function evalJS(_script: string): Promise<string> { throw disabled(); }

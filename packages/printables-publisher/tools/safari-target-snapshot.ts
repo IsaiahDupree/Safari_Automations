@@ -1,9 +1,8 @@
 #!/usr/bin/env npx tsx
-/** Read one site in an independent Safari target. */
+/** Read one site in any available Safari target. */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { TabCoordinator } from '../../medium-automation/src/automation/tab-coordinator.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,40 +27,46 @@ async function runAppleScript(script: string): Promise<string> {
 async function main(): Promise<void> {
   const pattern = value('--pattern');
   const openUrl = value('--url');
-  process.env.SAFARI_CONTROLLER_URL = 'http://127.0.0.1:1';
-  const coordinator = new TabCoordinator(
-    `claimed-snapshot-${process.pid}`,
-    'claimed-snapshot',
-    3113,
-    pattern,
-  );
   const safePattern = appleScriptString(pattern);
   const safeOpenUrl = appleScriptString(openUrl);
-  const tabIndex = Number.parseInt(await runAppleScript(`
+  const targetText = await runAppleScript(`
 tell application "Safari"
-  if (count of windows) < 2 then error "Safari Window 2 is unavailable"
-  repeat with t from 1 to count of tabs of window 2
-    if URL of tab t of window 2 contains "${safePattern}" then return t
+  repeat with candidateWindow in windows
+    repeat with t from 1 to count of tabs of candidateWindow
+      if URL of tab t of candidateWindow contains "${safePattern}" then
+        return (id of candidateWindow as text) & "||" & (t as text)
+      end if
+    end repeat
   end repeat
-  tell window 2 to make new tab with properties {URL:"${safeOpenUrl}"}
-  return count of tabs of window 2
-end tell`), 10);
-  const claim = await coordinator.claim(2, tabIndex);
-  try {
-    const windowId = Number.parseInt(
-      await runAppleScript(`tell application "Safari" to return id of window ${claim.windowIndex}`),
-      10,
-    );
+
+  if (count of windows) is 0 then
+    make new document with properties {URL:"${safeOpenUrl}"}
+    set agentWindow to front window
+    set targetTab to 1
+  else
+    set agentWindow to front window
+    tell agentWindow to make new tab with properties {URL:"${safeOpenUrl}"}
+    set targetTab to count of tabs of agentWindow
+  end if
+  return (id of agentWindow as text) & "||" & (targetTab as text)
+end tell`);
+  const [windowIdText, tabIndexText] = targetText.split('||');
+  const windowId = Number.parseInt(windowIdText, 10);
+  const tabIndex = Number.parseInt(tabIndexText, 10);
+  if (!Number.isInteger(windowId) || !Number.isInteger(tabIndex)) {
+    throw new Error(`Safari returned an invalid target: ${targetText}`);
+  }
+  {
     const currentUrl = await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  return URL of tab ${claim.tabIndex} of agentWindow
+  return URL of tab ${tabIndex} of agentWindow
 end tell`);
     if (currentUrl !== openUrl) {
       await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  set URL of tab ${claim.tabIndex} of agentWindow to "${appleScriptString(openUrl)}"
+  set URL of tab ${tabIndex} of agentWindow to "${appleScriptString(openUrl)}"
 end tell`);
     }
     await new Promise(resolve => setTimeout(resolve, 7_000));
@@ -92,12 +97,10 @@ end tell`);
     const output = await runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
-  set agentTab to tab ${claim.tabIndex} of agentWindow
+  set agentTab to tab ${tabIndex} of agentWindow
   return do JavaScript "${appleScriptString(js)}" in agentTab
 end tell`);
     console.log(output);
-  } finally {
-    await coordinator.release();
   }
 }
 

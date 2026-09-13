@@ -14,10 +14,10 @@
  *   safari_w2_get_url          — get current URL of a W2 tab
  *   safari_w2_claims           — compatibility status (global claims retired)
  *   safari_w2_service_health   — health check all automation services
- *   safari_w2_setup_tabs       — open all missing platform tabs + trigger claims
- *   safari_w2_claim_tab        — POST /api/session/ensure on a service
+ *   safari_w2_setup_tabs       — open missing platform tabs + resolve service targets
+ *   safari_w2_claim_tab        — compatibility alias for service target resolution
  *   safari_w2_login_status     — detect logged-in vs login-page for each tab
- *   safari_w2_clear_stale      — remove expired claims from the registry
+ *   safari_w2_clear_stale      — compatibility no-op
  *
  * Start: npx tsx packages/safari-w2-mcp/src/mcp-server.ts
  */
@@ -51,16 +51,6 @@ async function runASJson(script: string): Promise<unknown> {
 }
 
 // ─── Tab claim helpers ────────────────────────────────────────────────────────
-
-interface TabClaim {
-  agentId: string; service: string; port: number;
-  urlPattern: string; windowIndex: number; tabIndex: number;
-  tabUrl: string; pid: number; claimedAt: number; heartbeat: number;
-}
-
-async function readClaims(): Promise<TabClaim[]> {
-  return [];
-}
 
 // ─── Service registry ─────────────────────────────────────────────────────────
 
@@ -128,84 +118,84 @@ async function httpPost(url: string, data: unknown, timeoutMs = 8000): Promise<{
 const TOOLS = [
   {
     name: 'safari_w2_list_tabs',
-    description: 'List all tabs open in Safari Window 2 ("Local to Cloud" profile). Returns index, URL, and title for each tab.',
+    description: 'List all tabs in Safari\'s current front window. Returns index, URL, and title for each tab.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'safari_w2_navigate',
-    description: 'Navigate a specific tab in Safari Window 2 to a URL. Specify tab by index (1-based).',
+    description: 'Navigate a tab in Safari\'s current front window to a URL. Specify tab by index (1-based).',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in the current front window (1-based)' },
       url: { type: 'string', description: 'URL to navigate to' },
     }, required: ['tabIndex', 'url'] },
   },
   {
     name: 'safari_w2_eval',
-    description: 'Run JavaScript in a specific Window 2 tab and return the result. Use for reading page state, checking login, extracting data.',
+    description: 'Run JavaScript in a tab of Safari\'s current front window and return the result.',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in the current front window (1-based)' },
       script: { type: 'string', description: 'JavaScript to execute. Return value becomes the result.' },
     }, required: ['tabIndex', 'script'] },
   },
   {
     name: 'safari_w2_open_tab',
-    description: 'Open a new tab in Safari Window 2 navigated to a URL. Returns the new tab index.',
+    description: 'Open a new tab in Safari\'s current front window. Returns the new tab index.',
     inputSchema: { type: 'object', properties: {
       url: { type: 'string', description: 'URL to open in the new tab' },
     }, required: ['url'] },
   },
   {
     name: 'safari_w2_close_tab',
-    description: 'Close a tab in Safari Window 2 by index. Use carefully — this cannot be undone.',
+    description: 'Close a tab in Safari\'s current front window by index.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to close (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_activate_tab',
-    description: 'Bring a Window 2 tab to the foreground (make it the active visible tab).',
+    description: 'Bring a tab in Safari\'s current front window to the foreground.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to activate (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_get_url',
-    description: 'Get the current URL of a specific Window 2 tab.',
+    description: 'Get the current URL of a tab in Safari\'s current front window.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_claims',
-    description: 'Read the tab claim registry filtered to Window 2 only. Shows which automation service owns which tab, and any conflicts.',
+    description: 'Compatibility status: global Safari tab claims are retired and admission is open.',
     inputSchema: { type: 'object', properties: {
-      includeExpired: { type: 'boolean', description: 'Include expired claims (older than 60s)', default: false },
+      includeExpired: { type: 'boolean', description: 'Ignored compatibility argument', default: false },
     } },
   },
   {
     name: 'safari_w2_service_health',
-    description: 'Health check all Safari automation services. Returns status (up/down), tab claim, and login state for each platform service.',
+    description: 'Health check Safari automation services without taking or requiring a browser claim.',
     inputSchema: { type: 'object', properties: {
-      filter: { type: 'string', enum: ['all', 'up', 'down', 'unclaimed'], description: 'Filter results (default: all)', default: 'all' },
+      filter: { type: 'string', enum: ['all', 'up', 'down'], description: 'Filter results (default: all)', default: 'all' },
     } },
   },
   {
     name: 'safari_w2_setup_tabs',
-    description: 'Open all missing platform tabs in Window 2 and trigger tab claims on all services. Equivalent to running open-local-to-cloud-tabs.sh.',
+    description: 'Open missing platform tabs in Safari and ask each service to resolve an independent target.',
     inputSchema: { type: 'object', properties: {
-      mode: { type: 'string', enum: ['full', 'claim-only', 'reset'], description: '"full" opens missing tabs then claims, "claim-only" only triggers claims, "reset" closes all W2 tabs and reopens fresh', default: 'full' },
+      mode: { type: 'string', enum: ['full', 'ensure-only'], description: '"full" opens missing tabs; "ensure-only" only resolves service targets', default: 'full' },
     } },
   },
   {
     name: 'safari_w2_claim_tab',
-    description: 'Trigger /api/session/ensure on a specific service to make it claim its Window 2 tab.',
+    description: 'Compatibility alias that asks a service to discover or open its independent browser target.',
     inputSchema: { type: 'object', properties: {
       service: { type: 'string', description: 'Service name (e.g. "instagram-dm", "twitter-dm", "tiktok-dm", "threads-comments", "facebook-comments", "upwork-automation", "sora-automation")' },
     }, required: ['service'] },
   },
   {
     name: 'safari_w2_login_status',
-    description: 'Check whether each platform tab in Window 2 is logged in or showing a login/auth page.',
+    description: 'Check whether platform tabs in Safari\'s current front window are logged in.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -319,57 +309,39 @@ end tell`);
     case 'safari_w2_claims': {
       const { includeExpired = false } = args as { includeExpired?: boolean };
       void includeExpired;
-      const claims = await readClaims();
-      const w2Claims = claims.filter(c => c.windowIndex === W2);
-      const w1Claims = claims.filter(c => c.windowIndex !== W2);
-      // Detect conflicts (two services on same tab)
-      const tabMap = new Map<string, TabClaim[]>();
-      for (const c of w2Claims) {
-        const key = `${c.windowIndex}:${c.tabIndex}`;
-        if (!tabMap.has(key)) tabMap.set(key, []);
-        tabMap.get(key)!.push(c);
-      }
-      const conflicts = [...tabMap.entries()]
-        .filter(([, svcs]) => svcs.length > 1)
-        .map(([tab, svcs]) => ({ tab, services: svcs.map(s => s.service) }));
       result = {
-        window: W2,
-        w2_claims: w2Claims,
-        other_window_claims: w1Claims,
-        conflicts,
-        total: claims.length,
+        admission: 'open',
+        global_claims: false,
+        presence_gate: false,
+        screen_lock_gate: false,
+        conflicts: [],
       };
       break;
     }
 
     case 'safari_w2_service_health': {
       const { filter = 'all' } = args as { filter?: string };
-      const claims = await readClaims();
       const checks = await Promise.all(SERVICES.map(async svc => {
         const h = await httpGet(`http://localhost:${svc.port}/health`, 3000);
-        const claim = claims.find(c => c.service === svc.name && c.windowIndex === W2);
         return {
           service: svc.name,
           label: svc.label,
           port: svc.port,
           up: h.ok,
-          w2_claim: claim ? `W${claim.windowIndex}:T${claim.tabIndex}` : null,
-          tab_url: claim?.tabUrl ?? null,
+          admission: 'open',
         };
       }));
       const filtered = filter === 'up' ? checks.filter(c => c.up)
         : filter === 'down' ? checks.filter(c => !c.up)
-        : filter === 'unclaimed' ? checks.filter(c => c.up && !c.w2_claim)
         : checks;
       const upCount = checks.filter(c => c.up).length;
-      const claimedCount = checks.filter(c => c.w2_claim).length;
-      result = { services: filtered, summary: { total: SERVICES.length, up: upCount, down: SERVICES.length - upCount, w2_claimed: claimedCount } };
+      result = { services: filtered, summary: { total: SERVICES.length, up: upCount, down: SERVICES.length - upCount, admission: 'open' } };
       break;
     }
 
     case 'safari_w2_setup_tabs': {
       const { mode = 'full' } = args as { mode?: string };
-      const flag = mode === 'claim-only' ? '--claim' : mode === 'reset' ? '--reset' : '';
+      const flag = mode === 'ensure-only' ? '--ensure' : '';
       try {
         const { stdout, stderr } = await execAsync(
           `/bin/zsh -l "${SETUP_SCRIPT}" ${flag}`,
@@ -390,16 +362,9 @@ end tell`);
         result = { ok: false, error: `Unknown service: ${service}`, known: SERVICES.map(s => s.name) };
         break;
       }
-      // Sora uses command trigger, others use session/ensure
       if (service === 'sora-automation') {
-        const r = await httpPost(`http://localhost:${svc.port}/v1/commands`,
-          { type: 'sora.generate', payload: { prompt: 'tab-claim-ping' } }, 5000);
-        if (!r.ok) { result = { ok: false, service, error: `HTTP ${r.status}: ${r.body.slice(0, 100)}` }; break; }
-        // Wait for claim
-        await new Promise(res => setTimeout(res, 4000));
-        const h = await httpGet(`http://localhost:${svc.port}/health`, 3000);
-        const health = h.ok ? JSON.parse(h.body) : {};
-        result = { ok: h.ok, service, claimed: health.tabClaimed ?? false };
+        const h = await httpGet(`http://localhost:${svc.port}/ready`, 3000);
+        result = { ok: h.ok, service, admission: 'open', targetResolution: 'service-managed' };
       } else {
         const r = await httpPost(`http://localhost:${svc.port}/api/session/ensure`, {}, 8000);
         if (!r.ok) { result = { ok: false, service, port: svc.port, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` }; break; }
@@ -516,4 +481,4 @@ rl.on('line', async (line) => {
   if (res) process.stdout.write(JSON.stringify(res) + '\n');
 });
 rl.on('close', () => process.exit(0));
-process.stderr.write(`[MCP] ${SERVER_NAME} v${SERVER_VERSION} started — Window ${getW2()} ("Local to Cloud")\n`);
+process.stderr.write(`[MCP] ${SERVER_NAME} v${SERVER_VERSION} started — Safari front-window compatibility tools; admission open\n`);

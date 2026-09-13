@@ -204,6 +204,33 @@ end tell`);
     throw new Error('Timed out waiting for the authenticated Printables model editor');
   }
 
+  private async verifyPersistedModelFile(windowId: number, filesUrl: string, expectedName: string): Promise<boolean> {
+    const tabIndexText = await this.runAppleScript(`
+tell application "Safari"
+  set agentWindow to first window whose id is ${windowId}
+  tell agentWindow to make new tab with properties {URL:"${appleScriptString(filesUrl)}"}
+  return count of tabs of agentWindow
+end tell`);
+    const tabIndex = Number.parseInt(tabIndexText, 10);
+    if (!Number.isInteger(tabIndex) || tabIndex <= 0) throw new Error('Safari did not create the file-verification tab');
+    try {
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        const state = JSON.parse(await this.javascript(windowId, tabIndex, `JSON.stringify({
+          ready:document.readyState,
+          url:location.href,
+          text:document.body?.innerText || ''
+        })`)) as { ready: string; url: string; text: string };
+        if (state.ready === 'complete' && /\/files(?:$|[?#])/.test(new URL(state.url).pathname)
+          && state.text.includes(expectedName) && /\bZIP\b/.test(state.text)) return true;
+        await delay(750);
+      }
+      return false;
+    } finally {
+      await this.runTargeted(windowId, tabIndex, 'close agentTab\n  return "closed"').catch(() => undefined);
+    }
+  }
+
   private async selectExactOption(
     windowId: number,
     tabIndex: number,
@@ -544,8 +571,11 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
 
     return this.withModelTarget(editUrl.href, async target => {
       await this.waitForModelForm(target.windowId, target.tabIndex, editUrl.href, selectors.title);
+      // Several select widgets hydrate just after the title input becomes available.
+      // Give their selected labels a short settling window before the exact read-back.
+      await delay(1_500);
       const preflight = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
-        const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+        const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
         const title = document.querySelector(${jsLiteral(selectors.title)})?.value || '';
         const summary = document.querySelector(${jsLiteral(selectors.summary)})?.value || '';
         const category = normalize(document.querySelector(${jsLiteral(selectors.category)})?.textContent);
@@ -571,6 +601,9 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         archivePresent: boolean; photoCount: number; primaryCount: number; primaryDisabled: boolean;
       };
       const normalized = (value: string) => value.replace(/\s+/g, ' ').trim();
+      const expectedArchiveName = path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath));
+      const archivePresent = preflight.archivePresent
+        || await this.verifyPersistedModelFile(target.windowId, `${publicUrl}/files`, expectedArchiveName);
       const failures = [
         preflight.title !== release.title && 'title',
         preflight.summary !== release.summary && 'summary',
@@ -580,28 +613,49 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
         !preflight.origin && 'origin', !preflight.ai && 'ai',
         preflight.publishChecked && 'already-published', preflight.publishDisabled && 'publish-disabled',
-        !preflight.archivePresent && 'archive', preflight.photoCount < release.previews.length && 'previews',
+        !archivePresent && 'archive', preflight.photoCount < release.previews.length && 'previews',
         preflight.primaryCount !== 1 && 'primary-submit', preflight.primaryDisabled && 'submit-disabled',
       ].filter(Boolean);
       if (failures.length) throw new Error(`Printables publication preflight failed: ${failures.join(', ')}`);
 
       const armed = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const publish = document.querySelector(${jsLiteral(selectors.publish)});
-        if (!publish || publish.disabled || publish.checked) return JSON.stringify({ok:false,checked:Boolean(publish?.checked)});
-        publish.click();
-        return JSON.stringify({ok:Boolean(publish.checked),checked:Boolean(publish.checked)});
-      })()`)) as { ok: boolean; checked: boolean };
-      if (!armed.ok || !armed.checked) throw new Error('Printables public-state control did not arm');
-      await delay(500);
+        const switchRoot = publish?.closest('.publish-switch');
+        const published = [...(switchRoot?.querySelectorAll('button') || [])]
+          .find(button => (button.textContent || '').trim().toLowerCase() === 'published');
+        if (!publish || publish.disabled || publish.checked || !published) {
+          return JSON.stringify({ok:false,checked:Boolean(publish?.checked),found:Boolean(published)});
+        }
+        published.click();
+        return JSON.stringify({ok:true,checked:Boolean(publish.checked),found:true});
+      })()`)) as { ok: boolean; checked: boolean; found: boolean };
+      if (!armed.ok || !armed.found) throw new Error('Printables public-state control did not arm');
+      await delay(1_000);
+
+      const armedState = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
+        const publish = document.querySelector(${jsLiteral(selectors.publish)});
+        const switchRoot = publish?.closest('.publish-switch');
+        const published = [...(switchRoot?.querySelectorAll('button') || [])]
+          .find(button => (button.textContent || '').trim().toLowerCase() === 'published');
+        const primary = [...document.querySelectorAll('button')].filter(button =>
+          button.getClientRects().length && button.classList.contains('btn-primary') && button.classList.contains('btn-bold')
+        );
+        const text = (primary[0]?.innerText || '').replace(/\\s+/g, ' ').trim();
+        return JSON.stringify({checked:Boolean(publish?.checked),selected:Boolean(published?.classList.contains('selected')),
+          count:primary.length,disabled:Boolean(primary[0]?.disabled),text});
+      })()`)) as { checked: boolean; selected: boolean; count: number; disabled: boolean; text: string };
+      if (!armedState.checked || !armedState.selected || armedState.count !== 1 || armedState.disabled
+        || armedState.text.toUpperCase() !== 'PUBLISH NOW') {
+        throw new Error(`Printables public-state control did not settle: ${JSON.stringify(armedState)}`);
+      }
 
       const submission = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const publish = document.querySelector(${jsLiteral(selectors.publish)});
         const primary = [...document.querySelectorAll('button')].filter(button =>
           button.getClientRects().length && button.classList.contains('btn-primary') && button.classList.contains('btn-bold')
         );
-        const text = (primary[0]?.innerText || '').replace(/\s+/g, ' ').trim();
-        if (!publish?.checked || primary.length !== 1 || primary[0].disabled) {
-          if (publish?.checked) publish.click();
+        const text = (primary[0]?.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (!publish?.checked || primary.length !== 1 || primary[0].disabled || text.toUpperCase() !== 'PUBLISH NOW') {
           return JSON.stringify({ok:false,count:primary.length,disabled:Boolean(primary[0]?.disabled),text});
         }
         primary[0].click();

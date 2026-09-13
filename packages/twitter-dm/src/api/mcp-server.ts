@@ -8,20 +8,6 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
-const MY_SERVICE = 'twitter-dm';
-interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
-async function readActiveClaims(): Promise<TabClaim[]> {
-  return [];
-}
-async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  const claims = await readActiveClaims();
-  const myClaim = claims.find(c => c.service === MY_SERVICE);
-  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-  return blocker ? { conflict: true, blocker } : { conflict: false };
-}
-
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'twitter-safari-automation';
 const SERVER_VERSION = '1.0.0';
@@ -116,7 +102,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   switch (name) {
     case 'twitter_send_dm': {
       if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'twitter', to: args.username, text: args.text } }; break; }
-      const _twDmConflict = await checkNavigationConflict(); if (_twDmConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_twDmConflict.blocker.service}' (:${_twDmConflict.blocker.port}). Call twitter_session_ensure first.`, blocker: _twDmConflict.blocker };
       result = await api(DM_BASE, 'POST', '/api/twitter/messages/send-to', { username: args.username, text: args.text, force: args.force }); break;
     }
     case 'twitter_ai_generate_dm':   result = await api(DM_BASE, 'POST', '/api/twitter/ai/generate', { username: args.username, purpose: args.purpose, topic: args.topic }); break;
@@ -134,14 +119,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'twitter_new_conversation':  result = await api(DM_BASE, 'POST', '/api/twitter/conversations/new', { username: args.username }); break;
     case 'twitter_post_comment': {
       if (args.dryRun) { result = { dryRun: true, wouldPost: { platform: 'twitter', postUrl: args.postUrl, text: args.text, useAI: args.useAI } }; break; }
-      const _twPostConflict = await checkNavigationConflict(); if (_twPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_twPostConflict.blocker.service}' (:${_twPostConflict.blocker.port}). Cannot post while another service owns the tab.`, blocker: _twPostConflict.blocker };
       result = await api(COMMENTS_BASE, 'POST', '/api/twitter/tweet/reply', { url: args.postUrl, text: args.text, useAI: args.useAI }); break;
     }
     case 'twitter_search':           result = await api(COMMENTS_BASE, 'POST', '/api/twitter/search', { query: args.query, tab: args.tab ?? 'top', maxResults: args.maxResults ?? 20 }); break;
     case 'twitter_timeline':         result = await api(COMMENTS_BASE, 'POST', '/api/twitter/timeline', { handle: args.handle, maxResults: args.maxResults ?? 20 }); break;
     case 'twitter_compose_tweet': {
       if (args.dryRun) { result = { dryRun: true, wouldTweet: { platform: 'twitter', text: args.text, useAI: args.useAI, topic: args.topic, replySettings: args.replySettings } }; break; }
-      const _twTweetConflict = await checkNavigationConflict(); if (_twTweetConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_twTweetConflict.blocker.service}' (:${_twTweetConflict.blocker.port}). Cannot compose tweet while another service owns the tab.`, blocker: _twTweetConflict.blocker };
       result = await api(COMMENTS_BASE, 'POST', '/api/twitter/tweet', { text: args.text, useAI: args.useAI, topic: args.topic, replySettings: args.replySettings }); break;
     }
     case 'twitter_like_tweet':
@@ -198,14 +181,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         status: 'pending',
       }); break;
     }
-    case 'twitter_claim_status': {
-      const claims = await readActiveClaims();
-      const myClaim = claims.find(c => c.service === MY_SERVICE);
-      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
-      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }; break;
-    }
+    case 'twitter_claim_status':
+      result = { admission: 'open', global_claims: false, conflicts: [] }; break;
     default: throw { code: -32601, message: `Unknown tool: ${name}` };
   }
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };

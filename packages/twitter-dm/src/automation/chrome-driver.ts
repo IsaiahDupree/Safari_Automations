@@ -1,6 +1,6 @@
 /**
- * Compatibility facade. Direct Puppeteer/CDP access is disabled; legacy
- * imports delegate to the claimed Safari Window 2 driver.
+ * Compatibility facade. Local Chrome stays behind its resource-capped broker;
+ * legacy imports use independently targeted Safari automation.
  */
 import { getDefaultDriver } from './safari-driver.js';
 
@@ -12,7 +12,7 @@ export {
 
 const lane = () => getDefaultDriver();
 const disabled = () => Object.assign(
-  new Error('Direct Chrome page/browser access is disabled; use the claimed Safari lane'),
+  new Error('Direct local-Chrome access is disabled here; use open Safari automation or the resource-capped Chrome broker'),
   { code: 'RAW_CHROME_DISABLED' },
 );
 

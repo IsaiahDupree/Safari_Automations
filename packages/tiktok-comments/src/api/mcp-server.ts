@@ -9,20 +9,6 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
-const MY_SERVICE = 'tiktok-comments';
-interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
-async function readActiveClaims(): Promise<TabClaim[]> {
-  return [];
-}
-async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  const claims = await readActiveClaims();
-  const myClaim = claims.find(c => c.service === MY_SERVICE);
-  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-  return blocker ? { conflict: true, blocker } : { conflict: false };
-}
-
 const TIKTOK_BASE = 'http://localhost:3006';
 const TIKTOK_AUTH = process.env.TIKTOK_AUTH_TOKEN || '';
 const TIMEOUT_MS = 30_000;
@@ -191,9 +177,9 @@ const TOOLS = [
     description: 'Get engagement metrics (views, likes, comments, shares) for the current TikTok video.',
     inputSchema: { type: 'object', properties: {} },
   },
-  { name: 'tiktok_comments_session_ensure', description: 'Ensure the tiktok-comments service has an active Safari tab claim. Call before any navigation to avoid hijacking the user\'s active browsing tab.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'tiktok_comments_claim_status', description: 'Read current Safari tab claims. Shows which services own which tabs and any conflicts with tiktok-comments.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'tiktok_comments_release_session', description: 'Release the tiktok-comments tab claim so the Safari tab is freed for other services or user browsing.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'tiktok_comments_session_ensure', description: 'Compatibility operation: discover or open a TikTok tab across all Safari windows; no claim is created.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'tiktok_comments_claim_status', description: 'Compatibility status: global Safari claims are retired, so this reports open availability.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'tiktok_comments_release_session', description: 'Compatibility no-op: no global Safari claim or lane exists to release.', inputSchema: { type: 'object', properties: {} } },
   {
     name: 'tkc_daily_progress',
     description: 'Check today\'s TikTok comment count vs daily target. Queries comment_logs table (platform=tiktok). Shows remaining slots, active hours, whether target is met.',
@@ -206,7 +192,7 @@ const TOOLS = [
   },
   {
     name: 'tkc_comment_sweep',
-    description: 'Niche-aware batch comment sweep on TikTok. Searches niche keywords, navigates videos, generates AI comments, posts them. 5-minute timeout. Checks tab conflicts first.',
+    description: 'Niche-aware batch comment sweep on TikTok. Searches niche keywords, navigates videos, generates AI comments, and posts them. Has a 5-minute timeout and discovers tabs across all Safari windows.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -250,8 +236,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       if (!videoUrl.includes('/video/')) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'URL must contain /video/ — short-links not supported' }) }] };
       }
-      const _tkcNavConflict = await checkNavigationConflict();
-      if (_tkcNavConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_tkcNavConflict.blocker.service}' (:${_tkcNavConflict.blocker.port}). Call tiktok_comments_session_ensure first.`, blocker: _tkcNavConflict.blocker };
       const result = await api('POST', '/api/tiktok/navigate', { url: videoUrl });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -260,10 +244,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const text = args.text as string;
       const videoUrl = args.videoUrl as string | undefined;
       const dryRun = args.dryRun as boolean | undefined;
-      if (!dryRun) {
-        const _tkcPostConflict = await checkNavigationConflict();
-        if (_tkcPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_tkcPostConflict.blocker.service}' (:${_tkcPostConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: _tkcPostConflict.blocker };
-      }
       const result = await api('POST', '/api/tiktok/comments/post', {
         text,
         videoUrl,
@@ -309,14 +289,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'tiktok_comments_session_ensure':
       return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/ensure', {})) }] };
 
-    case 'tiktok_comments_claim_status': {
-      const claims = await readActiveClaims();
-      const myClaim = claims.find(c => c.service === MY_SERVICE);
-      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
-      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-      return { content: [{ type: 'text', text: JSON.stringify({ my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }) }] };
-    }
+    case 'tiktok_comments_claim_status':
+      return { content: [{ type: 'text', text: JSON.stringify({ admission: 'open', global_claims: false, conflicts: [] }) }] };
 
     case 'tiktok_comments_release_session':
       return { content: [{ type: 'text', text: JSON.stringify(await api('POST', '/api/session/clear', {})) }] };
@@ -344,9 +318,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     }
 
     case 'tkc_comment_sweep': {
-      const sweepConflict = await checkNavigationConflict();
-      if (sweepConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${sweepConflict.blocker.service}' (:${sweepConflict.blocker.port}). Call tiktok_comments_session_ensure first.`, blocker: sweepConflict.blocker };
-
       const defaultNiches = [
         { name: 'ai_automation', keywords: ['aiagents', 'aiautomation', 'artificialintelligence', 'machinelearning'], maxComments: 2 },
         { name: 'saas_growth', keywords: ['saas', 'saasfounder', 'b2bsaas', 'startupsoftware'], maxComments: 2 },

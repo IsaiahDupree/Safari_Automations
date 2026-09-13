@@ -373,7 +373,7 @@ npm run session:decrypt -- --platform=instagram --key=$SESSION_ENCRYPTION_KEY
 ### Known Limitations
 
 1. **No headless mode** - Safari must render visibly
-2. **Single session** - Only one Safari session at a time
+2. **Visible rendering** - Safari WebDriver sessions render through a GUI session; independent AppleScript targets may still run concurrently
 3. **GUI required** - Tests must run on GUI-capable runners
 4. **Rate limits** - GitHub-hosted macOS runners have limits
 

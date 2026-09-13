@@ -21,7 +21,7 @@
     "publish": "#publish-state"
   },
   "notes": [
-    "Selectors were captured from Isaiah's authenticated Printables create-model page in managed Safari Window 2.",
+    "Selectors were captured from Isaiah's authenticated Printables create-model page in Safari; no window is reserved.",
     "Verified by private draft round-trip at https://www.printables.com/model/1840792/edit; title, summary, category, tags, license, authorship, AI disclosure, archive, six previews, and draft state were read back.",
     "Captured permits a private draft pilot only; public publication requires a verified round-trip plus exact approval.",
     "saveDraft is resolved by unique visible exact button text because CSS has no text selector.",

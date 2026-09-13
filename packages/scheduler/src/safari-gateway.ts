@@ -347,7 +347,9 @@ return (isFront as text) & "|" & (wc as text) & "|" & u'`);
 }
 
 /**
- * Pre-automation preparation — focus Safari and verify the window.
+ * Pre-automation preparation — ensure Safari is available without requiring
+ * frontmost focus. This keeps admission independent of human activity and the
+ * macOS screen-lock state.
  * One-call setup before any automation task.
  */
 async function prepareSafari(_holder: string, _platform: Platform | null, _task: string, opts?: {
@@ -359,13 +361,14 @@ async function prepareSafari(_holder: string, _platform: Platform | null, _task:
   focused: boolean;
   error?: string;
 }> {
-  // Compatibility response retains lockAcquired=true; no lock is taken.
-  const focus = await focusSafari({ ensureWindow: true, url: opts?.url });
-  if (!focus.success) {
-    return { ready: false, lockAcquired: true, focused: false, error: focus.error || 'Failed to focus Safari' };
+  void opts?.timeoutMs;
+  void opts?.url;
+  try {
+    await execAsync('/usr/bin/open -g -a Safari');
+    return { ready: true, lockAcquired: true, focused: false };
+  } catch (error) {
+    return { ready: false, lockAcquired: true, focused: false, error: String(error) };
   }
-
-  return { ready: true, lockAcquired: true, focused: focus.frontmost };
 }
 
 // API: Focus Safari (no lock required — just bring it to front)
@@ -407,7 +410,7 @@ return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" 
   }
 });
 
-// API: Full pre-automation setup (focus + lock + optional navigate)
+// API: Open-admission preflight; does not focus, lock, or inspect human presence.
 app.post('/gateway/safari/prepare', async (req: Request, res: Response) => {
   const { holder, platform, task, url, timeoutMs } = req.body;
   if (!holder) return res.status(400).json({ error: 'holder required' });
@@ -418,57 +421,26 @@ app.post('/gateway/safari/prepare', async (req: Request, res: Response) => {
 
 // ─── Tab Detection & Tracking ────────────────────────────────
 //
-// Reads the optional coordinator layout for observability. Cross-process tab
-// claims are retired and never gate work.
-//
-// Returns a merged per-platform tab status so you can see exactly which Safari
-// window/tab each service owns, how stale the heartbeat is, and whether the
-// claim is still live.
+// Reads the optional target layout for observability. It never reserves a tab
+// or gates another process.
 
 const LAYOUT_FILE  = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/safari-tab-layout.json';
-const CLAIM_TTL_MS = 90_000; // treat claim as stale after 90s without heartbeat
-
-function readClaims(): any[] {
-  return [];
-}
 
 function readLayout(): { platforms: any[]; tabMap: Record<string, any>; coordinatedAt?: string } {
   try { return JSON.parse(fs.readFileSync(LAYOUT_FILE, 'utf-8')); } catch { return { platforms: [], tabMap: {} }; }
 }
 
 app.get('/gateway/tabs', (_req: Request, res: Response) => {
-  const now     = Date.now();
-  const claims  = readClaims();
   const layout  = readLayout();
 
   // Build index: port → layout entry
   const layoutByPort: Record<number, any> = {};
   for (const p of layout.platforms || []) layoutByPort[p.port] = p;
 
-  // Build index: port → latest claim (by heartbeat desc)
-  const claimByPort: Record<number, any> = {};
-  for (const c of claims) {
-    const port = c.port;
-    if (!claimByPort[port] || c.heartbeat > claimByPort[port].heartbeat) {
-      claimByPort[port] = c;
-    }
-  }
-
-  // Merge per registered service
+  // Merge per registered service.
   const tabs = SERVICES.map(svc => {
-    const claim   = claimByPort[svc.port];
     const lEntry  = layoutByPort[svc.port];
-
-    const heartbeatAgeMs = claim ? now - claim.heartbeat : null;
-    const claimLive      = claim ? heartbeatAgeMs! < CLAIM_TTL_MS : false;
-
-    // Derive tab ref from claim first, fall back to layout coordinator string (e.g. "w2t1")
-    let tabRef: string | null = null;
-    if (claim) {
-      tabRef = `w${claim.windowIndex}t${claim.tabIndex}`;
-    } else if (lEntry?.tab) {
-      tabRef = String(lEntry.tab);
-    }
+    const tabRef: string | null = lEntry?.tab ? String(lEntry.tab) : null;
     const wMatch = tabRef?.match(/w(\d+)t(\d+)/);
 
     return {
@@ -479,29 +451,14 @@ app.get('/gateway/tabs', (_req: Request, res: Response) => {
       windowIndex:     wMatch ? parseInt(wMatch[1]) : null,
       tabIndex:        wMatch ? parseInt(wMatch[2]) : null,
       tabRef,
-      tabUrl:          claim?.tabUrl ?? null,
-      // Claim health
-      claimed:         claimLive,
-      claimStale:      claim ? !claimLive : false,
-      heartbeatAgeMs,
-      heartbeatAgeSec: heartbeatAgeMs != null ? Math.round(heartbeatAgeMs / 1000) : null,
-      claimedAt:       claim ? new Date(claim.claimedAt).toISOString() : null,
-      agentId:         claim?.agentId ?? null,
-      // Layout coordinator data (last full coordinator run)
-      layoutClaimed:   lEntry?.claimed ?? false,
+      admission:       'open',
       coordinatedAt:   layout.coordinatedAt ?? null,
     };
   });
 
-  // Summary counts
-  const live   = tabs.filter(t => t.claimed).length;
-  const stale  = tabs.filter(t => t.claimStale).length;
-  const unclaimed = tabs.filter(t => !t.claimed && !t.claimStale).length;
-
   res.json({
-    summary:      { live, stale, unclaimed, total: tabs.length },
+    summary:      { total: tabs.length, admission: 'open', globalClaims: false },
     tabs,
-    claimsFile:   null,
     layoutFile:   LAYOUT_FILE,
     checkedAt:    new Date().toISOString(),
   });

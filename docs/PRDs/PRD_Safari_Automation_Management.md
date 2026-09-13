@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Unified Safari browser automation system that orchestrates all social media activities through a single browser instance. Manages commenting, content polling, Sora video generation, Twitter posting, and multi-platform distribution via Blotato - all within Safari's authenticated sessions.
+Unified Safari browser automation system that orchestrates social media activities across any available Safari windows and authenticated sessions. It does not impose a singleton, shared claim, presence, or lock-state admission gate.
 
 ---
 
@@ -26,7 +26,7 @@ Current automation runs multiple independent Safari tasks without coordination, 
 
 ## Goals
 
-1. **Single Browser Queue**: All Safari operations go through one managed queue
+1. **Open Browser Execution**: Safari operations discover usable tabs across all windows and can run independently
 2. **Smart Scheduling**: 30 comments/hour, 1 tweet/2 hours, 30 Sora generations/day
 3. **Watermark Pipeline**: Auto-remove Sora watermarks via BlankLogo before posting
 4. **Trend-Informed Content**: Generate videos based on discovered trends/offers
@@ -36,25 +36,20 @@ Current automation runs multiple independent Safari tasks without coordination, 
 
 ## Feature Requirements
 
-### SAFARI-001: Browser Queue Manager
+### SAFARI-001: Independent Browser Target Manager
 
 **Priority:** P0  
-**Description:** Central queue that serializes all Safari browser operations
+**Description:** Resolve independent browser targets without global serialization, presence checks, or screen-lock admission gates
 
-```
-Queue Priority (highest first):
-1. Active Sora generation polling (check every 30s when generating)
-2. Twitter posting (time-sensitive, every 2 hours)
-3. Commenting (30/hour = 1 every 2 minutes)
-4. Stats polling (passive, fill gaps)
-5. Trend discovery scraping (background)
-```
+Each service discovers or opens its own target and may run concurrently with
+other services. Service-local rate limits and job queues remain valid, but no
+browser-wide queue serializes unrelated work.
 
 **Acceptance Criteria:**
-- [ ] Only one Safari operation executes at a time
-- [ ] Higher priority tasks can preempt lower priority waits
+- [ ] Concurrent Safari operations may resolve separate tabs or windows
+- [ ] Safari automation remains admitted while the Mac is locked or a human is active
 - [ ] Failed tasks retry with exponential backoff
-- [ ] Queue state persists across restarts
+- [ ] No cross-process browser claim registry is created
 
 ---
 

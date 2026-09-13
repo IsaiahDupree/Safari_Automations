@@ -8,20 +8,6 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
-const MY_SERVICE = 'tiktok-dm';
-interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
-async function readActiveClaims(): Promise<TabClaim[]> {
-  return [];
-}
-async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  const claims = await readActiveClaims();
-  const myClaim = claims.find(c => c.service === MY_SERVICE);
-  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-  return blocker ? { conflict: true, blocker } : { conflict: false };
-}
-
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'tiktok-safari-automation';
 const SERVER_VERSION = '1.0.0';
@@ -110,7 +96,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   switch (name) {
     case 'tiktok_send_dm': {
       if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'tiktok', to: args.username, text: args.text, force: args.force } }; break; }
-      const _tkDmConflict = await checkNavigationConflict(); if (_tkDmConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_tkDmConflict.blocker.service}' (:${_tkDmConflict.blocker.port}). Call tiktok_session_ensure first.`, blocker: _tkDmConflict.blocker };
       result = await api(DM_BASE, 'POST', '/api/tiktok/messages/send-to', { username: args.username, text: args.text, force: args.force }); break;
     }
     case 'tiktok_get_conversations': {
@@ -127,7 +112,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'tiktok_get_trending':     result = await api(COMMENTS_BASE, 'GET', `/api/tiktok/trending?limit=${args.limit ?? 20}`); break;
     case 'tiktok_post_comment': {
       if (args.dryRun) { result = { dryRun: true, wouldPost: { platform: 'tiktok', postUrl: args.postUrl, text: args.text } }; break; }
-      const _tkPostConflict = await checkNavigationConflict(); if (_tkPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_tkPostConflict.blocker.service}' (:${_tkPostConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: _tkPostConflict.blocker };
       result = await api(COMMENTS_BASE, 'POST', '/api/tiktok/comments/post', { postUrl: args.postUrl, text: args.text }); break;
     }
     case 'tiktok_get_comments': {
@@ -165,14 +149,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
       break;
     }
-    case 'tiktok_claim_status': {
-      const claims = await readActiveClaims();
-      const myClaim = claims.find(c => c.service === MY_SERVICE);
-      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
-      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }; break;
-    }
+    case 'tiktok_claim_status':
+      result = { admission: 'open', global_claims: false, conflicts: [] }; break;
     case 'tiktok_queue_status': {
       const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/tiktok-dm-queue.json';
       const DAILY_CAP = 8;

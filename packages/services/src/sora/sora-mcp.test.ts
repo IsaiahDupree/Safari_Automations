@@ -496,69 +496,14 @@ describe('leaderboard K/M number parsing', () => {
   it('large K value', () => assert.equal(parseNum('100K'), 100_000));
 });
 
-// ─── Heartbeat helper logic ────────────────────────────────────────────────────
+// ─── Browser admission ────────────────────────────────────────────────────────
 
-describe('claim heartbeat', () => {
-  it('stop function prevents further updates', async () => {
-    let updateCount = 0;
-    // Simulate startClaimHeartbeat with short interval for testing
-    function startTestHeartbeat(intervalMs: number): () => void {
-      const iv = setInterval(() => { updateCount++; }, intervalMs);
-      return () => clearInterval(iv);
-    }
-    const stop = startTestHeartbeat(20);
-    await new Promise(r => setTimeout(r, 55)); // ~2-3 ticks
-    stop();
-    const countAtStop = updateCount;
-    await new Promise(r => setTimeout(r, 50)); // wait more — should not increase
-    assert.ok(countAtStop >= 2, `expected ≥2 ticks, got ${countAtStop}`);
-    assert.equal(updateCount, countAtStop, 'no more updates after stop()');
-  });
-
-  it('heartbeat interval is less than claim TTL (60s)', () => {
-    // Interval is 30s, TTL is 60s — heartbeat fires before expiry
-    const HEARTBEAT_INTERVAL = 30_000;
-    const CLAIM_TTL = 60_000;
-    assert.ok(HEARTBEAT_INTERVAL < CLAIM_TTL, 'heartbeat must fire before TTL expires');
-    assert.ok(CLAIM_TTL / HEARTBEAT_INTERVAL >= 2, 'at least 2 heartbeats fit in a TTL window');
+describe('open browser admission', () => {
+  it('does not model claim conflicts, presence, or screen-lock gates', () => {
+    const admission = { mode: 'open', globalClaims: false, presenceGate: false, screenLockGate: false };
+    assert.deepEqual(admission, { mode: 'open', globalClaims: false, presenceGate: false, screenLockGate: false });
   });
 });
-
-// ─── Tab claim logic (replicated from sora-mcp.ts for isolated testing) ──────
-
-const CLAIM_TTL_MS = 60_000;
-
-interface TabClaim {
-  agentId: string; service: string; port: number; urlPattern: string;
-  windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
-  claimedAt: number; heartbeat: number;
-}
-
-function filterActiveClaims(all: TabClaim[], now = Date.now()): TabClaim[] {
-  return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
-}
-
-function checkConflict(
-  claims: TabClaim[],
-  myService = 'sora'
-): { conflict: false } | { conflict: true; blocker: TabClaim } {
-  const myClaim = claims.find(c => c.service === myService);
-  if (!myClaim) return { conflict: false };
-  const myTab = `${myClaim.windowIndex}:${myClaim.tabIndex}`;
-  const blocker = claims.find(
-    c => c.service !== myService && `${c.windowIndex}:${c.tabIndex}` === myTab
-  );
-  return blocker ? { conflict: true, blocker } : { conflict: false };
-}
-
-function makeClaim(service: string, windowIndex: number, tabIndex: number, heartbeatMsAgo = 0): TabClaim {
-  const now = Date.now();
-  return {
-    agentId: `${service}-${now}`, service, port: 3000, urlPattern: service,
-    windowIndex, tabIndex, tabUrl: `https://${service}.example.com`,
-    pid: 12345, claimedAt: now - heartbeatMsAgo, heartbeat: now - heartbeatMsAgo,
-  };
-}
 
 // Replicated leaderboard notification helper
 function pushLeaderboardNotification(
@@ -576,100 +521,18 @@ function pushLeaderboardNotification(
   });
 }
 
-describe('tab claim: TTL filtering', () => {
-  it('keeps claims with heartbeat within TTL', () => {
-    const claims = [makeClaim('sora', 1, 1, 5_000)]; // 5s ago — within 60s TTL
-    const active = filterActiveClaims(claims);
-    assert.equal(active.length, 1);
-  });
-
-  it('drops claims with expired heartbeat', () => {
-    const claims = [makeClaim('sora', 1, 1, 61_000)]; // 61s ago — expired
-    const active = filterActiveClaims(claims);
-    assert.equal(active.length, 0);
-  });
-
-  it('filters mixed fresh and expired claims', () => {
-    const claims = [
-      makeClaim('sora', 1, 1, 5_000),    // fresh
-      makeClaim('instagram', 1, 2, 70_000), // expired
-      makeClaim('twitter', 1, 3, 30_000),  // fresh
-    ];
-    const active = filterActiveClaims(claims);
-    assert.equal(active.length, 2);
-    assert.ok(active.every(c => ['sora', 'twitter'].includes(c.service)));
-  });
-
-  it('claim exactly at TTL boundary is excluded', () => {
-    const claims = [makeClaim('sora', 1, 1, CLAIM_TTL_MS)]; // exactly 60s — not < TTL
-    const active = filterActiveClaims(claims);
-    assert.equal(active.length, 0);
-  });
-});
-
-describe('tab claim: conflict detection', () => {
-  it('no conflict when sora has no claim', () => {
-    const claims = [makeClaim('instagram', 1, 2, 1000)];
-    const result = checkConflict(claims);
-    assert.equal(result.conflict, false);
-  });
-
-  it('no conflict when sora is on a different tab than other services', () => {
-    const claims = [
-      makeClaim('sora', 1, 1, 1000),
-      makeClaim('instagram', 1, 2, 1000), // tab 2, not tab 1
-    ];
-    const result = checkConflict(claims);
-    assert.equal(result.conflict, false);
-  });
-
-  it('detects conflict when another service is on the same window:tab', () => {
-    const claims = [
-      makeClaim('sora', 1, 1, 1000),
-      makeClaim('instagram', 1, 1, 1000), // same window 1, tab 1
-    ];
-    const result = checkConflict(claims);
-    assert.equal(result.conflict, true);
-    if (result.conflict) {
-      assert.equal(result.blocker.service, 'instagram');
-    }
-  });
-
-  it('no conflict when only sora holds the tab', () => {
-    const claims = [makeClaim('sora', 1, 1, 1000)];
-    const result = checkConflict(claims);
-    assert.equal(result.conflict, false);
-  });
-
-  it('conflict message includes blocker service and tab location', () => {
-    const claims = [
-      makeClaim('sora', 2, 3, 1000),
-      makeClaim('linkedin', 2, 3, 1000),
-    ];
-    const result = checkConflict(claims);
-    assert.equal(result.conflict, true);
-    if (result.conflict) {
-      const msg = `Safari tab conflict: ${result.blocker.service} is using the same tab (window ${result.blocker.windowIndex}, tab ${result.blocker.tabIndex})`;
-      assert.ok(msg.includes('linkedin'));
-      assert.ok(msg.includes('window 2'));
-      assert.ok(msg.includes('tab 3'));
-    }
-  });
-});
-
-describe('tab claim: sora handler error shapes', () => {
+describe('Sora target discovery error shapes', () => {
   it('platform leaderboard error response when no tab found', () => {
-    // Simulate the return value when acquireSoraClaim returns null
     const response = JSON.parse(
-      JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' })
+      JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' })
     );
     assert.equal(response.success, false);
-    assert.ok(response.error.includes('sora.chatgpt.com'));
+    assert.ok(response.error.includes('discover or open'));
   });
 
   it('my stats error response when no tab found', () => {
     const response = JSON.parse(
-      JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first, then retry.' })
+      JSON.stringify({ success: false, error: 'Safari could not discover or open a Sora target.' })
     );
     assert.equal(response.success, false);
     assert.ok(typeof response.error === 'string');

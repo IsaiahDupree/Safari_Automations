@@ -8,20 +8,6 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
-const MY_SERVICE = 'instagram-dm';
-interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
-async function readActiveClaims(): Promise<TabClaim[]> {
-  return [];
-}
-async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  const claims = await readActiveClaims();
-  const myClaim = claims.find(c => c.service === MY_SERVICE);
-  const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-  const blocker = claims.find(c => c.service !== MY_SERVICE && myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-  return blocker ? { conflict: true, blocker } : { conflict: false };
-}
-
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'instagram-safari-automation';
 const SERVER_VERSION = '1.0.0';
@@ -117,7 +103,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   switch (name) {
     case 'instagram_send_dm': {
       if (args.dryRun) { result = { dryRun: true, wouldSend: { platform: 'instagram', to: args.username, text: args.text } }; break; }
-      const _igDmConflict = await checkNavigationConflict(); if (_igDmConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_igDmConflict.blocker.service}' (:${_igDmConflict.blocker.port}). Call instagram_session_ensure first.`, blocker: _igDmConflict.blocker };
       result = await api(DM_BASE, 'POST', '/api/messages/send-to', { username: args.username, text: args.text }); break;
     }
     case 'instagram_get_conversations': {
@@ -137,7 +122,6 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'instagram_get_profile':    result = await api(DM_BASE, 'GET', `/api/profile/${args.username}`); break;
     case 'instagram_post_comment': {
       if (args.dryRun) { result = { dryRun: true, wouldPost: { platform: 'instagram', postUrl: args.postUrl, text: args.text } }; break; }
-      const _igPostConflict = await checkNavigationConflict(); if (_igPostConflict.conflict) throw { code: 'TAB_CONFLICT', message: `Safari tab claimed by '${_igPostConflict.blocker.service}' (:${_igPostConflict.blocker.port}). Cannot post comment while another service owns the tab.`, blocker: _igPostConflict.blocker };
       result = await api(COMMENTS_BASE, 'POST', '/api/instagram/comments/post', { postUrl: args.postUrl, text: args.text }); break;
     }
     case 'instagram_get_comments': {
@@ -233,14 +217,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         dryRun: args.dryRun,
       });
       break;
-    case 'instagram_claim_status': {
-      const claims = await readActiveClaims();
-      const myClaim = claims.find(c => c.service === MY_SERVICE);
-      const otherClaims = claims.filter(c => c.service !== MY_SERVICE);
-      const myTab = myClaim ? `${myClaim.windowIndex}:${myClaim.tabIndex}` : null;
-      const conflicts = otherClaims.filter(c => myTab && `${c.windowIndex}:${c.tabIndex}` === myTab);
-      result = { my_claim: myClaim ?? null, other_services: otherClaims, conflicts, has_conflict: conflicts.length > 0 }; break;
-    }
+    case 'instagram_claim_status':
+      result = { admission: 'open', global_claims: false, conflicts: [] }; break;
     case 'instagram_queue_status': {
       const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';
       const DAILY_CAP = 10;

@@ -5,7 +5,7 @@
  *
  * Endpoints:
  *   GET  /health                  — health check
- *   GET  /ready                   — readiness (is Sora tab claimed?)
+ *   GET  /ready                   — readiness (discovers or opens a Sora tab)
  *   POST /v1/focus                — bring Safari to foreground
  *   GET  /v1/sora/usage           — credits/usage
  *   POST /v1/commands             — submit command → 202 + {command_id}
@@ -79,18 +79,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─── Tab claim ────────────────────────────────────────────────────────────────
+// ─── Open Safari target discovery ─────────────────────────────────────────────
 
-const activeCoordinators = new Map<string, TabCoordinator>();
-
-async function ensureTabClaim(): Promise<{ windowIndex: number; tabIndex: number } | null> {
-  const claims = await TabCoordinator.listClaims();
-  const myClaim = claims.find(c => c.service === SERVICE_NAME);
-  if (myClaim) {
-    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
-    return myClaim;
+async function ensureSoraTarget(openIfMissing = true): Promise<{ windowIndex: number; tabIndex: number } | null> {
+  const driver = getDefaultDriver();
+  const found = await driver.findTab(SORA_PATTERN);
+  if (found) {
+    driver.setTrackedTab(found.windowIndex, found.tabIndex);
+    return found;
   }
-  return null;
+  if (!openIfMissing) return null;
+
+  const coordinator = new TabCoordinator(
+    `sora-target-${Date.now()}`,
+    SERVICE_NAME,
+    PORT,
+    SORA_PATTERN,
+    OPEN_URL,
+  );
+  const target = await coordinator.openNewTab(OPEN_URL);
+  driver.setTrackedTab(target.windowIndex, target.tabIndex);
+  return target;
 }
 
 // ─── WebSocket telemetry ──────────────────────────────────────────────────────
@@ -129,23 +138,8 @@ async function executeCommand(commandId: string): Promise<void> {
   try {
     const payload: CommandPayload = cmd.payload;
 
-    // Ensure we have a Sora tab claimed
-    const claim = await ensureTabClaim();
-    if (!claim) {
-      // Try to find an existing sora.com tab or open a new one
-      const found = await driver.findTab(SORA_PATTERN);
-      if (found) {
-        driver.setTrackedTab(found.windowIndex, found.tabIndex);
-        const autoId = `sora-auto-${Date.now()}`;
-        const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SORA_PATTERN, OPEN_URL);
-        activeCoordinators.set(autoId, coord);
-        await coord.claim(found.windowIndex, found.tabIndex);
-      } else {
-        throw new Error(
-          'No sora.com tab found. Open Safari, navigate to sora.com, and run safari-tabs-setup.sh to claim the tab.'
-        );
-      }
-    }
+    // Discover any matching Safari tab or open an independent target.
+    await ensureSoraTarget(true);
 
     // ── sora.generate ───────────────────────────────────────────────────────
     if (cmd.type === 'sora.generate' || cmd.type === 'sora.generate.clean') {
@@ -220,27 +214,27 @@ async function executeCommand(commandId: string): Promise<void> {
 
 // GET /health
 app.get('/health', async (_req: Request, res: Response) => {
-  const claim = await ensureTabClaim();
+  const target = await ensureSoraTarget(false);
   const pending = queue.list().filter(c => c.status === 'PENDING' || c.status === 'RUNNING').length;
   res.json({
     status: 'ok',
     service: SERVICE_NAME,
     port: PORT,
     timestamp: new Date().toISOString(),
-    tabClaimed: !!claim,
+    tabAvailable: !!target,
     pendingCommands: pending,
   });
 });
 
 // GET /ready
 app.get('/ready', async (_req: Request, res: Response) => {
-  const claim = await ensureTabClaim();
-  if (claim) {
-    res.json({ ready: true, windowIndex: claim.windowIndex, tabIndex: claim.tabIndex });
+  const target = await ensureSoraTarget(true);
+  if (target) {
+    res.json({ ready: true, windowIndex: target.windowIndex, tabIndex: target.tabIndex });
   } else {
     res.status(503).json({
       ready: false,
-      reason: 'No sora.com tab claimed. Run safari-tabs-setup.sh to open and claim the Sora tab.',
+      reason: 'Safari could not discover or open a Sora target.',
     });
   }
 });
@@ -259,9 +253,9 @@ app.post('/v1/focus', async (req: Request, res: Response) => {
 // GET /v1/sora/usage
 app.get('/v1/sora/usage', async (_req: Request, res: Response) => {
   try {
-    const claim = await ensureTabClaim();
-    if (!claim) {
-      res.json({ videos_generated_today: -1, daily_limit: -1, remaining: -1, plan: 'unknown', error: 'no tab claimed' });
+    const target = await ensureSoraTarget(true);
+    if (!target) {
+      res.json({ videos_generated_today: -1, daily_limit: -1, remaining: -1, plan: 'unknown', error: 'no Safari target available' });
       return;
     }
     const usage = await getSoraUsage(getDefaultDriver());
@@ -309,7 +303,7 @@ app.delete('/v1/commands/:id', (req: Request, res: Response) => {
   res.json({ cancelled, id: req.params.id });
 });
 
-// ─── Tab claim + startup ──────────────────────────────────────────────────────
+// ─── Startup ──────────────────────────────────────────────────────────────────
 
 // Prune old commands every hour
 setInterval(() => queue.prune(), 60 * 60 * 1000);
