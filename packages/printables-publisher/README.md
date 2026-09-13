@@ -1,17 +1,16 @@
 # Printables Publisher API (Safari)
 
-This package turns a reviewed `cad-catalog` release bundle into a controlled Printables upload job. It resolves an existing Printables tab in any Safari window or creates a task tab in the current front window. It does not require a shared ownership lane, a reserved window, private Printables GraphQL mutations, or stored Printables credentials.
+This package turns a reviewed `cad-catalog` release bundle into a controlled Printables upload job. It uses only the designated tab in the existing Safari automation Window 2. It does not use Window 1, create another Safari window, call private Printables GraphQL mutations, or store Printables credentials.
 
 The service is intentionally draft-first:
 
 `created → validated → draft_prepared → browser_draft_created → publish_approved → published`
 
-Publication requires a separate, exact-bundle approval after the browser draft exists. The one-time approval nonce is never stored in plaintext. Until the live Printables create-model page is captured and verified in Safari, browser draft creation and publication fail closed.
+Publication requires a separate, exact-bundle approval after the browser draft exists. The one-time approval nonce is never stored in plaintext. The selector contract was verified with private draft `1840792`; public publication still fails closed unless both the release metadata and a separate exact-bundle approval permit it.
 
 ## Start
 
-Use any available Safari window signed into Printables; the task may create its
-own tab and run alongside other browsers and agents. Then:
+Open the existing Safari singleton, sign into Printables, and leave the automation window in position 2. Then:
 
 ```bash
 cd "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/printables-publisher"
@@ -48,6 +47,8 @@ The bundle must be inside `PRINTABLES_STAGING_ROOT` (default: `cad-catalog/publi
 
 Every submitted CAD and preview file must be covered by the manifest. Jobs and approval hashes remain local under `data/jobs/` and are ignored by Git.
 
-## Live selector activation
+## Live selector contract
 
-`selectors/printables.v1.json` is deliberately `pending_live_capture`. After Safari is open and authenticated, call `/api/printables/browser/inspect`, identify unique stable controls, exercise one approved pilot as a draft, verify the saved draft by reading it back, and only then change the contract to `verified`. The draft executor never clicks the final publish control.
+`selectors/printables.v1.json` records the verified create-model controls. Pilot draft `1840792` read back its title, summary, category, tags, license, original authorship, AI-assisted disclosure, archive, six previews, and unpublished state. The draft executor never enables the published toggle or clicks a public-submit control.
+
+Set `SAFARI_AUTOMATION_WINDOW_ID` to Window 2's stable Safari ID for a run. The executor refuses to overwrite a different unsaved form and can resume the exact same release after an interrupted upload.

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "status": "captured",
+  "status": "verified",
   "capturedAt": "2026-09-12T22:06:00-04:00",
-  "verifiedAt": null,
+  "verifiedAt": "2026-09-12T22:40:00-04:00",
   "host": "www.printables.com",
   "profileHandle": "Isaiah_Dupre_1141044",
   "createUrl": "https://www.printables.com/model/create",
@@ -22,6 +22,7 @@
   },
   "notes": [
     "Selectors were captured from Isaiah's authenticated Printables create-model page in managed Safari Window 2.",
+    "Verified by private draft round-trip at https://www.printables.com/model/1840792/edit; title, summary, category, tags, license, authorship, AI disclosure, archive, six previews, and draft state were read back.",
     "Captured permits a private draft pilot only; public publication requires a verified round-trip plus exact approval.",
     "saveDraft is resolved by unique visible exact button text because CSS has no text selector.",
     "authorshipOriginal and aiUsed resolve to the first matching radio, matching the captured Original and Yes choices.",

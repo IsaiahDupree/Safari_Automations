@@ -470,15 +470,16 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         await delay(1_000);
         const state = JSON.parse(await this.javascript(claim.windowId, claim.tabIndex, `JSON.stringify({
           url: location.href, text: document.body?.innerText || '', title: document.title,
+          modelTitle:document.querySelector(${jsLiteral(selectors.title)})?.value || '',
           archivePresent:[...document.querySelectorAll('input')]
             .some(input => input.type === 'text' && input.value === ${jsLiteral(path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath)))}),
           photoCount:[...document.querySelectorAll('img')]
             .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length
-        })`)) as { url: string; text: string; title: string; archivePresent: boolean; photoCount: number };
+        })`)) as { url: string; text: string; title: string; modelTitle: string; archivePresent: boolean; photoCount: number };
         lastUrl = state.url;
         lastText = state.text;
         if (/^https:\/\/www\.printables\.com\/model\/\d+/.test(state.url) && !state.url.includes('/create')) {
-          if (!state.text.includes(release.title)) throw new Error('Saved Printables draft read-back is missing the release title');
+          if (state.modelTitle !== release.title) throw new Error('Saved Printables draft read-back is missing the release title');
           if (!/draft/i.test(state.text)) throw new Error('Saved Printables model did not read back as a draft');
           if (!state.archivePresent) throw new Error(`Saved Printables draft read-back is missing archive evidence: ${uploadedNames[0]}`);
           if (state.photoCount < release.previews.length) throw new Error('Saved Printables draft read-back is missing preview images');

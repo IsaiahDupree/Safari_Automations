@@ -2,7 +2,7 @@
 
 ## Outcome
 
-The local service at `127.0.0.1:3112` provides an agent-callable boundary between the private CAD catalog and Printables. It accepts only hash-covered release bundles inside the private staging root, resolves or creates an independent Safari task tab, creates drafts before publication, and requires a second exact-artifact approval before a public listing can be submitted.
+The local service at `127.0.0.1:3112` provides an agent-callable boundary between the private CAD catalog and Printables. It accepts only hash-covered release bundles inside the private staging root, uses Safari Window 2, creates drafts before publication, and requires a second exact-artifact approval before a public listing can be submitted.
 
 No private Printables API is used. No browser password, cookie, account token, or CAD catalog is exposed by the service. Health is the only unauthenticated route.
 
@@ -14,16 +14,14 @@ No private Printables API is used. No browser password, cookie, account token, o
 4. Create a local Printables job through the API.
 5. Validate the bundle. This checks the staging-root boundary, blocks symlinks and traversal, verifies all SHA-256 values, and requires release metadata and a preview.
 6. Prepare the draft. This changes local state only.
-7. Execute the browser draft through the task-selected Safari tab. The executor must stop before publication and read the saved draft back.
+7. Execute the browser draft through the claimed Safari Window 2 tab. The executor must stop before publication and read the saved draft back.
 8. Review the actual draft URL, title, description, license, files, cover image, print instructions, and GitHub link.
 9. Approve that exact `bundleDigest` with the exact approval statement. Preserve the returned one-time nonce only for the immediate publish call.
 10. Publish through the API. Record the resulting Printables URL and mirror the same released files and metadata into the public GitHub repository.
 
 ## Initial activation
 
-Use any available Safari window signed into `printables.com`. The automation
-may locate a matching tab across all windows or open a new tab in the front
-window; no singleton, marked window, or global lane permit is required.
+Use the existing Safari singleton signed into `printables.com`. Keep the normal human browser as Window 1 and the automation browser as Window 2. Set `SAFARI_AUTOMATION_WINDOW_ID` to Window 2's stable Safari ID for the run.
 
 Generate a service token and start the API:
 
@@ -35,9 +33,9 @@ npm start
 
 Keep the token in an environment variable or secret manager. The `.env.example` contains names only and must never be filled with a real secret in Git.
 
-## Selector capture and pilot
+## Selector verification and pilot
 
-The versioned selector contract is initially `pending_live_capture`. This is intentional because Printables' authenticated create-model form must be inspected live rather than guessed.
+The versioned selector contract was captured and verified against the authenticated create-model form on 2026-09-12. Private draft `1840792` is the verification pilot.
 
 After Safari is open and authenticated:
 
@@ -51,7 +49,7 @@ curl -sS \
   http://127.0.0.1:3112/api/printables/browser/inspect
 ```
 
-Capture unique stable selectors for title, description, license, category, CAD input, preview input, save-draft, and publish. Verify the signed-in profile handle is `Isaiah_Dupre_1141044`. The save-draft and publish controls must be distinct. Run one approved pilot model through draft creation, reload it, and verify every field and file before enabling the publish contract.
+Re-capture the contract whenever Printables changes the form. Verify the signed-in profile handle is `Isaiah_Dupre_1141044`, and read back every field and file after a private pilot. The save-draft and publish controls must remain distinct.
 
 ## Agent contract
 
