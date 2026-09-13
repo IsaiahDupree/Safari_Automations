@@ -204,7 +204,7 @@ end tell`);
     throw new Error('Timed out waiting for the authenticated Printables model editor');
   }
 
-  private async verifyPersistedModelFile(windowId: number, filesUrl: string, expectedName: string): Promise<boolean> {
+  private async verifyPersistedModelFiles(windowId: number, filesUrl: string, expectedNames: string[]): Promise<boolean> {
     const tabIndexText = await this.runAppleScript(`
 tell application "Safari"
   set agentWindow to first window whose id is ${windowId}
@@ -222,7 +222,7 @@ end tell`);
           text:document.body?.innerText || ''
         })`)) as { ready: string; url: string; text: string };
         if (state.ready === 'complete' && /\/files(?:$|[?#])/.test(new URL(state.url).pathname)
-          && state.text.includes(expectedName) && /\bZIP\b/.test(state.text)) return true;
+          && expectedNames.every(name => state.text.includes(name))) return true;
         await delay(750);
       }
       return false;
@@ -359,7 +359,9 @@ return "opened"`, 45_000);
 
       const deadline = Date.now() + 240_000;
       let lastState = '';
-      const archiveStem = path.basename(filePaths[0], path.extname(filePaths[0]));
+      const expectedModelStems = filePaths
+        .filter(filePath => !/\.(png|jpe?g|webp)$/i.test(filePath))
+        .map(filePath => path.basename(filePath, path.extname(filePath)));
       const expectedPhotos = filePaths.filter(filePath => /\.(png|jpe?g|webp)$/i.test(filePath)).length;
       while (Date.now() < deadline) {
         await delay(1_000);
@@ -372,17 +374,17 @@ return "opened"`, 45_000);
           const text = document.body?.innerText || '';
           const photoCount = [...document.querySelectorAll('img')]
             .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length;
-          const archivePresent = [...document.querySelectorAll('input')]
-            .some(input => input.type === 'text' && input.value === ${jsLiteral(archiveStem)});
+          const modelFilesPresent = ${jsLiteral(expectedModelStems)}.every(stem => [...document.querySelectorAll('input')]
+            .some(input => input.type === 'text' && input.value === stem));
           const disabled = [...document.querySelectorAll('button')].find(b => normalize(b.textContent) === 'save draft')?.disabled || false;
-          return JSON.stringify({text, photoCount, archivePresent, disabled, archiveChoice:Boolean(archiveChoice)});
+          return JSON.stringify({text, photoCount, modelFilesPresent, disabled, archiveChoice:Boolean(archiveChoice)});
         })()`);
         const state = JSON.parse(output) as {
-          text: string; photoCount: number; archivePresent: boolean; disabled: boolean; archiveChoice: boolean;
+          text: string; photoCount: number; modelFilesPresent: boolean; disabled: boolean; archiveChoice: boolean;
         };
         lastState = state.text;
         const busy = state.text.split('\n').some(line => /^(uploading|processing)\b/i.test(line.trim()));
-        if (state.archivePresent && state.photoCount >= expectedPhotos && !busy && !state.disabled) return expectedNames;
+        if (state.modelFilesPresent && state.photoCount >= expectedPhotos && !busy && !state.disabled) return expectedNames;
       }
       throw new Error(`Printables upload did not finish for ${expectedNames.length} files: ${lastState.slice(-600)}`);
     } finally {
@@ -440,7 +442,10 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       }
       await this.waitForForm(target.windowId, target.tabIndex, selectors.title);
 
-      let uploadedNames = [path.basename(release.files[0].absolutePath), ...release.previews.map(file => path.basename(file.absolutePath))];
+      let uploadedNames = [
+        ...release.files.map(file => path.basename(file.absolutePath)),
+        ...release.previews.map(file => path.basename(file.absolutePath)),
+      ];
       if (!resumeExisting) {
       const filled = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
         const setValue = (selector, value) => {
@@ -475,7 +480,10 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
       await this.selectExactOption(target.windowId, target.tabIndex, selectors.category, release.category);
       await this.selectExactOption(target.windowId, target.tabIndex, selectors.license, release.license);
 
-      const uploadPaths = [release.files[0].absolutePath, ...release.previews.map(file => file.absolutePath)];
+      const uploadPaths = [
+        ...release.files.map(file => file.absolutePath),
+        ...release.previews.map(file => file.absolutePath),
+      ];
       uploadedNames = await this.uploadFiles(target.windowId, target.tabIndex, selectors.fileInput, uploadPaths);
       }
 
@@ -493,15 +501,16 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const saves = [...document.querySelectorAll(${jsLiteral(selectors.saveDraft)})].filter(el =>
           el.getClientRects().length && normalize(el.textContent).toLowerCase() === 'save draft'
         );
-        const archivePresent = [...document.querySelectorAll('input')]
-          .some(input => input.type === 'text' && input.value === ${jsLiteral(path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath)))});
+        const expectedModelStems = ${jsLiteral(release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath))))};
+        const modelFilesPresent = expectedModelStems.every(stem => [...document.querySelectorAll('input')]
+          .some(input => input.type === 'text' && input.value === stem));
         const photoCount = [...document.querySelectorAll('img')]
           .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length;
-        return JSON.stringify({title, summary, category, license, description, tagText, archivePresent, photoCount, origin, ai,
+        return JSON.stringify({title, summary, category, license, description, tagText, modelFilesPresent, photoCount, origin, ai,
           publishChecked:Boolean(publish?.checked), saveCount:saves.length, saveDisabled:Boolean(saves[0]?.disabled)});
       })()`)) as {
         title: string; summary: string; category: string; license: string; description: string; tagText: string;
-        archivePresent: boolean; photoCount: number;
+        modelFilesPresent: boolean; photoCount: number;
         origin: boolean; ai: boolean; publishChecked: boolean; saveCount: number; saveDisabled: boolean;
       };
       const normalized = (value: string) => value.replace(/\s+/g, ' ').trim();
@@ -512,7 +521,7 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         normalized(preflight.license) !== normalized(release.license) && 'license',
         !normalized(preflight.description).includes(normalized(release.description.slice(0, 100))) && 'description',
         !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
-        !preflight.archivePresent && 'archive', preflight.photoCount < release.previews.length && 'previews',
+        !preflight.modelFilesPresent && 'model-files', preflight.photoCount < release.previews.length && 'previews',
         !preflight.origin && 'origin', !preflight.ai && 'ai', preflight.publishChecked && 'publish-state',
         preflight.saveCount !== 1 && 'save-control', preflight.saveDisabled && 'save-disabled',
       ].filter(Boolean);
@@ -536,17 +545,18 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const state = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
           url: location.href, text: document.body?.innerText || '', title: document.title,
           modelTitle:document.querySelector(${jsLiteral(selectors.title)})?.value || '',
-          archivePresent:[...document.querySelectorAll('input')]
-            .some(input => input.type === 'text' && input.value === ${jsLiteral(path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath)))}),
+          modelFilesPresent:${jsLiteral(release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath))))}
+            .every(stem => [...document.querySelectorAll('input')]
+              .some(input => input.type === 'text' && input.value === stem)),
           photoCount:[...document.querySelectorAll('img')]
             .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length
-        })`)) as { url: string; text: string; title: string; modelTitle: string; archivePresent: boolean; photoCount: number };
+        })`)) as { url: string; text: string; title: string; modelTitle: string; modelFilesPresent: boolean; photoCount: number };
         lastUrl = state.url;
         lastText = state.text;
         if (/^https:\/\/www\.printables\.com\/model\/\d+/.test(state.url) && !state.url.includes('/create')) {
           if (state.modelTitle !== release.title) throw new Error('Saved Printables draft read-back is missing the release title');
           if (!/draft/i.test(state.text)) throw new Error('Saved Printables model did not read back as a draft');
-          if (!state.archivePresent) throw new Error(`Saved Printables draft read-back is missing archive evidence: ${uploadedNames[0]}`);
+          if (!state.modelFilesPresent) throw new Error(`Saved Printables draft read-back is missing model-file evidence: ${uploadedNames.join(', ')}`);
           if (state.photoCount < release.previews.length) throw new Error('Saved Printables draft read-back is missing preview images');
           return { draftUrl: state.url };
         }
@@ -585,8 +595,9 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[0]?.checked);
         const ai = Boolean(document.querySelectorAll(${jsLiteral(selectors.aiUsed)})[${release.aiUsed ? 0 : 1}]?.checked);
         const publish = document.querySelector(${jsLiteral(selectors.publish)});
-        const archivePresent = [...document.querySelectorAll('input')]
-          .some(input => input.type === 'text' && input.value === ${jsLiteral(path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath)))});
+        const modelFilesPresent = ${jsLiteral(release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath))))}
+          .every(stem => [...document.querySelectorAll('input')]
+            .some(input => input.type === 'text' && input.value === stem));
         const photoCount = [...document.querySelectorAll('img')]
           .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length;
         const primary = [...document.querySelectorAll('button')].filter(button =>
@@ -594,16 +605,16 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         );
         return JSON.stringify({title, summary, category, license, description, tagText, origin, ai,
           publishChecked:Boolean(publish?.checked), publishDisabled:Boolean(publish?.disabled),
-          archivePresent, photoCount, primaryCount:primary.length, primaryDisabled:Boolean(primary[0]?.disabled)});
+          modelFilesPresent, photoCount, primaryCount:primary.length, primaryDisabled:Boolean(primary[0]?.disabled)});
       })()`)) as {
         title: string; summary: string; category: string; license: string; description: string; tagText: string;
         origin: boolean; ai: boolean; publishChecked: boolean; publishDisabled: boolean;
-        archivePresent: boolean; photoCount: number; primaryCount: number; primaryDisabled: boolean;
+        modelFilesPresent: boolean; photoCount: number; primaryCount: number; primaryDisabled: boolean;
       };
       const normalized = (value: string) => value.replace(/\s+/g, ' ').trim();
-      const expectedArchiveName = path.basename(release.files[0].absolutePath, path.extname(release.files[0].absolutePath));
-      const archivePresent = preflight.archivePresent
-        || await this.verifyPersistedModelFile(target.windowId, `${publicUrl}/files`, expectedArchiveName);
+      const expectedModelNames = release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath)));
+      const modelFilesPresent = preflight.modelFilesPresent
+        || await this.verifyPersistedModelFiles(target.windowId, `${publicUrl}/files`, expectedModelNames);
       const failures = [
         preflight.title !== release.title && 'title',
         preflight.summary !== release.summary && 'summary',
@@ -613,7 +624,7 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
         !preflight.origin && 'origin', !preflight.ai && 'ai',
         preflight.publishChecked && 'already-published', preflight.publishDisabled && 'publish-disabled',
-        !archivePresent && 'archive', preflight.photoCount < release.previews.length && 'previews',
+        !modelFilesPresent && 'model-files', preflight.photoCount < release.previews.length && 'previews',
         preflight.primaryCount !== 1 && 'primary-submit', preflight.primaryDisabled && 'submit-disabled',
       ].filter(Boolean);
       if (failures.length) throw new Error(`Printables publication preflight failed: ${failures.join(', ')}`);
