@@ -2,7 +2,7 @@
  * Sora MCP Server — JSON-RPC 2.0 over stdio
  *
  * Wraps sora-full-automation.ts with:
- * - Safari tab claim (coordinates with other Safari services)
+ * - Independent Safari target discovery
  * - Trends integration (pulls from market-research service :3106)
  * - Generation queue with daily tracking
  * - Maximize-mode: no time/day restrictions, just daily cap
@@ -17,72 +17,72 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { SoraFullAutomation } from './sora-full-automation.js';
-import { TabCoordinator } from '../../../sora-automation/src/automation/tab-coordinator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const execAsync = promisify(exec);
 
-// ─── Tab Claim Guard ──────────────────────────────────────────────────────────
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
+// ─── Local target metadata (no cross-process admission gate) ────────────────
 const MY_SERVICE = 'sora';
 const MY_URL_PATTERN = 'sora.chatgpt.com';
 
 interface TabClaim {
   agentId: string; service: string; port: number; urlPattern: string;
-  windowId?: number; windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
+  windowIndex: number; tabIndex: number; tabUrl: string; pid: number;
   claimedAt: number; heartbeat: number;
-  agentOwned?: boolean; ownershipMarker?: string;
 }
 
-async function readActiveClaims(): Promise<TabClaim[]> {
-  try {
-    const raw = fs.readFileSync(CLAIMS_FILE, 'utf-8');
-    const all: TabClaim[] = JSON.parse(raw);
-    const now = Date.now();
-    return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
-  } catch { return []; }
-}
-
-let soraClaimCoordinator: TabCoordinator | null = null;
+async function readActiveClaims(): Promise<TabClaim[]> { return []; }
 
 async function acquireSoraClaim(): Promise<TabClaim | null> {
+  // Find an open Sora tab in Safari via AppleScript
+  const script = `
+tell application "Safari"
+  set result to {}
+  repeat with w from 1 to count of windows
+    repeat with t from 1 to count of tabs of window w
+      try
+        set u to URL of tab t of window w
+        if u contains "sora.chatgpt.com" then
+          set end of result to (w as string) & "," & (t as string) & "," & u
+        end if
+      end try
+    end repeat
+  end repeat
+  return result
+end tell`;
   try {
-    soraClaimCoordinator ??= new TabCoordinator(
-      `sora-mcp-${process.pid}`,
-      MY_SERVICE,
-      0,
-      'sora',
-      'https://sora.com',
-    );
-    return await soraClaimCoordinator.beginOperation();
+    const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+    const lines = stdout.trim().split(', ').filter(Boolean);
+    if (lines.length === 0) return null;
+
+    const [wStr, tStr, url] = lines[0].split(',');
+    const windowIndex = parseInt(wStr.trim());
+    const tabIndex = parseInt(tStr.trim());
+
+    const agentId = `sora-${Date.now()}`;
+    const myClaim: TabClaim = {
+      agentId, service: MY_SERVICE, port: 0, urlPattern: MY_URL_PATTERN,
+      windowIndex, tabIndex, tabUrl: url?.trim() || MY_URL_PATTERN,
+      pid: process.pid, claimedAt: Date.now(), heartbeat: Date.now(),
+    };
+    return myClaim;
   } catch { return null; }
 }
 
 async function releaseSoraClaim(): Promise<void> {
-  await soraClaimCoordinator?.endOperation();
+  // Compatibility no-op: targets are no longer globally claimed.
 }
 
 // Refreshes the claim heartbeat every 30s so long-running scrapes don't expire.
 // Returns a stop function — call it in your finally block.
 function startClaimHeartbeat(): () => void {
-  const interval = setInterval(async () => {
-    try {
-      await soraClaimCoordinator?.heartbeat();
-    } catch { /* non-fatal */ }
-  }, 30_000);
-  return () => clearInterval(interval);
+  return () => {};
 }
 
 async function checkConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
-  const claims = await readActiveClaims();
-  const myClaim = claims.find(c => c.service === MY_SERVICE);
-  if (!myClaim) return { conflict: false };
-  const myTab = `${myClaim.windowIndex}:${myClaim.tabIndex}`;
-  const blocker = claims.find(c => c.service !== MY_SERVICE && `${c.windowIndex}:${c.tabIndex}` === myTab);
-  return blocker ? { conflict: true, blocker } : { conflict: false };
+  return { conflict: false };
 }
 
 // ─── State: daily generation tracking ─────────────────────────────────────────
@@ -544,7 +544,7 @@ const TOOLS = [
   },
   {
     name: 'sora_claim_status',
-    description: 'Read /tmp/safari-tab-claims.json — shows all active Safari tab claims and whether the Sora tab is currently claimed or in conflict.',
+    description: 'Report open Safari admission status; global tab claims are retired.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -1494,7 +1494,7 @@ async function handleSoraMaximize(args: {
   const skipYt = args.skip_youtube ?? false;
   const trendPlatform = args.trend_platform || 'tiktok';
 
-  // 1. Acquire tab claim — hold it for the entire session
+  // 1. Resolve an available Sora target without taking a global claim.
   const claim = await acquireSoraClaim();
   if (!claim) {
     return JSON.stringify({ success: false, error: 'No Sora tab found in Safari — open sora.chatgpt.com first' });
@@ -1503,10 +1503,7 @@ async function handleSoraMaximize(args: {
   const sessionStart = new Date().toISOString();
   const results: Array<{ prompt: string; success: boolean; videoId?: string; error?: string }> = [];
 
-  // Heartbeat: keep claim alive every 30s
-  const heartbeatInterval = setInterval(async () => {
-    try { await soraClaimCoordinator?.heartbeat(); } catch { /* drain gate aborts new browser work */ }
-  }, 30_000);
+  const heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   try {
     // 2. Check real Sora usage to know actual cap
@@ -1631,7 +1628,7 @@ async function handleSoraMaximize(args: {
     });
 
   } finally {
-    clearInterval(heartbeatInterval);
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
     await releaseSoraClaim();
     const s = loadState();
     s.maximizeSessionActive = false;

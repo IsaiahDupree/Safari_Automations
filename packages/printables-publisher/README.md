@@ -1,6 +1,6 @@
 # Printables Publisher API (Safari)
 
-This package turns a reviewed `cad-catalog` release bundle into a controlled Printables upload job. It uses the single managed Safari application and the shared ACTP Window 2 claim/ownership lane. It does not use Playwright, Puppeteer, Selenium, a second browser, private Printables GraphQL mutations, or stored Printables credentials.
+This package turns a reviewed `cad-catalog` release bundle into a controlled Printables upload job. It resolves an existing Printables tab in any Safari window or creates a task tab in the current front window. It does not require a shared ownership lane, a reserved window, private Printables GraphQL mutations, or stored Printables credentials.
 
 The service is intentionally draft-first:
 
@@ -10,7 +10,8 @@ Publication requires a separate, exact-bundle approval after the browser draft e
 
 ## Start
 
-Open the existing Safari application manually and sign into Printables. Do not open a second Safari instance. Then:
+Use any available Safari window signed into Printables; the task may create its
+own tab and run alongside other browsers and agents. Then:
 
 ```bash
 cd "/Users/isaiahdupree/Documents/Software/Safari Automation/packages/printables-publisher"
@@ -24,7 +25,7 @@ The server binds only to `127.0.0.1:3112`. Keep the token in the caller's enviro
 
 - `GET /api/health` — unauthenticated liveness only.
 - `GET /api/printables/browser/status` — managed Safari and selector state.
-- `GET /api/printables/browser/inspect` — read the claimed Printables tab's form controls for selector capture.
+- `GET /api/printables/browser/inspect` — read the task-selected Printables tab's form controls for selector capture.
 - `GET /api/printables/selector-contract` — current selector contract.
 - `POST /api/printables/jobs` — create a job from `{ "bundlePath": "..." }`.
 - `POST /api/printables/jobs/:id/validate` — verify containment, file types, metadata, symlink policy, and every SHA-256.

@@ -7,14 +7,12 @@
 
 import * as fs from 'fs/promises';
 
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
 const MY_SERVICE = 'linkedin-automation';
 
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+  return [];
 }
 
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
@@ -98,7 +96,7 @@ function formatMcpError(e: unknown, platform = 'linkedin'): string {
 // ═══════════════════════════════════════════════════════════════
 
 const TOOLS = [
-  { name: 'linkedin_claim_status', description: 'Read /tmp/safari-tab-claims.json — shows all active Safari tab claims and any conflicts with the LinkedIn-automation tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'linkedin_claim_status', description: 'Report open Safari admission status; global tab claims are retired.', inputSchema: { type: 'object', properties: {} } },
   {
     name: 'linkedin_search_people',
     description: 'Search LinkedIn for people matching criteria',

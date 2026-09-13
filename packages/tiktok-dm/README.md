@@ -26,7 +26,6 @@ npm install
    SUPABASE_URL=https://ivhfuhxorppptyuofbgq.supabase.co
    SUPABASE_KEY=your_supabase_key
    CRMLITE_API_KEY=your_crmlite_key
-   SAFARI_AUTOMATION_WINDOW=1
    ```
 
 ## Usage

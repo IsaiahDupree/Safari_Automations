@@ -1,6 +1,6 @@
 /**
  * Instagram Comment Driver
- * 
+ *
  * Safari automation driver for posting comments on Instagram.
  * Reuses pattern from ThreadsDriver.
  */
@@ -9,55 +9,6 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-
-async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
-  await client.requireSafariLanePermit(mode);
-}
-
-async function resolveClaimedSafariTabIndex(
-  windowId: number,
-  tabIndex: number,
-  mode: 'background' | 'interactive' = 'background',
-): Promise<number> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as {
-    resolveClaimedSafariTabIndex(
-      windowId: number,
-      tabIndex: number,
-      expectedOwnershipMarker?: string,
-      mode?: 'background' | 'interactive',
-    ): Promise<number>;
-  };
-  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
-}
-
-async function runClaimedSafariAppleScript(
-  windowId: number,
-  tabIndex: number,
-  mode: 'background' | 'interactive',
-  actionBody: string,
-  options: { preamble?: string; timeoutMs?: number } = {},
-): Promise<string> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as {
-    runClaimedSafariAppleScript(
-      windowId: number,
-      tabIndex: number,
-      mode: 'background' | 'interactive',
-      actionBody: string,
-      options?: { preamble?: string; timeoutMs?: number },
-    ): Promise<string>;
-  };
-  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
-}
-
-async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
-  return client.runSafariForegroundInput(activateOwnedTab, performInput);
-}
 
 // Instagram selectors
 export const SELECTORS = {
@@ -70,20 +21,20 @@ export const SELECTORS = {
   NAV_NOTIFICATIONS: 'svg[aria-label="Notifications"]',
   NAV_CREATE: 'svg[aria-label="New post"]',
   NAV_PROFILE: 'svg[aria-label="Profile"]',
-  
+
   // Post actions
   ACTION_LIKE: 'svg[aria-label="Like"]',
   ACTION_UNLIKE: 'svg[aria-label="Unlike"]',
   ACTION_COMMENT: 'svg[aria-label="Comment"]',
   ACTION_SHARE: 'svg[aria-label="Share Post"]',
   ACTION_SAVE: 'svg[aria-label="Save"]',
-  
+
   // Comment input
   COMMENT_INPUT: 'textarea[aria-label="Add a comment…"]',
   COMMENT_INPUT_ALT: 'textarea[placeholder="Add a comment…"]',
   COMMENT_SUBMIT: 'button[type="submit"]',
   COMMENT_POST_BTN: 'div[role="button"]:has-text("Post")',
-  
+
   // Content
   POST_CONTAINER: 'article',
   USERNAME_LINK: 'a[href^="/"]',
@@ -124,33 +75,48 @@ export class InstagramDriver {
   private config: InstagramConfig;
   private commentLog: { timestamp: Date }[] = [];
   private _trackedWindow: number | null = null;
-  private _trackedWindowId: number | null = null;
   private _trackedTab: number | null = null;
 
   constructor(config: Partial<InstagramConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
-    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error('InstagramDriver requires a stable agent Window 2 claim');
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
     this._trackedWindow = windowIndex;
-    this._trackedWindowId = Number(windowId);
     this._trackedTab = tabIndex;
   }
 
   private async executeJS(script: string): Promise<string> {
-    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) {
-      throw new Error('Instagram background JS requires a claimed Safari agent tab');
-    }
+    // Use temp file approach to avoid shell escaping issues (same as ThreadsDriver)
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+
+    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    return runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `return do JavaScript "${jsCode}" in agentTab`);
+    const tabTarget = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : `current tab of front window`;
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
+
+    fs.writeFileSync(tmpFile, appleScript);
+    try {
+      const { stdout } = await execAsync(`osascript "${tmpFile}"`);
+      return stdout.trim();
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
   }
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Navigation requires a stable claimed Safari agent tab');
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `set URL of agentTab to "${safeUrl}"`);
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(
+        `osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`
+      );
       await this.wait(3000);
       return true;
     } catch {
@@ -164,8 +130,10 @@ export class InstagramDriver {
 
   async getStatus(): Promise<InstagramStatus> {
     try {
-      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Status requires a stable claimed Safari agent tab');
-      const currentUrl = await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', 'return URL of agentTab');
+      const { stdout: urlOut } = await execAsync(
+        `osascript -e 'tell application "Safari" to get URL of current tab of front window'`
+      );
+      const currentUrl = urlOut.trim();
       const isOnInstagram = currentUrl.includes('instagram.com');
 
       const loginCheck = await this.executeJS(`
@@ -289,16 +257,16 @@ export class InstagramDriver {
       (function() {
         var article = document.querySelector('article');
         if (!article) return JSON.stringify({error: 'no_article'});
-        
+
         var userLink = article.querySelector('a[href^="/"]');
         var username = userLink ? userLink.href.split('/').filter(Boolean).pop() : '';
-        
+
         var caption = article.querySelector('span');
         var text = caption ? caption.innerText : '';
-        
+
         var timeEl = article.querySelector('time');
         var timestamp = timeEl ? timeEl.getAttribute('datetime') : '';
-        
+
         return JSON.stringify({
           username: username,
           text: text.substring(0, 500),
@@ -307,7 +275,7 @@ export class InstagramDriver {
         });
       })();
     `);
-    
+
     try {
       return JSON.parse(result);
     } catch {
@@ -321,19 +289,19 @@ export class InstagramDriver {
         var comments = [];
         // Scope to article to avoid matching navigation ul>li items
         var commentEls = document.querySelectorAll('article ul li');
-        
+
         for (var i = 0; i < Math.min(commentEls.length, ${limit}); i++) {
           var el = commentEls[i];
-          
+
           var userLink = el.querySelector('a[href^="/"]:not([href*="/p/"])');
           var username = userLink ? userLink.href.split('/').filter(Boolean).pop() : '';
-          
+
           var textEl = el.querySelector('span');
           var text = textEl ? textEl.innerText : '';
-          
+
           var timeEl = el.querySelector('time');
           var timestamp = timeEl ? timeEl.getAttribute('datetime') : '';
-          
+
           // Require username + text + reasonable length to filter non-comment items
           if (username && text && text.length > 2 && username.length < 40) {
             comments.push({
@@ -343,7 +311,7 @@ export class InstagramDriver {
             });
           }
         }
-        
+
         return JSON.stringify(comments);
       })();
     `);
@@ -364,17 +332,16 @@ export class InstagramDriver {
     // Use printf instead of echo -n to avoid -n appearing in output on some shells
     await execAsync(`printf "%s" "${escaped}" | pbcopy`).catch(() => null);
     await this.wait(200);
-    
-    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) return false;
-    const activateOwnedTab = async (): Promise<void> => {
-      await runClaimedSafariAppleScript(this._trackedWindowId!, this._trackedTab!, 'interactive', 'activate\nset current tab of agentWindow to agentTab\nset index of agentWindow to 1');
-    };
-    
+
+    const script = `
+tell application "Safari" to activate
+delay 0.2
+tell application "System Events"
+    keystroke "v" using command down
+end tell`;
+
     try {
-      await withSafariForegroundInput(
-        activateOwnedTab,
-        async () => { await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`); },
-      );
+      await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
       return true;
     } catch {
       return false;
@@ -726,7 +693,7 @@ export class InstagramDriver {
       await this.wait(2000);
       return true;
     }
-    
+
     // Fallback: click on post image
     const result = await this.executeJS(`
       (function() {
@@ -902,7 +869,7 @@ export class InstagramDriver {
     const result = await this.executeJS(`
       (function() {
         var comments = [];
-        
+
         // Try multiple selectors for Instagram comments
         var selectors = [
           'ul ul li',                           // Nested comment list
@@ -911,26 +878,26 @@ export class InstagramDriver {
           'ul[class*="Comment"] li',            // Class-based
           'div[class*="comment" i] li'          // Case-insensitive class
         ];
-        
+
         for (var selector of selectors) {
           var items = document.querySelectorAll(selector);
           for (var i = 0; i < Math.min(items.length, ${limit}); i++) {
             var item = items[i];
-            
+
             // Find username
             var userLink = item.querySelector('a[href^="/"]:not([href*="/p/"])');
             var username = userLink ? userLink.textContent.trim() : '';
-            
+
             // Find comment text - try multiple approaches
             var textEl = item.querySelector('span:not(:has(a))');
             if (!textEl) textEl = item.querySelector('span > span');
             if (!textEl) textEl = item.querySelector('div > span');
             var text = textEl ? textEl.textContent.trim() : '';
-            
+
             // Find timestamp
             var timeEl = item.querySelector('time');
             var timestamp = timeEl ? timeEl.getAttribute('datetime') : '';
-            
+
             if (username && text && text.length > 2) {
               // Avoid duplicates
               var isDupe = comments.some(c => c.username === username && c.text === text);
@@ -939,10 +906,10 @@ export class InstagramDriver {
               }
             }
           }
-          
+
           if (comments.length > 0) break; // Found comments with this selector
         }
-        
+
         return JSON.stringify(comments);
       })();
     `);
@@ -963,7 +930,7 @@ export class InstagramDriver {
         var caption = '';
         var hashtags = [];
         var mentions = [];
-        
+
         // Try multiple selectors for caption
         var captionSelectors = [
           'article h1',
@@ -972,7 +939,7 @@ export class InstagramDriver {
           'div[role="button"] + span',
           'article ul li:first-child span'
         ];
-        
+
         for (var selector of captionSelectors) {
           var el = document.querySelector(selector);
           if (el && el.textContent.trim().length > 10) {
@@ -980,21 +947,21 @@ export class InstagramDriver {
             break;
           }
         }
-        
+
         // Extract hashtags
         var hashtagLinks = document.querySelectorAll('a[href*="/explore/tags/"]');
         hashtagLinks.forEach(function(link) {
           var tag = link.textContent.trim();
           if (tag.startsWith('#')) hashtags.push(tag);
         });
-        
+
         // Extract mentions
         var mentionLinks = document.querySelectorAll('a[href^="/"]:not([href*="/p/"]):not([href*="/explore/"])');
         mentionLinks.forEach(function(link) {
           var mention = link.textContent.trim();
           if (mention.startsWith('@')) mentions.push(mention);
         });
-        
+
         return JSON.stringify({ caption: caption.substring(0, 1000), hashtags: hashtags, mentions: mentions });
       })();
     `);

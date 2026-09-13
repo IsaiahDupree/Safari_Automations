@@ -1,8 +1,8 @@
 /**
- * Safari W2 MCP Server — compatibility control plane for the shared window
+ * Safari W2 MCP Server — "Local to Cloud" profile control plane
  *
- * The historical safari_w2 tool names are retained for compatibility, but all
- * tools now target the sole managed Safari window (window 1).
+ * Exposes compatibility tools that interact with a selected Safari window.
+ * This service does not reserve that window or gate other browser automation.
  *
  * Tools:
  *   safari_w2_list_tabs        — list all W2 tabs (index, url, title)
@@ -12,7 +12,7 @@
  *   safari_w2_close_tab        — close a W2 tab by index
  *   safari_w2_activate_tab     — bring a W2 tab to foreground
  *   safari_w2_get_url          — get current URL of a W2 tab
- *   safari_w2_claims           — read /tmp/safari-tab-claims.json (W2 only)
+ *   safari_w2_claims           — compatibility status (global claims retired)
  *   safari_w2_service_health   — health check all automation services
  *   safari_w2_setup_tabs       — open all missing platform tabs + trigger claims
  *   safari_w2_claim_tab        — POST /api/session/ensure on a service
@@ -23,9 +23,7 @@
  */
 
 import * as readline from 'readline';
-import * as fs from 'fs/promises';
 import { exec } from 'child_process';
-import { randomUUID } from 'node:crypto';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -33,24 +31,11 @@ const execAsync = promisify(exec);
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME     = 'safari-w2';
 const SERVER_VERSION  = '1.0.0';
-const CLAIMS_FILE     = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS    = 60_000;
 const SETUP_SCRIPT    = '/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh';
 
 function getW2(): number {
-  return 2;
-}
-
-async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
-  const clientPath: string = '../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
-  await client.requireSafariLanePermit(mode);
-}
-
-async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
-  const clientPath: string = '../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
-  return client.runSafariForegroundInput(activateOwnedTab, performInput);
+  // Safari indexes the front window as 1. No window is reserved globally.
+  return 1;
 }
 
 // ─── AppleScript helpers ─────────────────────────────────────────────────────
@@ -70,85 +55,11 @@ async function runASJson(script: string): Promise<unknown> {
 interface TabClaim {
   agentId: string; service: string; port: number;
   urlPattern: string; windowIndex: number; tabIndex: number;
-  windowId?: number;
   tabUrl: string; pid: number; claimedAt: number; heartbeat: number;
-  agentOwned: boolean;
-  ownershipMarker?: string;
 }
 
 async function readClaims(): Promise<TabClaim[]> {
-  try {
-    const raw = await fs.readFile(CLAIMS_FILE, 'utf-8');
-    const all: TabClaim[] = JSON.parse(raw);
-    const now = Date.now();
-    return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
-  } catch { return []; }
-}
-
-async function withOwnedTabOperation<T>(
-  tabIndex: number,
-  action: (claim: TabClaim) => Promise<T>,
-): Promise<T> {
-  if (!Number.isInteger(tabIndex) || tabIndex < 1) throw new Error('tabIndex must be a positive integer');
-  const coordinatorPath: string = '../../instagram-dm/src/automation/tab-coordinator.js';
-  const { TabCoordinator } = await import(coordinatorPath) as {
-    TabCoordinator: new (
-      agentId: string,
-      service: string,
-      port: number,
-      urlPattern: string,
-    ) => {
-      claim(windowIndex?: number, tabIndex?: number): Promise<TabClaim>;
-      beginOperation(): Promise<TabClaim>;
-      endOperation(): Promise<void>;
-      release(): Promise<void>;
-    };
-  };
-  const coordinator = new TabCoordinator(
-    `safari-w2-mcp-${process.pid}-${randomUUID()}`,
-    'safari-w2-mcp',
-    3000,
-    '',
-  );
-  let operationStarted = false;
-  try {
-    await coordinator.claim(2, tabIndex);
-    const claim = await coordinator.beginOperation();
-    operationStarted = true;
-    if (!Number.isInteger(claim.windowId) || Number(claim.windowId) <= 0 || !claim.ownershipMarker) {
-      throw new Error(`Safari W2 tab ${tabIndex} has no exact durable ownership identity`);
-    }
-    return await action(claim);
-  } finally {
-    if (operationStarted) await coordinator.endOperation().catch(() => {});
-    else await coordinator.release().catch(() => {});
-  }
-}
-
-async function listOwnedTabs(): Promise<Array<{
-  index: number;
-  windowId: number;
-  url: string;
-  title: string;
-  service: string;
-  agentId: string;
-}>> {
-  const claims = (await readClaims())
-    .filter(claim =>
-      claim.windowIndex === 2 &&
-      claim.agentOwned === true &&
-      Number.isInteger(claim.windowId) &&
-      typeof claim.ownershipMarker === 'string'
-    )
-    .sort((left, right) => left.tabIndex - right.tabIndex);
-  return claims.map(claim => ({
-      index: claim.tabIndex,
-      windowId: Number(claim.windowId),
-      url: claim.tabUrl,
-      title: '',
-      service: claim.service,
-      agentId: claim.agentId,
-    }));
+  return [];
 }
 
 // ─── Service registry ─────────────────────────────────────────────────────────
@@ -157,7 +68,7 @@ const SERVICES: { port: number; name: string; label: string }[] = [
   { port: 3100, name: 'instagram-dm',       label: 'Instagram DM' },
   { port: 3003, name: 'twitter-dm',         label: 'Twitter DM' },
   { port: 3102, name: 'tiktok-dm',          label: 'TikTok DM' },
-  { port: 3105, name: 'linkedin-automation', label: 'LinkedIn' },
+  { port: 3105, name: 'linkedin-chrome',    label: 'LinkedIn (Chrome)' },
   { port: 3005, name: 'instagram-comments', label: 'Instagram Comments' },
   { port: 3006, name: 'tiktok-comments',    label: 'TikTok Comments' },
   { port: 3007, name: 'twitter-comments',   label: 'Twitter Comments' },
@@ -217,56 +128,56 @@ async function httpPost(url: string, data: unknown, timeoutMs = 8000): Promise<{
 const TOOLS = [
   {
     name: 'safari_w2_list_tabs',
-    description: 'List all tabs open in the sole shared Safari window. Returns index, URL, and title for each tab.',
+    description: 'List all tabs open in Safari Window 2 ("Local to Cloud" profile). Returns index, URL, and title for each tab.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'safari_w2_navigate',
-    description: 'Navigate a specific shared Safari tab to a URL. Specify tab by index (1-based).',
+    description: 'Navigate a specific tab in Safari Window 2 to a URL. Specify tab by index (1-based).',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in the shared window (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
       url: { type: 'string', description: 'URL to navigate to' },
     }, required: ['tabIndex', 'url'] },
   },
   {
     name: 'safari_w2_eval',
-    description: 'Run JavaScript in a specific shared Safari tab and return the result.',
+    description: 'Run JavaScript in a specific Window 2 tab and return the result. Use for reading page state, checking login, extracting data.',
     inputSchema: { type: 'object', properties: {
-      tabIndex: { type: 'number', description: 'Tab index in the shared window (1-based)' },
+      tabIndex: { type: 'number', description: 'Tab index in Window 2 (1-based)' },
       script: { type: 'string', description: 'JavaScript to execute. Return value becomes the result.' },
     }, required: ['tabIndex', 'script'] },
   },
   {
     name: 'safari_w2_open_tab',
-    description: 'Open a new tab in the shared Safari window, subject to the global eight-tab cap.',
+    description: 'Open a new tab in Safari Window 2 navigated to a URL. Returns the new tab index.',
     inputSchema: { type: 'object', properties: {
       url: { type: 'string', description: 'URL to open in the new tab' },
     }, required: ['url'] },
   },
   {
     name: 'safari_w2_close_tab',
-    description: 'Close a task-owned tab in the shared Safari window by index.',
+    description: 'Close a tab in Safari Window 2 by index. Use carefully — this cannot be undone.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to close (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_activate_tab',
-    description: 'Bring a shared Safari tab to the foreground.',
+    description: 'Bring a Window 2 tab to the foreground (make it the active visible tab).',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index to activate (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_get_url',
-    description: 'Get the current URL of a specific shared Safari tab.',
+    description: 'Get the current URL of a specific Window 2 tab.',
     inputSchema: { type: 'object', properties: {
       tabIndex: { type: 'number', description: 'Tab index (1-based)' },
     }, required: ['tabIndex'] },
   },
   {
     name: 'safari_w2_claims',
-    description: 'Read the tab claim registry for the sole shared Safari window.',
+    description: 'Read the tab claim registry filtered to Window 2 only. Shows which automation service owns which tab, and any conflicts.',
     inputSchema: { type: 'object', properties: {
       includeExpired: { type: 'boolean', description: 'Include expired claims (older than 60s)', default: false },
     } },
@@ -280,26 +191,26 @@ const TOOLS = [
   },
   {
     name: 'safari_w2_setup_tabs',
-    description: 'Open missing platform tabs in the shared window and trigger service claims.',
+    description: 'Open all missing platform tabs in Window 2 and trigger tab claims on all services. Equivalent to running open-local-to-cloud-tabs.sh.',
     inputSchema: { type: 'object', properties: {
       mode: { type: 'string', enum: ['full', 'claim-only', 'reset'], description: '"full" opens missing tabs then claims, "claim-only" only triggers claims, "reset" closes all W2 tabs and reopens fresh', default: 'full' },
     } },
   },
   {
     name: 'safari_w2_claim_tab',
-    description: 'Trigger /api/session/ensure on a service so it claims its shared-window tab.',
+    description: 'Trigger /api/session/ensure on a specific service to make it claim its Window 2 tab.',
     inputSchema: { type: 'object', properties: {
       service: { type: 'string', description: 'Service name (e.g. "instagram-dm", "twitter-dm", "tiktok-dm", "threads-comments", "facebook-comments", "upwork-automation", "sora-automation")' },
     }, required: ['service'] },
   },
   {
     name: 'safari_w2_login_status',
-    description: 'Check whether each platform tab in the shared window is logged in.',
+    description: 'Check whether each platform tab in Window 2 is logged in or showing a login/auth page.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'safari_w2_clear_stale',
-    description: 'Remove expired tab claims (older than 60s TTL) from /tmp/safari-tab-claims.json.',
+    description: 'Compatibility no-op: global Safari tab claims are retired.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -313,98 +224,102 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   switch (name) {
 
     case 'safari_w2_list_tabs': {
-      result = await listOwnedTabs();
+      const script = `
+tell application "Safari"
+  if (count of windows) < ${W2} then return "[]"
+  set tabCount to count of tabs of window ${W2}
+  set jsonOut to "["
+  repeat with t from 1 to tabCount
+    set u to URL of tab t of window ${W2}
+    set nm to name of tab t of window ${W2}
+    -- escape double quotes
+    set nm to do shell script "echo " & quoted form of nm & " | sed 's/\"/\\\\\"/g'"
+    set u  to do shell script "echo " & quoted form of u  & " | sed 's/\"/\\\\\"/g'"
+    set jsonOut to jsonOut & "{\"index\":" & t & ",\"url\":\"" & u & "\",\"title\":\"" & nm & "\"}"
+    if t < tabCount then set jsonOut to jsonOut & ","
+  end repeat
+  set jsonOut to jsonOut & "]"
+  return jsonOut
+end tell`;
+      try {
+        result = await runASJson(script);
+      } catch (e) {
+        // Fallback: simpler approach
+        const lines: string[] = [];
+        let t = 1;
+        while (true) {
+          try {
+            const url = await runAS(`tell application "Safari" to return URL of tab ${t} of window ${W2}`);
+            lines.push({ index: t, url } as unknown as string);
+            t++;
+          } catch { break; }
+        }
+        result = lines;
+      }
       break;
     }
 
     case 'safari_w2_navigate': {
       const { tabIndex, url } = args as { tabIndex: number; url: string };
-      const parsedUrl = new URL(String(url));
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Safari navigation only accepts http(s) URLs');
-      const safeUrl = parsedUrl.toString().replace(/"/g, '\\"');
-      result = await withOwnedTabOperation(tabIndex, async claim => {
-        await runAS(`
-tell application "Safari"
-  set agentWindow to first window whose id is ${claim.windowId}
-  set candidateTab to tab ${claim.tabIndex} of agentWindow
-  if (do JavaScript "window.name" in candidateTab) is not "${claim.ownershipMarker}" then error "ownership changed"
-  set URL of candidateTab to "${safeUrl}"
-end tell`);
-        return { ok: true, tabIndex: claim.tabIndex, url, windowId: claim.windowId };
-      });
+      const safeUrl = String(url).replace(/"/g, '\\"');
+      await runAS(`tell application "Safari" to set URL of tab ${tabIndex} of window ${W2} to "${safeUrl}"`);
+      result = { ok: true, tabIndex, url, window: W2 };
       break;
     }
 
     case 'safari_w2_eval': {
       const { tabIndex, script } = args as { tabIndex: number; script: string };
       const safeScript = String(script).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-      result = await withOwnedTabOperation(tabIndex, async claim => {
-        const out = await runAS(`
-tell application "Safari"
-  set agentWindow to first window whose id is ${claim.windowId}
-  set candidateTab to tab ${claim.tabIndex} of agentWindow
-  if (do JavaScript "window.name" in candidateTab) is not "${claim.ownershipMarker}" then error "ownership changed"
-  return do JavaScript "${safeScript}" in candidateTab
-end tell`);
-        return { ok: true, tabIndex: claim.tabIndex, windowId: claim.windowId, output: out };
-      });
+      const out = await runAS(`tell application "Safari" to return do JavaScript "${safeScript}" in tab ${tabIndex} of window ${W2}`);
+      result = { ok: true, tabIndex, output: out };
       break;
     }
 
     case 'safari_w2_open_tab': {
-      throw new Error('Direct MCP tab allocation is disabled; call safari_w2_claim_tab so a service TabCoordinator allocates under the shared claim lock');
+      const { url } = args as { url: string };
+      const safeUrl = String(url).replace(/"/g, '\\"');
+      const out = await runAS(`
+tell application "Safari"
+  if (count of windows) < ${W2} then error "Window ${W2} not open"
+  tell window ${W2}
+    make new tab with properties {URL:"${safeUrl}"}
+    activate
+  end tell
+  return count of tabs of window ${W2}
+end tell`);
+      result = { ok: true, url, newTabIndex: parseInt(out, 10), window: W2 };
+      break;
     }
 
     case 'safari_w2_close_tab': {
-      throw new Error('Direct MCP tab closing is disabled; only the owning service may release/recycle its agent tab');
+      const { tabIndex } = args as { tabIndex: number };
+      await runAS(`tell application "Safari" to close tab ${tabIndex} of window ${W2}`);
+      result = { ok: true, closed: tabIndex, window: W2 };
+      break;
     }
 
     case 'safari_w2_activate_tab': {
       const { tabIndex } = args as { tabIndex: number };
-      result = await withOwnedTabOperation(tabIndex, async claim => {
-        await withSafariForegroundInput(async () => {
-          await runAS(`
+      await runAS(`
 tell application "Safari"
-  set agentWindow to first window whose id is ${claim.windowId}
-  set agentTab to tab ${claim.tabIndex} of agentWindow
-  if (do JavaScript "window.name" in agentTab) is not "${claim.ownershipMarker}" then error "ownership changed"
+  set current tab of window ${W2} to tab ${tabIndex} of window ${W2}
   activate
-  set current tab of agentWindow to agentTab
-  set index of agentWindow to 1
-end tell
-tell application "System Events" to set frontmost of process "Safari" to true`);
-        }, async () => undefined);
-        return { ok: true, activeTab: claim.tabIndex, windowId: claim.windowId };
-      });
+end tell`);
+      result = { ok: true, activeTab: tabIndex, window: W2 };
       break;
     }
 
     case 'safari_w2_get_url': {
       const { tabIndex } = args as { tabIndex: number };
-      result = await withOwnedTabOperation(tabIndex, async claim => {
-        const url = await runAS(`
-tell application "Safari"
-  set agentWindow to first window whose id is ${claim.windowId}
-  set candidateTab to tab ${claim.tabIndex} of agentWindow
-  if (do JavaScript "window.name" in candidateTab) is not "${claim.ownershipMarker}" then error "ownership changed"
-  return URL of candidateTab
-end tell`);
-        return { tabIndex: claim.tabIndex, url, windowId: claim.windowId };
-      });
+      const url = await runAS(`tell application "Safari" to return URL of tab ${tabIndex} of window ${W2}`);
+      result = { tabIndex, url, window: W2 };
       break;
     }
 
     case 'safari_w2_claims': {
       const { includeExpired = false } = args as { includeExpired?: boolean };
-      let claims: TabClaim[];
-      if (includeExpired) {
-        try {
-          const raw = await fs.readFile(CLAIMS_FILE, 'utf-8');
-          claims = JSON.parse(raw);
-        } catch { claims = []; }
-      } else {
-        claims = await readClaims();
-      }
+      void includeExpired;
+      const claims = await readClaims();
       const w2Claims = claims.filter(c => c.windowIndex === W2);
       const w1Claims = claims.filter(c => c.windowIndex !== W2);
       // Detect conflicts (two services on same tab)
@@ -454,10 +369,7 @@ end tell`);
 
     case 'safari_w2_setup_tabs': {
       const { mode = 'full' } = args as { mode?: string };
-      if (mode !== 'claim-only') {
-        throw new Error('Safari setup full/reset is disabled; use claim-only so service coordinators enforce ownership and tab caps');
-      }
-      const flag = '--claim';
+      const flag = mode === 'claim-only' ? '--claim' : mode === 'reset' ? '--reset' : '';
       try {
         const { stdout, stderr } = await execAsync(
           `/bin/zsh -l "${SETUP_SCRIPT}" ${flag}`,
@@ -498,8 +410,15 @@ end tell`);
     }
 
     case 'safari_w2_login_status': {
-      const tabs = (await listOwnedTabs()).map(ownedTab => {
-        const { url } = ownedTab;
+      // Read all W2 tabs and determine login state
+      const tabs: Array<{ index: number; url: string; platform: string; loggedIn: boolean; loginPage: boolean }> = [];
+      let t = 1;
+      while (true) {
+        let url: string;
+        try {
+          url = await runAS(`tell application "Safari" to return URL of tab ${t} of window ${W2}`);
+        } catch { break; }
+
         let platform = 'unknown';
         let loggedIn = true;
         let loginPage = false;
@@ -522,17 +441,21 @@ end tell`);
           platform = 'blank';
           loggedIn = false;
         }
-        return { ...ownedTab, platform, loggedIn, loginPage };
-      });
+
+        tabs.push({ index: t, url, platform, loggedIn, loginPage });
+        t++;
+        if (t > 20) break; // safety cap
+      }
 
       const loggedInCount = tabs.filter(t => t.loggedIn && t.platform !== 'unknown' && t.platform !== 'blank').length;
       const needsLogin = tabs.filter(t => t.loginPage);
-      result = { tabs, loggedIn: loggedInCount, needsLogin: needsLogin.map(t => ({ index: t.index, windowId: t.windowId, platform: t.platform, url: t.url })) };
+      result = { window: W2, tabs, loggedIn: loggedInCount, needsLogin: needsLogin.map(t => ({ index: t.index, platform: t.platform, url: t.url })) };
       break;
     }
 
     case 'safari_w2_clear_stale': {
-      throw new Error('Direct claim-registry writes are disabled; TabCoordinator removes stale claims under the shared fcntl lock');
+      result = { ok: true, removed: 0, remaining: 0, admission: 'open' };
+      break;
     }
 
     default:

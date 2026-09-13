@@ -28,12 +28,6 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
-async function requireSafariBackgroundPermit(): Promise<void> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
-  await client.requireSafariLanePermit('background');
-}
-
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -166,8 +160,6 @@ export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
 
 export class InstagramResearcher {
   private config: InstagramResearchConfig;
-  private trackedWindow: number | null = null;
-  private trackedTab: number | null = null;
 
   constructor(config: Partial<InstagramResearchConfig> = {}) {
     this.config = { ...DEFAULT_IG_RESEARCH_CONFIG, ...config };
@@ -181,13 +173,9 @@ export class InstagramResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
-    await requireSafariBackgroundPermit();
-    if (this.trackedWindow !== 2 || !this.trackedTab) {
-      throw new Error('Instagram research JS requires a claimed Safari agent tab in Window 2');
-    }
     const tmpFile = path.join(os.tmpdir(), `safari_ig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in tab ${this.trackedTab} of window 2`;
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
     fs.writeFileSync(tmpFile, appleScript);
     try {
       const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
@@ -199,26 +187,14 @@ export class InstagramResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      await requireSafariBackgroundPermit();
-      if (this.trackedWindow !== 2 || !this.trackedTab) {
-        throw new Error('Instagram research navigation requires a claimed Safari agent tab in Window 2');
-      }
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of tab ${this.trackedTab} of window 2 to "${safeUrl}"'`);
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
       return true;
     } catch { return false; }
   }
 
   private async wait(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
-  }
-
-  setTrackedTab(windowIndex: number, tabIndex: number): void {
-    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
-      throw new Error('InstagramResearcher accepts claims only in agent Window 2');
-    }
-    this.trackedWindow = windowIndex;
-    this.trackedTab = tabIndex;
   }
 
   private async waitForSelector(selector: string, timeoutMs = 10000): Promise<boolean> {

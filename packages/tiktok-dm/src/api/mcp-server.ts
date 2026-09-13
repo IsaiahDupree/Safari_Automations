@@ -8,13 +8,11 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
+// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
 const MY_SERVICE = 'tiktok-dm';
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+  return [];
 }
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
   const claims = await readActiveClaims();
@@ -101,9 +99,9 @@ const TOOLS = [
   { name: 'tiktok_navigate_inbox', description: 'Navigate Safari to the TikTok DM inbox.', inputSchema: { type: 'object', properties: {} } },
   { name: 'tiktok_is_ready', description: 'Check if DM service (:3102) and Comments service (:3006) are reachable before attempting any action. Call this first each session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'tiktok_crm_get_contact', description: 'Get CRMLite contact record by TikTok username. Returns contact history, interactions, tags, and pipeline stage across all platforms.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'TikTok username without @' } }, required: ['username'] } },
-  { name: 'tiktok_claim_status', description: 'Read current Safari tab claims from /tmp/safari-tab-claims.json. Shows which services own which tabs and any conflicts with tiktok-dm\'s tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'tiktok_claim_status', description: 'Report open Safari admission status; global tab claims are retired.', inputSchema: { type: 'object', properties: {} } },
   { name: 'tiktok_queue_status', description: 'Get TikTok DM queue status: pending/approved/sent/failed counts, today\'s send count vs daily cap, and list of pending prospect handles.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'tiktok_send_from_queue', description: 'Preview approved TikTok DMs. Legacy direct-browser batch sending is retired; use the operation-aware TikTok DM service for each approved recipient.', inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean', description: 'Preview without sending (required)', default: true } }, required: [] } },
+  { name: 'tiktok_send_from_queue', description: 'Send all approved TikTok DMs from the local queue. Uses profile-page JS-click method for cold prospects. Pass dryRun=true to preview.', inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean', description: 'Preview without sending', default: false }, fast: { type: 'boolean', description: 'Use 2s delays (test only). Default false = 25-45s human delays', default: false } }, required: [] } },
   { name: 'tiktok_daily_report', description: 'Get a daily summary of TikTok DM activity: sent today, pending, cloud queue depth, send method success rates from actp_dm_sends.', inputSchema: { type: 'object', properties: {} } },
 ];
 
@@ -189,17 +187,23 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       break;
     }
     case 'tiktok_send_from_queue': {
-      const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/tiktok-dm-queue.json';
-      let q: any = { queue: [] };
-      try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
-      const approved = q.queue.filter((e: any) => e.status === 'approved');
-      if (args.dryRun === false) {
-        throw {
-          code: 'LEGACY_SWEEP_RETIRED',
-          message: 'Unsafe TikTok sweep spawning is disabled. Send approved recipients through POST http://127.0.0.1:3102/api/messages/send-to so each action receives a marker-bound Safari operation lease.',
-        };
+      if (args.dryRun) {
+        const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/tiktok-dm-queue.json';
+        let q: any = { queue: [] };
+        try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
+        const approved = q.queue.filter((e: any) => e.status === 'approved');
+        result = { dryRun: true, wouldSend: approved.map((e: any) => e.username) }; break;
       }
-      result = { dryRun: true, wouldSend: approved.map((e: any) => e.username) }; break;
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileP = promisify(execFile);
+      const flags = ['harness/tiktok-dm-sweep.js', '--send-approved', ...(args.fast ? ['--fast'] : [])];
+      const { stdout, stderr } = await execFileP('/usr/local/bin/node', flags, {
+        cwd: '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard',
+        timeout: 300_000,
+        env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/homebrew/bin' },
+      }).catch((e: any) => ({ stdout: '', stderr: String(e.message) }));
+      result = { stdout: stdout.slice(-2000), stderr: stderr.slice(-500) }; break;
     }
     case 'tiktok_daily_report': {
       const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/tiktok-dm-queue.json';

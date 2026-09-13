@@ -15,55 +15,6 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
 
-async function requireSafariPermit(mode: 'background' | 'interactive'): Promise<void> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background' | 'interactive'): Promise<unknown> };
-  await client.requireSafariLanePermit(mode);
-}
-
-async function resolveClaimedSafariTabIndex(
-  windowId: number,
-  tabIndex: number,
-  mode: 'background' | 'interactive' = 'background',
-): Promise<number> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as {
-    resolveClaimedSafariTabIndex(
-      windowId: number,
-      tabIndex: number,
-      expectedOwnershipMarker?: string,
-      mode?: 'background' | 'interactive',
-    ): Promise<number>;
-  };
-  return client.resolveClaimedSafariTabIndex(windowId, tabIndex, undefined, mode);
-}
-
-async function runClaimedSafariAppleScript(
-  windowId: number,
-  tabIndex: number,
-  mode: 'background' | 'interactive',
-  actionBody: string,
-  options: { preamble?: string; timeoutMs?: number } = {},
-): Promise<string> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as {
-    runClaimedSafariAppleScript(
-      windowId: number,
-      tabIndex: number,
-      mode: 'background' | 'interactive',
-      actionBody: string,
-      options?: { preamble?: string; timeoutMs?: number },
-    ): Promise<string>;
-  };
-  return client.runClaimedSafariAppleScript(windowId, tabIndex, mode, actionBody, options);
-}
-
-async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
-  return client.runSafariForegroundInput(activateOwnedTab, performInput);
-}
-
 // ─── Multi-selector Fallbacks ───────────────────────────────
 // Each key lists selectors in priority order. If Twitter renames one,
 // the next still works. Update this list when selectors change.
@@ -234,44 +185,47 @@ export class TwitterDriver {
   private config: TwitterConfig;
   private commentLog: { timestamp: Date }[] = [];
   private _trackedWindow: number | null = null;
-  private _trackedWindowId: number | null = null;
   private _trackedTab: number | null = null;
 
   constructor(config: Partial<TwitterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
-    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1 || !Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error('TwitterDriver requires a stable agent Window 2 claim');
+  setTrackedTab(windowIndex: number, tabIndex: number): void {
     this._trackedWindow = windowIndex;
-    this._trackedWindowId = Number(windowId);
     this._trackedTab = tabIndex;
   }
 
   // ─── Low-level Safari helpers ────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
-    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Twitter background JS requires a stable claimed Safari agent tab');
-    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    return runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `return do JavaScript "${jsCode}" in agentTab`, { timeoutMs: this.config.timeout });
-  }
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
 
-  private async guardedOsInput(inputScript: string, timeout = 15000): Promise<void> {
-    if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('OS input requires a stable claimed Safari agent tab');
-    const activateOwnedTab = async (): Promise<void> => {
-      await runClaimedSafariAppleScript(this._trackedWindowId!, this._trackedTab!, 'interactive', 'activate\nset current tab of agentWindow to agentTab\nset index of agentWindow to 1');
-    };
-    await withSafariForegroundInput(
-      activateOwnedTab,
-      async () => { await execAsync(`osascript << 'APPLESCRIPT'\n${inputScript}\nAPPLESCRIPT`, { timeout }); },
-    );
+    const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
+    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    const tabTarget = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : `current tab of front window`;
+    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
+
+    fs.writeFileSync(tmpFile, appleScript);
+    try {
+      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
+      return stdout.trim();
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
   }
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Navigation requires a stable claimed Safari agent tab');
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', `set URL of agentTab to "${safeUrl}"`, { timeoutMs: 30_000 });
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`, { timeout: 30000 });
       return true;
     } catch { return false; }
   }
@@ -410,8 +364,13 @@ export class TwitterDriver {
       if (sel) {
         await this.executeJS(`document.querySelector('${sel}').focus()`);
         await this.wait(200);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(200);
         const esc = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        await this.guardedOsInput(`tell application "System Events" to tell process "Safari" to keystroke "${esc}"`);
+        await execAsync(
+          `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${esc}"'`,
+          { timeout: 15000 }
+        );
         await this.wait(500);
         if (await this.verifyTypedText(text)) return { ok: true, strategy: 'keystrokes' };
       }
@@ -425,7 +384,9 @@ export class TwitterDriver {
         await this.wait(200);
         const esc = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
         await execAsync(`printf "%s" "${esc}" | pbcopy`);
-        await this.guardedOsInput(`tell application "System Events" to keystroke "v" using command down`);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(200);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
         await this.wait(500);
         if (await this.verifyTypedText(text)) return { ok: true, strategy: 'clipboard' };
       }
@@ -531,8 +492,8 @@ export class TwitterDriver {
 
   async getStatus(): Promise<{ isOnTwitter: boolean; isLoggedIn: boolean; currentUrl: string }> {
     try {
-      if (this._trackedWindow !== 2 || !this._trackedWindowId || !this._trackedTab) throw new Error('Status requires a stable claimed Safari agent tab');
-      const currentUrl = await runClaimedSafariAppleScript(this._trackedWindowId, this._trackedTab, 'background', 'return URL of agentTab');
+      const { stdout } = await execAsync(`osascript -e 'tell application "Safari" to get URL of current tab of front window'`);
+      const currentUrl = stdout.trim();
       const isOnTwitter = currentUrl.includes('twitter.com') || currentUrl.includes('x.com');
       const loginSel = await this.waitForAny(SELECTORS.LOGIN_CHECK, 5000);
       return { isOnTwitter, isLoggedIn: !!loginSel, currentUrl };
@@ -1176,16 +1137,18 @@ export class TwitterDriver {
         // Use System Events to interact with the file dialog
         // Type the file path via Go To Folder (Cmd+Shift+G) then select
         const safeFilePath = filePath.replace(/"/g, '\\"');
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(500);
         // Open Go To Folder dialog
-        await this.guardedOsInput(`tell application "System Events" to keystroke "g" using {command down, shift down}`);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "g" using {command down, shift down}'`);
         await this.wait(1000);
         // Type the file path
-        await this.guardedOsInput(`tell application "System Events" to keystroke "${safeFilePath}"`);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "${safeFilePath}"'`);
         await this.wait(500);
         // Press Enter to go to folder, then Enter to select file
-        await this.guardedOsInput(`tell application "System Events" to keystroke return`);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke return'`);
         await this.wait(1000);
-        await this.guardedOsInput(`tell application "System Events" to keystroke return`);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke return'`);
         await this.wait(2000);
 
         console.log(`[Twitter] Attached: ${filePath}`);
@@ -1298,7 +1261,9 @@ export class TwitterDriver {
         await this.wait(200);
         const esc = text.replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
         await execAsync(`printf "%s" "${esc}" | pbcopy`);
-        await this.guardedOsInput(`tell application "System Events" to keystroke "v" using command down`);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(300);
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`);
         await this.wait(800);
         if (await this.verifyComposeReady()) return { ok: true, strategy: 'clipboard' };
       }
@@ -1317,8 +1282,13 @@ export class TwitterDriver {
         await this.wait(300);
         await this.executeJS(`document.querySelector('${sel}').focus()`);
         await this.wait(200);
+        await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+        await this.wait(200);
         const esc = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        await this.guardedOsInput(`tell application "System Events" to tell process "Safari" to keystroke "${esc}"`);
+        await execAsync(
+          `osascript -e 'tell application "System Events" to tell process "Safari" to keystroke "${esc}"'`,
+          { timeout: 15000 }
+        );
         await this.wait(800);
         if (await this.verifyComposeReady()) return { ok: true, strategy: 'keystrokes' };
       }

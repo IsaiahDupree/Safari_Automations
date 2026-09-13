@@ -3,7 +3,7 @@ import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ReleaseFile, ValidatedRelease } from './types.js';
 
-const RELEASE_EXTENSIONS = new Set(['.stl', '.step', '.stp', '.3mf', '.fcstd']);
+const RELEASE_EXTENSIONS = new Set(['.stl', '.step', '.stp', '.3mf', '.fcstd', '.zip']);
 const PREVIEW_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
@@ -85,9 +85,34 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
   const preview = described.get(previewRelative);
   if (!preview) throw new Error('Preview image is not hash-covered by manifest');
   if (!PREVIEW_EXTENSIONS.has(path.extname(previewRelative).toLowerCase())) throw new Error('Preview must be PNG, JPEG, or WebP');
+  const previewEntries = worksheet.previews ?? [previewRelative];
+  if (!Array.isArray(previewEntries) || previewEntries.length === 0) throw new Error('At least one preview is required');
+  const previews = previewEntries.map((entry, index) => {
+    const relative = requiredString(entry, `previews[${index}]`);
+    const file = described.get(relative);
+    if (!file) throw new Error(`Preview is not hash-covered by manifest: ${relative}`);
+    if (!PREVIEW_EXTENSIONS.has(path.extname(relative).toLowerCase())) throw new Error(`Unsupported preview format: ${relative}`);
+    return file;
+  });
+  if (!previews.some(file => file.relativePath === preview.relativePath)) {
+    throw new Error('Cover preview must also appear in previews[]');
+  }
 
   const title = requiredString(worksheet.title, 'title');
+  const summary = requiredString(worksheet.summary, 'summary');
+  if (summary.length > 120) throw new Error('summary exceeds Printables 120-character limit');
   const license = requiredString(worksheet.license, 'license');
+  const category = requiredString(worksheet.category, 'category');
+  const modelOrigin = requiredString(worksheet.model_origin, 'model_origin');
+  if (modelOrigin !== 'Original model — I made it') throw new Error('Only an original-model release is supported');
+  if (typeof worksheet.ai_used !== 'boolean') throw new Error('ai_used must be explicitly true or false');
+  const tagEntries = worksheet.tags ?? [];
+  if (!Array.isArray(tagEntries) || !tagEntries.every(tag => typeof tag === 'string' && tag.trim())) {
+    throw new Error('tags must be a list of nonempty strings');
+  }
+  const tags = tagEntries.map(tag => String(tag).trim());
+  const invalidTags = tags.filter(tag => tag.length > 25 || !/^[a-z0-9]+$/.test(tag));
+  if (invalidTags.length) throw new Error(`Printables tags must be 1-25 lowercase ASCII letters/numbers: ${invalidTags.join(', ')}`);
   const repositoryUrl = requiredString(worksheet.github_repository_url, 'github_repository_url');
   const requestUrl = requiredString(worksheet.request_url, 'request_url');
   const description = (await readFile(readme.absolutePath, 'utf8')).trim();
@@ -101,7 +126,13 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
     catalogItemId: requiredString(manifest.catalog_item_id, 'catalog_item_id'),
     sourceSha256,
     title,
+    summary,
     license,
+    category,
+    tags,
+    modelOrigin,
+    aiUsed: worksheet.ai_used,
+    publicPublishApproved: worksheet.public_publish_approved === true,
     files: files.map(file => [file.relativePath, file.sha256]),
     preview: [preview.relativePath, preview.sha256],
   });
@@ -111,10 +142,17 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
     bundleDigest,
     catalogItemId: String(manifest.catalog_item_id),
     title,
+    summary,
     description,
     license,
+    category,
+    tags,
+    modelOrigin,
+    aiUsed: worksheet.ai_used,
+    publicPublishApproved: worksheet.public_publish_approved === true,
     files,
     preview,
+    previews,
     repositoryUrl,
     requestUrl,
   };

@@ -31,7 +31,6 @@ class SafariTikTokAutomation:
     
     def run_applescript(self, script: str) -> str:
         """Execute an AppleScript and return the result."""
-        raise RuntimeError("Legacy direct Safari TikTok automation is disabled; use the claimed TikTok service")
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],

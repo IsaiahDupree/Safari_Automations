@@ -173,7 +173,7 @@ Body: {
 SUPABASE_URL=https://ivhfuhxorppptyuofbgq.supabase.co
 SUPABASE_KEY=<from actp-worker/.env>
 CRMLITE_API_KEY=<from actp-worker/.env>
-SAFARI_AUTOMATION_WINDOW=1
+# No designated Safari automation window is required.
 ```
 
 ---

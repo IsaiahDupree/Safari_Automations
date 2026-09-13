@@ -19,7 +19,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
@@ -68,27 +68,12 @@ import {
 } from '../automation/sora-operations.js';
 import type { CommandPayload, CommandType, TelemetryEvent } from '../automation/types.js';
 
-const execFileAsync = promisify(execFile);
-
-async function requireSafariInteractivePermit(): Promise<void> {
-  const clientPath = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as {
-    requireSafariLanePermit(mode: 'interactive'): Promise<unknown>;
-  };
-  await client.requireSafariLanePermit('interactive');
-}
-
-async function withSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> {
-  const clientPath = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { runSafariForegroundInput<T>(activateOwnedTab: () => Promise<void>, performInput: () => Promise<T>): Promise<T> };
-  return client.runSafariForegroundInput(activateOwnedTab, performInput);
-}
+const execAsync = promisify(exec);
 
 const PORT = parseInt(process.env.SORA_PORT || '7070', 10);
 const WS_PORT = PORT + 1;
 const SERVICE_NAME = 'sora-automation';
 const OPEN_URL = SORA_URL;
-const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 const app = express();
 app.use(cors());
@@ -98,75 +83,11 @@ app.use(express.json());
 
 const activeCoordinators = new Map<string, TabCoordinator>();
 
-interface EnforcerStatus {
-  safari?: { root_pids?: number[] };
-  state?: { cool_until?: { safari?: number } };
-}
-
-async function readEnforcerStatus(): Promise<EnforcerStatus> {
-  const { stdout } = await execFileAsync(
-    '/usr/bin/python3',
-    [BROWSER_ENFORCER, 'status'],
-    { timeout: 10_000, encoding: 'utf8' }
-  );
-  return JSON.parse(String(stdout)) as EnforcerStatus;
-}
-
-async function focusManagedSafari(): Promise<void> {
-  await requireSafariInteractivePermit();
-  const claim = await ensureTabClaim();
-  if (!claim || claim.windowIndex !== 2 || !Number.isInteger(claim.windowId) || Number(claim.windowId) <= 0) {
-    throw new Error('Sora focus requires a stable claimed Safari agent tab in Window 2');
-  }
-  let status = await readEnforcerStatus();
-  let remaining = Math.max(
-    0,
-    Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
-  );
-  if (remaining > 0) {
-    throw new Error(`Safari is in the enforced cooling window (${remaining}s remaining)`);
-  }
-
-  if ((status.safari?.root_pids?.length || 0) !== 1) {
-    await execFileAsync(
-      '/usr/bin/python3',
-      [BROWSER_ENFORCER, 'ensure', 'safari'],
-      { timeout: 30_000, encoding: 'utf8' }
-    );
-    status = await readEnforcerStatus();
-    remaining = Math.max(
-      0,
-      Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
-    );
-    if (remaining > 0 || (status.safari?.root_pids?.length || 0) !== 1) {
-      throw new Error('Managed Safari is unavailable after enforcer ensure');
-    }
-  }
-
-  const activateScript = `
-tell application "Safari"
-  set agentWindow to first window whose id is ${claim.windowId}
-  set agentTab to tab ${claim.tabIndex} of agentWindow
-  activate
-  set current tab of agentWindow to agentTab
-  set index of agentWindow to 1
-end tell
-tell application "System Events"
-  set frontmost of process "Safari" to true
-end tell`;
-  await withSafariForegroundInput(
-    async () => {
-      await execFileAsync('/usr/bin/osascript', ['-e', activateScript], { timeout: 5000, encoding: 'utf8' });
-    },
-    async () => undefined,
-  );
-}
-
-async function ensureTabClaim(): Promise<{ windowId?: number; windowIndex: number; tabIndex: number } | null> {
+async function ensureTabClaim(): Promise<{ windowIndex: number; tabIndex: number } | null> {
   const claims = await TabCoordinator.listClaims();
   const myClaim = claims.find(c => c.service === SERVICE_NAME);
   if (myClaim) {
-    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, myClaim.windowId);
+    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex);
     return myClaim;
   }
   return null;
@@ -205,27 +126,25 @@ async function executeCommand(commandId: string): Promise<void> {
   queue.markRunning(commandId);
   emit('status.changed', { status: 'RUNNING' });
 
-  let operationCoord: TabCoordinator | null = null;
-  let operationHeartbeat: ReturnType<typeof setInterval> | null = null;
-  let operationAgentId: string | null = null;
-
   try {
     const payload: CommandPayload = cmd.payload;
 
-    if (cmd.type === 'sora.generate' || cmd.type === 'sora.generate.clean') {
-      const autoId = `sora-auto-${Date.now()}`;
-      operationAgentId = autoId;
-      operationCoord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SORA_PATTERN, OPEN_URL);
-      activeCoordinators.set(autoId, operationCoord);
-      const operationClaim = await operationCoord.beginOperation();
-      driver.setTrackedTab(
-        operationClaim.windowIndex,
-        operationClaim.tabIndex,
-        operationClaim.windowId,
-      );
-      operationHeartbeat = setInterval(() => {
-        void operationCoord?.heartbeat().catch(() => {});
-      }, 15_000);
+    // Ensure we have a Sora tab claimed
+    const claim = await ensureTabClaim();
+    if (!claim) {
+      // Try to find an existing sora.com tab or open a new one
+      const found = await driver.findTab(SORA_PATTERN);
+      if (found) {
+        driver.setTrackedTab(found.windowIndex, found.tabIndex);
+        const autoId = `sora-auto-${Date.now()}`;
+        const coord = new TabCoordinator(autoId, SERVICE_NAME, PORT, SORA_PATTERN, OPEN_URL);
+        activeCoordinators.set(autoId, coord);
+        await coord.claim(found.windowIndex, found.tabIndex);
+      } else {
+        throw new Error(
+          'No sora.com tab found. Open Safari, navigate to sora.com, and run safari-tabs-setup.sh to claim the tab.'
+        );
+      }
     }
 
     // ── sora.generate ───────────────────────────────────────────────────────
@@ -294,12 +213,6 @@ async function executeCommand(commandId: string): Promise<void> {
     queue.markFailed(commandId, message);
     broadcastEvent({ type: 'status.changed', commandId, timestamp: new Date().toISOString(), data: { status: 'FAILED', error: message } });
     logSoraCommand(queue.get(commandId)!).catch(() => {});
-  } finally {
-    if (operationHeartbeat) clearInterval(operationHeartbeat);
-    if (operationCoord) {
-      if (operationAgentId) activeCoordinators.delete(operationAgentId);
-      try { await operationCoord.endOperation(); } catch { /* drain cleanup retries on next startup */ }
-    }
   }
 }
 
@@ -327,7 +240,7 @@ app.get('/ready', async (_req: Request, res: Response) => {
   } else {
     res.status(503).json({
       ready: false,
-      reason: 'No sora.com tab claimed. Run "/Users/isaiahdupree/Documents/Software/Safari Automation/scripts/open-local-to-cloud-tabs.sh" to reuse or claim a capped shared Safari tab.',
+      reason: 'No sora.com tab claimed. Run safari-tabs-setup.sh to open and claim the Sora tab.',
     });
   }
 });
@@ -335,18 +248,11 @@ app.get('/ready', async (_req: Request, res: Response) => {
 // POST /v1/focus
 app.post('/v1/focus', async (req: Request, res: Response) => {
   const { app: targetApp = 'Safari' } = req.body as { app?: string };
-  if (targetApp !== 'Safari') {
-    res.status(400).json({
-      success: false,
-      error: 'sora-automation focus is restricted to the managed Safari singleton',
-    });
-    return;
-  }
   try {
-    await focusManagedSafari();
-    res.json({ success: true, app: 'Safari' });
+    await execAsync(`osascript -e 'tell application "${targetApp}" to activate'`, { timeout: 5000 });
+    res.json({ success: true, app: targetApp });
   } catch (err) {
-    res.status(503).json({ success: false, error: String(err) });
+    res.json({ success: false, error: String(err) });
   }
 });
 

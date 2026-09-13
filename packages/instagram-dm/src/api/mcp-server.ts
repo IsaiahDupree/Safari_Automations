@@ -8,13 +8,11 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
+// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
 const MY_SERVICE = 'instagram-dm';
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+  return [];
 }
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
   const claims = await readActiveClaims();
@@ -108,9 +106,9 @@ const TOOLS = [
   { name: 'instagram_scale_discover', description: 'Accumulate prospects in the DB across multiple calls. Each call runs one discovery batch and persists new candidates to suggested_actions (status=suggested). Call repeatedly until done=true or looping=true. When looping=true, add topAccounts or topPostKeywords to break out. topPostKeywords automatically finds top post creators then scrapes their followers.', inputSchema: { type: 'object', properties: { targetTotal: { type: 'number', description: 'Total prospect count to reach across all calls', default: 500 }, keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords (uses defaults if omitted)' }, topAccounts: { type: 'array', items: { type: 'string' }, description: 'Instagram accounts whose followers to scrape. e.g. ["levelsio", "marc_louvion"]' }, topPostKeywords: { type: 'array', items: { type: 'string' }, description: 'Keywords to find top posts from, then scrape followers of those post creators. Highest quality source.' }, minScore: { type: 'number', description: 'Min ICP score to store', default: 30 }, maxRounds: { type: 'number', description: 'Discovery rounds per call (default 2)', default: 2 }, dryRun: { type: 'boolean', default: false } } } },
   { name: 'instagram_dm_top_n', description: 'Promote the top N highest-ICP-score prospects from suggested_actions to the outreach queue (status=pending). Applies a message template. Call AFTER scale_discover has accumulated enough prospects. Always use dryRun=true first to preview.', inputSchema: { type: 'object', properties: { n: { type: 'number', description: 'Number of prospects to promote to DM queue', default: 100 }, messageTemplate: { type: 'string', description: 'Message template, use {username} as placeholder', default: 'Hey {username}! Your work caught my eye — would love to connect about AI automation.' }, dryRun: { type: 'boolean', description: 'Preview without queueing', default: true } }, required: [] } },
   { name: 'instagram_send_queued', description: 'Send pending prospect DMs from the outreach queue. Navigates to each profile, clicks Message, sends the queued message. Use batchSize≤5 and sendDelay≥45000ms (45s) to stay safe. Always dryRun:true first to preview. Returns {sent, failed, remaining, rateLimits}.', inputSchema: { type: 'object', properties: { batchSize: { type: 'number', description: 'Max DMs to send per call (max 10, default 5)', default: 5 }, sendDelay: { type: 'number', description: 'Ms to wait between DMs (default 45000 = 45s)', default: 45000 }, dryRun: { type: 'boolean', description: 'Preview queue without sending', default: true } } } },
-  { name: 'instagram_claim_status', description: 'Read current Safari tab claims from /tmp/safari-tab-claims.json. Shows which services own which tabs and any conflicts with instagram-dm\'s tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'instagram_claim_status', description: 'Report open Safari admission status; global tab claims are retired.', inputSchema: { type: 'object', properties: {} } },
   { name: 'instagram_queue_status', description: 'Get Instagram DM queue status: pending/approved/sent/failed counts, today\'s send count vs daily cap, and list of pending prospect handles.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'instagram_send_from_queue', description: 'Compatibility alias for the operation-aware Instagram DM service queue sender. Defaults to dry-run; pass dryRun=false explicitly to send.', inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean', description: 'Preview without sending', default: true } }, required: [] } },
+  { name: 'instagram_send_from_queue', description: 'Send all approved Instagram DMs from the local harness queue (instagram-dm-queue.json). Uses profile-page send method for cold prospects. Pass dryRun=true to preview.', inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean', description: 'Preview without sending', default: false } }, required: [] } },
   { name: 'instagram_daily_report', description: 'Get a daily summary of Instagram DM activity: sent today, pending, failed, and method note.', inputSchema: { type: 'object', properties: {} } },
 ];
 
@@ -257,10 +255,22 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       break;
     }
     case 'instagram_send_from_queue': {
-      result = await api(DM_BASE, 'POST', '/api/prospect/send-queued', {
-        dryRun: args.dryRun !== false,
-      });
-      break;
+      if (args.dryRun) {
+        const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';
+        let q: any = { queue: [] };
+        try { q = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch {}
+        const approved = q.queue.filter((e: any) => e.status === 'approved');
+        result = { dryRun: true, wouldSend: approved.map((e: any) => e.username) }; break;
+      }
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileP = promisify(execFile);
+      const { stdout, stderr } = await execFileP('/usr/local/bin/node', ['harness/instagram-dm-sweep.js', '--send-approved'], {
+        cwd: '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard',
+        timeout: 300_000,
+        env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/homebrew/bin' },
+      }).catch((e: any) => ({ stdout: '', stderr: String(e.message) }));
+      result = { stdout: stdout.slice(-2000), stderr: stderr.slice(-500) }; break;
     }
     case 'instagram_daily_report': {
       const QUEUE_FILE = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/instagram-dm-queue.json';

@@ -295,7 +295,6 @@ async function executeSafari(command: Command): Promise<void> {
           method: payload.method || 'GET',
           path: payload.path,
           body: payload.body,
-          acquireLock: payload.acquireLock !== false,
         };
         break;
 

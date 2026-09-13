@@ -17,8 +17,9 @@ every Safari agent must implement. Use it as the source of truth before dispatch
 
 ## 1. Tab Management Standard (apply to all agents)
 
-Every Safari agent must implement the full TabCoordinator system so the cloud brain can
-schedule non-conflicting operations across all agents.
+The former cross-process TabCoordinator registry is retired. Each Safari
+operation resolves or creates its own target, and no global admission gate may
+block another browser, agent, window, or computer.
 
 ### Reference implementation
 `packages/instagram-dm/src/automation/tab-coordinator.ts` — copy verbatim to each package.
@@ -28,10 +29,10 @@ schedule non-conflicting operations across all agents.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/tabs/claims` | GET | List all live cross-service tab claims (reads `/tmp/safari-tab-claims.json`) |
-| `/api/tabs/claim` | POST | Claim a Safari tab before an operation. Body: `{ agentId, windowIndex?, tabIndex? }` |
-| `/api/tabs/release` | POST | Release claim after operation. Body: `{ agentId }` |
-| `/api/tabs/heartbeat` | POST | Refresh 60s TTL on a claim. Body: `{ agentId }` |
+| `/api/tabs/claims` | GET | Compatibility status; returns no global claims |
+| `/api/tabs/claim` | POST | Compatibility target selection; never blocks on another agent |
+| `/api/tabs/release` | POST | Clear only process-local target metadata |
+| `/api/tabs/heartbeat` | POST | Compatibility no-op |
 | `/api/session/status` | GET | Return `{ tracked, windowIndex, tabIndex, sessionUrlPattern }` |
 | `/api/session/ensure` | POST | Find + activate the correct tab for this service |
 | `/api/session/clear` | POST | Reset stale tracked session (use after Safari restart) |

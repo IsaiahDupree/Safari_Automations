@@ -1,20 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "poll_seconds": 5,
-  "rogue_poll_seconds": 1,
-  "rogue_kill_grace_seconds": 2,
   "sustained_breach_samples": 60,
   "cooldown_seconds": 45,
-  "drain_timeout_seconds": 30,
-  "stop_grace_seconds": 12,
   "minimum_restart_interval_seconds": 600,
-  "human_presence": {
-    "poll_seconds": 5,
-    "recent_input_seconds": 60,
-    "restart_requires_idle_seconds": 300,
-    "stale_seconds": 15,
-    "human_priority": true
-  },
   "chrome": {
     "enabled": true,
     "binary": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -22,41 +11,10 @@
     "debug_port": 9222,
     "max_root_processes": 1,
     "max_tabs": 13,
-    "agent_max_tabs": 5,
-    "human_reserved_tabs": 8,
-    "max_concurrent_agents": 2,
     "max_total_processes": 24,
     "max_rss_mb": 3072,
     "max_cpu_percent": 175,
     "nice": 8,
     "renderer_process_limit": 6
-  },
-  "safari": {
-    "enabled": true,
-    "max_root_processes": 1,
-    "max_windows": 2,
-    "max_tabs": 13,
-    "agent_max_tabs": 5,
-    "human_reserved_tabs": 8,
-    "max_concurrent_agents": 4,
-    "max_total_processes": 24,
-    "max_rss_mb": 2048,
-    "max_cpu_percent": 150,
-    "nice": 8
-  },
-  "waterfox": {
-    "enabled": true,
-    "binary": "/Applications/Waterfox.app/Contents/MacOS/waterfox",
-    "canonical_profile_dir": "/Users/isaiahdupree/Documents/Software/waterfox-bridge/profiles/agent",
-    "bridge_port": 3110,
-    "max_root_processes": 1,
-    "max_tabs": 8,
-    "agent_max_tabs": 8,
-    "human_reserved_tabs": 0,
-    "max_concurrent_agents": 2,
-    "max_total_processes": 24,
-    "max_rss_mb": 3072,
-    "max_cpu_percent": 175,
-    "nice": 8
   }
 }

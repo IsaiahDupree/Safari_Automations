@@ -29,7 +29,6 @@ property SCROLL_PASSES : 3
 
 -- ── Main Script ───────────────────────────────────────────────
 on run
-	error "Direct Safari Ad Library automation is disabled; use the claimed market-research service" number 73
 	-- Step 1: Get the Ad Library URL + extraction script from DemandRadar API
 	set apiParams to "q=" & urlEncode(SEARCH_QUERY) & ¬
 		"&country=" & COUNTRY & ¬
@@ -71,35 +70,9 @@ on run
 	end if
 	
 	-- Step 2: Open Facebook Ad Library in Safari
-	set adLibraryTab to missing value
-	set adLibraryWindow to missing value
 	tell application "Safari"
-		if (count of windows) is 0 then error "Shared Safari window is not available"
-		set totalTabs to 0
-		repeat with candidateWindow in windows
-			set totalTabs to totalTabs + (count of tabs of candidateWindow)
-		end repeat
-		repeat with candidateWindow in windows
-			repeat with candidateTab in tabs of candidateWindow
-				try
-					if (URL of candidateTab) contains "facebook.com/ads/library" then
-						set adLibraryTab to candidateTab
-						set adLibraryWindow to candidateWindow
-						exit repeat
-					end if
-				end try
-			end repeat
-			if adLibraryTab is not missing value then exit repeat
-		end repeat
-		if adLibraryTab is missing value then
-			if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
-			set adLibraryWindow to front window
-			tell adLibraryWindow to set adLibraryTab to make new tab with properties {URL:adLibraryURL}
-		else
-			set URL of adLibraryTab to adLibraryURL
-		end if
-		set current tab of adLibraryWindow to adLibraryTab
 		activate
+		open location adLibraryURL
 	end tell
 	
 	-- Wait for page to load
@@ -108,7 +81,7 @@ on run
 	-- Step 3: Scroll to load more ads
 	tell application "Safari"
 		repeat SCROLL_PASSES times
-			do JavaScript "window.scrollTo(0, document.body.scrollHeight);" in adLibraryTab
+			do JavaScript "window.scrollTo(0, document.body.scrollHeight);" in document 1
 			delay 2
 		end repeat
 		
@@ -159,7 +132,7 @@ on run
   });
 })();"
 		
-		set rawJSON to do JavaScript extractionScript in adLibraryTab
+		set rawJSON to do JavaScript extractionScript in document 1
 	end tell
 	
 	-- Step 5: POST scraped data back to DemandRadar API

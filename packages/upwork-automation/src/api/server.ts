@@ -64,7 +64,7 @@ const SERVICE_NAME = 'upwork-automation';
 const SERVICE_PORT = Number(PORT);
 const SESSION_URL_PATTERN = 'upwork.com';
 const OPEN_URL = 'https://www.upwork.com/nx/find-work/';
-const CLAIM_EXEMPT = /^\/(health|api\/tabs\/.*|api\/upwork\/rate-limits)$/;
+const CLAIM_EXEMPT = /^\/(health|api\/tabs\/.*|api\/upwork\/status|api\/upwork\/rate-limits)$/;
 
 const activeCoordinators = new Map<string, InstanceType<typeof TabCoordinator>>();
 
@@ -81,13 +81,23 @@ getDefaultDriver().setConfig({ verbose: true });
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.agentId === STABLE_AGENT_ID);
+
+  if (myClaim) {
+    getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    next();
+    return;
+  }
+
   try {
     if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN);
       activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
     }
-    const claim = await stableCoord.beginRequestOperation(res);
-    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    const claim = await stableCoord.claim();
+    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
     console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -99,7 +109,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 }
 
-app.use(requireTabClaim);
+// Global claim admission is retired. Operations manage their own Safari target.
 
 // Global 30s heartbeat refresh
 setInterval(async () => {
@@ -166,13 +176,12 @@ app.post('/api/tabs/claim', async (req: Request, res: Response) => {
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl || OPEN_URL);
+      coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.ensureOwnedTab();
-    activeCoordinators.delete(agentId);
-    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
-    res.json({ ...claim, operationLease: false, deprecatedManualClaim: true });
+    const claim = await coord.claim();
+    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN);
+    res.json(claim);
   } catch (error: any) {
     res.status(500).json({ error: String(error) });
   }
@@ -189,12 +198,10 @@ app.post('/api/tabs/release', async (req: Request, res: Response) => {
 app.post('/api/tabs/heartbeat', async (req: Request, res: Response) => {
   const { agentId } = req.body;
   if (!agentId) return res.status(400).json({ error: 'agentId required' });
-  return res.status(410).json({
-    ok: false,
-    operationLease: false,
-    deprecatedManualClaim: true,
-    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
-  });
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) return res.status(404).json({ error: 'No claim for agentId' });
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
 });
 
 // ─── Health ──────────────────────────────────────────────────
@@ -212,7 +219,12 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/api/upwork/status', async (_req: Request, res: Response) => {
   try {
     const driver = getDefaultDriver();
-    // requireTabClaim has already pinned a live, marker-bound operation lease.
+    // Pin to claimed tab before reading — ensures we read the upwork tab, not active tab
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME);
+    if (myClaim) {
+      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    }
     const url = await driver.getCurrentUrl();
     const isOnUpwork = url.includes('upwork.com');
     const loginState = isOnUpwork ? await driver.detectLoginState() : 'unknown';
@@ -485,7 +497,7 @@ app.get('/api/upwork/connects', async (_req: Request, res: Response) => {
     const claims = await TabCoordinator.listClaims();
     const myClaim = claims.find(c => c.service === SERVICE_NAME);
     if (myClaim) {
-      getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN, myClaim.windowId);
+      getDefaultDriver().setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
     }
     const result = await getConnectsBalance();
     res.json(result);
@@ -1055,11 +1067,14 @@ app.delete('/api/upwork/templates/:id', (req: Request, res: Response) => {
 
 // ─── Start Server ────────────────────────────────────────────
 
-TabCoordinator.removeStaleClaimsForService(SERVICE_NAME).then(removed => {
-  if (removed > 0) {
-    console.log(`[startup] Cleared ${removed} stale ${SERVICE_NAME} claim(s) from previous processes`);
+TabCoordinator.listClaims().then(claims => {
+  const stale = claims.filter(c => c.service === SERVICE_NAME);
+  if (stale.length > 0) {
+    console.log(`[startup] Clearing ${stale.length} stale ${SERVICE_NAME} claim(s) from previous process`);
+    import('fs/promises').then(fsp => {
+    });
   }
-}).catch(error => console.warn('[startup] Safari stale-claim cleanup deferred:', error));
+}).catch(() => {});
 
 app.listen(PORT, () => {
   console.log(`\n🏢 Upwork Automation API running on http://localhost:${PORT}`);

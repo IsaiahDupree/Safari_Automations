@@ -76,9 +76,6 @@ npm run start:mcp
 Create a `.env` file in the package root:
 
 ```bash
-# Safari automation window index (default: 1)
-SAFARI_AUTOMATION_WINDOW=1
-
 # Playwright mode (optional)
 PLAYWRIGHT_ENABLED=false
 

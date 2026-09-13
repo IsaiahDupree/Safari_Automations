@@ -2,7 +2,7 @@
 
 ## Outcome
 
-The local service at `127.0.0.1:3112` provides an agent-callable boundary between the private CAD catalog and Printables. It accepts only hash-covered release bundles inside the private staging root, uses the managed Safari Window 2 lane, creates drafts before publication, and requires a second exact-artifact approval before a public listing can be submitted.
+The local service at `127.0.0.1:3112` provides an agent-callable boundary between the private CAD catalog and Printables. It accepts only hash-covered release bundles inside the private staging root, resolves or creates an independent Safari task tab, creates drafts before publication, and requires a second exact-artifact approval before a public listing can be submitted.
 
 No private Printables API is used. No browser password, cookie, account token, or CAD catalog is exposed by the service. Health is the only unauthenticated route.
 
@@ -14,14 +14,16 @@ No private Printables API is used. No browser password, cookie, account token, o
 4. Create a local Printables job through the API.
 5. Validate the bundle. This checks the staging-root boundary, blocks symlinks and traversal, verifies all SHA-256 values, and requires release metadata and a preview.
 6. Prepare the draft. This changes local state only.
-7. Execute the browser draft through the single managed Safari Window 2 tab. The executor must stop before publication and read the saved draft back.
+7. Execute the browser draft through the task-selected Safari tab. The executor must stop before publication and read the saved draft back.
 8. Review the actual draft URL, title, description, license, files, cover image, print instructions, and GitHub link.
 9. Approve that exact `bundleDigest` with the exact approval statement. Preserve the returned one-time nonce only for the immediate publish call.
 10. Publish through the API. Record the resulting Printables URL and mirror the same released files and metadata into the public GitHub repository.
 
 ## Initial activation
 
-Safari is installed and running as the managed singleton, but it presently has no visible window. Browser lifecycle changes are human-controlled. Open Safari manually, sign into `printables.com`, and leave one normal human Window 1 available. The automation coordinator will allocate or reuse its marked Window 2 tab when the lane policy permits.
+Use any available Safari window signed into `printables.com`. The automation
+may locate a matching tab across all windows or open a new tab in the front
+window; no singleton, marked window, or global lane permit is required.
 
 Generate a service token and start the API:
 

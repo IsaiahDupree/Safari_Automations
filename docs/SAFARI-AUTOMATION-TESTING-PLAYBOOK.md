@@ -385,7 +385,7 @@ done
 |---------|-----|
 | `"Safari Gateway lock"` error | Safari Gateway not running — start it first |
 | `"Twitter research is disabled"` | Add `SAFARI_RESEARCH_ENABLED=true` when starting port 3007 |
-| `"Could not acquire Safari lock"` | Another automation holds the lock — wait or call `POST http://localhost:3000/gateway/lock/force-release` |
+| `"Could not acquire Safari lock"` | Obsolete pre-open-policy build; restart the updated service. Lock endpoints are compatibility-only and always open. |
 | DM sends but `verified: false` | Message text didn't appear in DOM after send — platform may have throttled; retry |
 | Research job stuck in `running` | Check service logs; Safari may be rate-limited — poll again in 60s |
 | osascript errors | Safari must be open with the correct platform already loaded in the front tab |

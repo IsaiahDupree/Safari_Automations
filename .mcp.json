@@ -8,8 +8,7 @@
       ],
       "cwd": "/Users/isaiahdupree/Documents/Software/Safari Automation",
       "env": {
-        "MEDIUM_PORT": "3108",
-        "SAFARI_AUTOMATION_WINDOW": "2"
+        "MEDIUM_PORT": "3108"
       }
     },
     "safari-market-research": {

@@ -1,6 +1,6 @@
 /**
  * ThreadsAutoCommenter - Full Comment Automation
- * 
+ *
  * Integrates all Threads automation from:
  * - python/selectors/threads_selectors.py
  * - python/engagement/threads_engagement.py
@@ -160,14 +160,14 @@ const ENGAGEMENT_JS = {
           }
         }
       }
-      
+
       // Strategy 2: Second Reply button
       var replyBtns = document.querySelectorAll('svg[aria-label="Reply"]');
       if (replyBtns.length >= 2) {
         var btn = replyBtns[1].closest('[role="button"]') || replyBtns[1].parentElement;
         if (btn && !btn.getAttribute('aria-disabled')) { btn.click(); return 'clicked_reply'; }
       }
-      
+
       // Strategy 3: Find circular post button near composer
       var composer = null;
       var editables = document.querySelectorAll('[contenteditable="true"]');
@@ -223,10 +223,6 @@ export class ThreadsAutoCommenter {
     });
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number, urlPattern = 'threads.net', windowId?: number): void {
-    this.driver.setTrackedTab(windowIndex, tabIndex, urlPattern, windowId);
-  }
-
   private wait(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -242,7 +238,7 @@ export class ThreadsAutoCommenter {
   async findNonDuplicatePost(): Promise<{ username: string; url: string; content: string; index: number } | null> {
     for (let scroll = 0; scroll < this.config.maxScrolls; scroll++) {
       const posts = await this.findPostsToEngage(15);
-      
+
       for (const post of posts) {
         if (this.config.skipDuplicates && this.commentedUrls.has(post.url)) {
           this.log(`Skipping duplicate: @${post.username}`);
@@ -263,12 +259,16 @@ export class ThreadsAutoCommenter {
 
   async extractContext(): Promise<PostContext> {
     const context = await this.driver.getContext();
-    const currentUrl = await this.driver.getCurrentUrl();
-    
+    const { stdout: urlOut } = await import('child_process').then(cp =>
+      import('util').then(util => util.promisify(cp.exec)(
+        `osascript -e 'tell application "Safari" to get URL of current tab of front window'`
+      ))
+    );
+
     return {
       mainPost: context.mainPost,
       username: context.username,
-      postUrl: currentUrl,
+      postUrl: urlOut.trim(),
       replies: context.replies,
       likeCount: context.likeCount,
       replyCount: context.replyCount,
@@ -324,7 +324,7 @@ export class ThreadsAutoCommenter {
           return result;
         }
         this.log(`Found: @${post.username} - ${post.content.substring(0, 50)}...`);
-        
+
         // Click into the post
         await this.driver.clickPost(post.index);
         await this.wait(3000);
@@ -355,7 +355,7 @@ export class ThreadsAutoCommenter {
       // Step 4: Post comment
       this.log('Posting comment...');
       const postResult = await this.postComment(comment);
-      
+
       if (postResult.success) {
         result.commentPosted = true;
         result.commentId = postResult.commentId;

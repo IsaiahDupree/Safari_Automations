@@ -139,6 +139,10 @@ export function createPrintablesServer(options: AppOptions) {
       }
       if (action === 'approve-publish') {
         const body = await readBody(req);
+        const job = await store.get(id);
+        if (!job.release?.publicPublishApproved) {
+          throw new Error('Release is private-draft-only; public_publish_approved is false');
+        }
         const approved = await store.approve(id, String(body.bundleDigest || ''), String(body.statement || ''));
         json(res, 200, { job: publicJob(approved.job), approvalNonce: approved.approvalNonce, warning: 'The nonce is shown once and authorizes one exact publication attempt.' });
         return;
@@ -148,6 +152,7 @@ export function createPrintablesServer(options: AppOptions) {
         const job = await store.get(id);
         store.verifyApproval(job, String(body.approvalNonce || ''));
         if (!job.release) throw new Error('Job has no validated release');
+        if (!job.release.publicPublishApproved) throw new Error('Release is private-draft-only; public publication is disabled');
         const freshRelease = await validateReleaseBundle(job.requestedBundlePath, stagingRoot);
         if (freshRelease.bundleDigest !== job.release.bundleDigest) throw new Error('Release bundle changed after publication approval');
         const result = await safari.publish(job);
@@ -163,7 +168,7 @@ export function createPrintablesServer(options: AppOptions) {
       const message = error instanceof Error ? error.message : String(error);
       const status = /not found/i.test(message) ? 404
         : /SafariLanePermitError|safe Safari agent tab|Safari has no human Window 1/i.test(message) ? 503
-        : /selector contract|disabled|not yet|must be|cannot|requires|required|mismatch|changed|unsafe|unsupported|approval|only a verified/i.test(message) ? 409
+        : /selector contract|disabled|private-draft-only|not yet|must be|cannot|requires|required|mismatch|changed|unsafe|unsupported|approval|only a verified/i.test(message) ? 409
         : 500;
       json(res, status, { error: message });
     }

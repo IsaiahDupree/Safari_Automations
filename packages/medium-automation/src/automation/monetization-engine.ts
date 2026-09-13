@@ -115,10 +115,6 @@ export class MonetizationEngine {
     this.ensureDirs();
   }
 
-  setTrackedTab(windowIndex: number, tabIndex: number): void {
-    this.driver.setTrackedTab(windowIndex, tabIndex, 'medium.com');
-  }
-
   private ensureDirs(): void {
     for (const sub of ['earnings', 'seo', 'paywall', 'analytics']) {
       const dir = path.join(this.dataDir, sub);

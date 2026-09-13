@@ -27,10 +27,17 @@ export interface ValidatedRelease {
   bundleDigest: string;
   catalogItemId: string;
   title: string;
+  summary: string;
   description: string;
   license: string;
+  category: string;
+  tags: string[];
+  modelOrigin: string;
+  aiUsed: boolean;
+  publicPublishApproved: boolean;
   files: ReleaseFile[];
   preview: ReleaseFile;
+  previews: ReleaseFile[];
   repositoryUrl: string;
   requestUrl: string;
 }
@@ -57,7 +64,7 @@ export interface PublishJob {
 
 export interface SelectorContract {
   schemaVersion: number;
-  status: 'pending_live_capture' | 'verified';
+  status: 'pending_live_capture' | 'captured' | 'verified';
   capturedAt: string | null;
   verifiedAt: string | null;
   host: string;

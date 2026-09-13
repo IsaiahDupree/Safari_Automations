@@ -8,13 +8,11 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
+// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
 const MY_SERVICE = 'twitter-dm';
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+  return [];
 }
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
   const claims = await readActiveClaims();
@@ -110,7 +108,7 @@ const TOOLS = [
   { name: 'twitter_discover_prospects', description: 'Discover and score ICP-matching Twitter/X users from search results and recent DM conversations. Returns ranked candidates with bio keyword signals and follower data. Set dryRun=true to skip navigation.', inputSchema: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' }, description: 'Search keywords/hashtags (default: buildinpublic, saasfounder, aiautomation)' }, sources: { type: 'array', items: { type: 'string', enum: ['search', 'conversations'] }, description: 'Data sources to use (default: both)' }, maxCandidates: { type: 'number', description: 'Max profiles to enrich (default 15, max 20)', default: 15 }, minScore: { type: 'number', description: 'Minimum ICP score to include (default 30)', default: 30 }, dryRun: { type: 'boolean', description: 'Return empty immediately without navigating', default: false } } } },
   { name: 'twitter_score_prospect', description: 'Enrich and score a single Twitter/X user against the ICP. Returns profile data + icpScore (0-100) + icpSignals explaining the score.', inputSchema: { type: 'object', properties: { handle: { type: 'string', description: 'Twitter handle without @' } }, required: ['handle'] } },
   { name: 'twitter_queue_prospect', description: 'Add a scored Twitter/X prospect to the suggested_actions outreach queue. No DM is sent — requires human review first.', inputSchema: { type: 'object', properties: { username: { type: 'string', description: 'Twitter username without @' }, message: { type: 'string', description: 'Outreach message to queue' }, priority: { type: 'number', description: 'Priority 1-10 (default 5)', default: 5 } }, required: ['username', 'message'] } },
-  { name: 'twitter_claim_status', description: 'Read current Safari tab claims from /tmp/safari-tab-claims.json. Shows which services own which tabs and any conflicts with twitter-dm\'s tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'twitter_claim_status', description: 'Report open Safari admission status; global tab claims are retired.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }> {

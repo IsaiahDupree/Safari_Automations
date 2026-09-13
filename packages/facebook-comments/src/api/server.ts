@@ -26,9 +26,7 @@ const SERVICE_NAME = 'facebook-comments';
 const SERVICE_PORT = PORT;
 const SESSION_URL_PATTERN = 'facebook.com';
 const OPEN_URL = 'https://www.facebook.com';
-const STABLE_AGENT_ID = 'facebook-comments-stable';
 const activeCoordinators = new Map<string, TabCoordinator>();
-let stableCoord: TabCoordinator | null = null;
 
 let _driver: FacebookDriver | null = null;
 let _researcher: FacebookResearcher | null = null;
@@ -40,11 +38,6 @@ function getDriver(): FacebookDriver {
 function getResearcher(): FacebookResearcher {
   if (!_researcher) _researcher = new FacebookResearcher();
   return _researcher;
-}
-
-function pinClaim(claim: { windowId?: number; windowIndex: number; tabIndex: number }): void {
-  getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, claim.windowId);
-  getResearcher().setTrackedTab(claim.windowIndex, claim.tabIndex, claim.windowId);
 }
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
@@ -62,17 +55,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── Tab Claim Enforcement ───────────────────────────────────────────────────
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/(?:status|clear)$/;
+const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session|^\/api\/[^/]+\/status$/;
 
 async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
+
+  const claims = await TabCoordinator.listClaims();
+  const myClaim = claims.find(c => c.service === SERVICE_NAME);
+
+  if (myClaim) { next(); return; }
+
+  const autoId = `facebook-comments-auto-${Date.now()}`;
   try {
-    if (!stableCoord) {
-      stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
-      activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
-    }
-    const claim = await stableCoord.beginRequestOperation(res);
-    pinClaim(claim);
+    const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
+    activeCoordinators.set(autoId, coord);
+    const claim = await coord.claim();
     console.log(`[requireTabClaim] Auto-claimed w=${claim.windowIndex} t=${claim.tabIndex}`);
     next();
   } catch (err) {
@@ -84,7 +81,7 @@ async function requireTabClaim(req: Request, res: Response, next: NextFunction):
   }
 }
 
-app.use(requireTabClaim);
+// Global claim admission is retired. Operations manage their own Safari target.
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
@@ -100,7 +97,6 @@ app.post('/api/session/ensure', async (_req, res) => {
   const claims = await TabCoordinator.listClaims();
   const myClaim = claims.find(c => c.service === SERVICE_NAME);
   if (myClaim) {
-    pinClaim(myClaim);
     res.json({ ok: true, windowIndex: myClaim.windowIndex, tabIndex: myClaim.tabIndex, url: myClaim.tabUrl });
     return;
   }
@@ -108,9 +104,7 @@ app.post('/api/session/ensure', async (_req, res) => {
   try {
     const coord = new TabCoordinator(autoId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
     activeCoordinators.set(autoId, coord);
-    const claim = await coord.ensureOwnedTab();
-    activeCoordinators.delete(autoId);
-    pinClaim(claim);
+    const claim = await coord.claim();
     res.json({ ok: true, windowIndex: claim.windowIndex, tabIndex: claim.tabIndex, url: claim.tabUrl });
   } catch (err) {
     res.status(503).json({ ok: false, error: String(err) });
@@ -136,12 +130,10 @@ app.post('/api/tabs/claim', async (req, res) => {
   const { agentId, openUrl } = req.body ?? {};
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
   try {
-    const coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl || OPEN_URL);
+    const coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl);
     activeCoordinators.set(agentId, coord);
-    const claim = await coord.ensureOwnedTab();
-    activeCoordinators.delete(agentId);
-    pinClaim(claim);
-    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
+    const claim = await coord.claim();
+    res.json({ ok: true, claim });
   } catch (err) {
     res.status(503).json({ ok: false, error: String(err) });
   }
@@ -149,12 +141,7 @@ app.post('/api/tabs/claim', async (req, res) => {
 
 // ─── Facebook status ─────────────────────────────────────────────────────────
 app.get('/api/facebook/status', async (_req, res) => {
-  try {
-    const claim = (await TabCoordinator.listClaims()).find(c => c.service === SERVICE_NAME);
-    if (!claim) { res.status(503).json({ error: 'No Safari agent tab claim for facebook-comments' }); return; }
-    pinClaim(claim);
-    res.json(await getDriver().getStatus());
-  }
+  try { res.json(await getDriver().getStatus()); }
   catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

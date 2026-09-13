@@ -568,25 +568,19 @@ Your server receives POSTs with:
 
 ## 9. Safari Gateway
 
-### Port 3000 — Browser Lock + Session Management
+### Port 3000 — Open Browser Routing + Session Management
 
-Safari is a single-threaded resource. The Gateway ensures only one service uses it at a time.
+Safari operations use independent targets. The old lock routes remain only as
+always-open compatibility shims and never serialize unrelated agents.
 
 ```bash
-# Acquire exclusive Safari access
-curl -X POST localhost:3000/gateway/lock/acquire \
-  -d '{"holder": "my-service", "platform": "twitter", "task": "post-comment", "timeoutMs": 30000}'
-
-# Release when done
-curl -X POST localhost:3000/gateway/lock/release -d '{"holder": "my-service"}'
-
 # Check all platform login states
 curl localhost:3000/gateway/sessions
 
 # Full system dashboard
 curl localhost:3000/gateway/dashboard
 
-# Route a request through the gateway (auto-acquires lock)
+# Route a request through the gateway without global browser admission
 curl -X POST localhost:3000/gateway/route \
   -d '{"platform": "twitter", "method": "POST", "path": "/api/twitter/comments/post", "body": {...}, "acquireLock": true}'
 ```

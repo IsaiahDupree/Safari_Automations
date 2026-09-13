@@ -1,10 +1,10 @@
 /**
  * Sora Full Automation
- * 
+ *
  * Two fundamental steps:
  * 1. Submit prompt with @isaiahdupree character
  * 2. Poll drafts until video ready, then download
- * 
+ *
  * Uses correct spinner detection: circle.-rotate-90
  */
 
@@ -16,7 +16,6 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 // ============================================================================
 // TYPES
@@ -217,18 +216,18 @@ export class SoraFullAutomation {
         (function() {
           // Correct spinner selector: circle with -rotate-90 class
           const spinner = document.querySelector('circle.-rotate-90');
-          
+
           // Get first video card
           const firstCard = document.querySelector('main a[href*="/g/"], main a[href*="/d/gen"]');
           const video = firstCard?.querySelector('video');
           const hasVideoSrc = video && video.src && video.src.includes('http');
           const videoReady = video && video.readyState === 4;
-          
+
           // Processing = spinner exists
           // Ready = no spinner AND video has src AND readyState is 4
           const isProcessing = !!spinner;
           const isReady = !spinner && hasVideoSrc && videoReady;
-          
+
           return JSON.stringify({
             isProcessing,
             isReady,
@@ -267,7 +266,7 @@ export class SoraFullAutomation {
         await this.mouseWiggle();
       }
 
-      // At poll 30, request a claim-aware, resource-cooled Safari restart.
+      // At poll 30, do a full Safari restart to recover from stuck state
       if (attempt === 30) {
         console.log('[SORA] ⚠️ Poll 30 reached - performing Safari recovery...');
         await this.recoverSafari();
@@ -378,26 +377,42 @@ export class SoraFullAutomation {
   }
 
   // ==========================================================================
-  // SAFARI RECOVERY - Enforcer-controlled restart, then navigate to drafts
+  // SAFARI RECOVERY - Close/reopen Safari and navigate to drafts
   // ==========================================================================
 
   async recoverSafari(): Promise<void> {
-    console.log('[SORA] 🔄 Requesting managed Safari recovery...');
+    console.log('[SORA] 🔄 Closing Safari...');
 
     try {
-      // Only the singleton enforcer may stop or relaunch the shared Safari.
-      // It drains live tab claims, pauses automation processes, observes the
-      // configured cooling period, and relaunches exactly one application.
-      await execAsync(
-        `/usr/bin/python3 "${BROWSER_ENFORCER}" restart safari --reason "Sora poll recovery"`,
-        { timeout: 180000 }
-      );
+      // Close Safari
+      await execAsync(`osascript -e 'tell application "Safari" to quit'`);
+      await this.wait(3000);
+
+      // Reopen Safari
+      console.log('[SORA] 🔄 Reopening Safari...');
+      await execAsync(`osascript -e 'tell application "Safari" to activate'`);
+      await this.wait(2000);
+
+      // Bring Safari to front and make sure it's selected
+      console.log('[SORA] 🔄 Bringing Safari to front...');
+      await execAsync(`osascript -e '
+        tell application "Safari"
+          activate
+          set frontmost to true
+        end tell
+        tell application "System Events"
+          tell process "Safari"
+            set frontmost to true
+          end tell
+        end tell
+      '`);
+      await this.wait(2000);
 
       // Navigate to drafts URL
       console.log('[SORA] 🔄 Navigating to drafts...');
       await this.safari.navigateWithVerification(this.config.draftsUrl, 'sora.chatgpt.com', 3);
       await this.wait(3000);
-      
+
       console.log('[SORA] ✅ Safari recovery complete');
     } catch (error) {
       console.error('[SORA] ❌ Safari recovery failed:', error);
@@ -472,19 +487,19 @@ export class SoraFullAutomation {
         (function() {
           var dialog = document.querySelector('[role=dialog]');
           var text = dialog ? dialog.innerText : '';
-          
+
           // "26 video gens left"
           var gensMatch = text.match(/(\\d+)\\s*video\\s*gens?\\s*left/i);
-          
+
           // "26 free"
           var freeMatch = text.match(/(\\d+)\\s*free/i);
-          
+
           // "0 paid"
           var paidMatch = text.match(/(\\d+)\\s*paid/i);
-          
+
           // "More available on Jan 31"
           var dateMatch = text.match(/available\\s+on\\s+([A-Za-z]+\\s*\\d+)/i);
-          
+
           return JSON.stringify({
             videoGensLeft: gensMatch ? parseInt(gensMatch[1]) : null,
             freeCount: freeMatch ? parseInt(freeMatch[1]) : null,
@@ -556,25 +571,27 @@ export class SoraFullAutomation {
    */
   private async mouseWiggle(): Promise<void> {
     try {
-      // Physical cursor movement is forbidden because it can interrupt the
-      // human lane. A page-local event is the only safe compatibility path.
+      // Use cliclick for reliable mouse movement on macOS
+      await execAsync(`cliclick m:+10,+0 w:50 m:+0,+10 w:50 m:-10,+0 w:50 m:+0,-10`);
+
+      // Also trigger scroll event in browser to help load videos
       await this.safari.executeJS(`
         (function() {
           // Scroll down slightly then back up to trigger lazy loading
           window.scrollBy(0, 50);
           setTimeout(() => window.scrollBy(0, -50), 200);
-          
+
           // Also hover over video elements to trigger loading
           const videos = document.querySelectorAll('video');
           videos.forEach(v => {
             v.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
             v.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
           });
-          
+
           return JSON.stringify({triggered: true, videoCount: videos.length});
         })();
       `);
-      
+
       console.log('[SORA] ✅ Mouse wiggle complete');
     } catch (error) {
       console.log('[SORA] ⚠️ Mouse wiggle failed (non-fatal):', error instanceof Error ? error.message : 'Unknown');

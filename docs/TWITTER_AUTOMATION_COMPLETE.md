@@ -113,13 +113,10 @@ API Request (HTTP)
               └── captureScreenshot()  ← screencapture -x on failure
 ```
 
-### Safari Lock
+### Safari concurrency
 
-Both services interact with Safari independently. For concurrent operations, use the **Safari Gateway** (port 3000):
-```
-POST /gateway/lock/acquire  { holder, platform: "twitter", task, timeoutMs }
-POST /gateway/lock/release  { holder }
-```
+Both services interact with independent Safari targets. Global lock acquisition
+is retired; compatibility lock endpoints always report open.
 
 ---
 

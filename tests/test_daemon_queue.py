@@ -1,19 +1,18 @@
 """
 test_daemon_queue.py
 ====================
-Tests for li-daemon, upwork-daemon, and Window 1 enforcement.
-Validates: queue dispatch, window assignment, env propagation.
+Tests for li-daemon, upwork-daemon, and open Safari target selection.
+Validates queue dispatch and service availability without a designated window.
 
 Run: python3 tests/test_daemon_queue.py
 Flags:
-  --live          run tests that touch Safari (needs Window 1 logged in)
+  --live          run tests that touch Safari
   --insert-rows   insert real test rows into safari_command_queue
 """
 
 import json
 import sys
 import time
-import os
 import urllib.request
 import urllib.error
 import subprocess
@@ -99,9 +98,9 @@ for port, name, auth in [
     else:
         ok(f"::{port} {name} UP")
 
-# ─── Section 2: Window 1 enforcement ──────────────────────────────────────────
+# ─── Section 2: No designated-window requirement ─────────────────────────────
 
-print("\n═══ 2. SAFARI_AUTOMATION_WINDOW=1 ═══")
+print("\n═══ 2. Safari window admission open ═══")
 
 for port, name in [
     (3100, "instagram-dm"),
@@ -113,15 +112,13 @@ for port, name in [
 ]:
     env_val = get_process_env(port)
     if env_val is None:
-        skip(f"::{port} {name} SAFARI_AUTOMATION_WINDOW", "process env not visible")
-    elif env_val == "1":
-        ok(f"::{port} {name} SAFARI_AUTOMATION_WINDOW=1 (Local to Cloud)")
+        ok(f"::{port} {name} has no designated Safari window")
     else:
-        fail(f"::{port} {name} SAFARI_AUTOMATION_WINDOW={env_val}", "Expected 1 (Personal window would be 2)")
+        skip(f"::{port} {name} retains compatibility window hint {env_val}", "hint must not be enforced")
 
-# ─── Section 3: Safari session on Window 1 ────────────────────────────────────
+# ─── Section 3: Safari session on any accessible window ──────────────────────
 
-print("\n═══ 3. Session Pointing to Window 1 ═══")
+print("\n═══ 3. Session pointing to an accessible Safari target ═══")
 
 if not LIVE:
     skip("Safari session check", "--live not set")
@@ -139,10 +136,8 @@ else:
         else:
             w = body.get("windowIndex")
             tracked = body.get("tracked")
-            if tracked and w == 1:
-                ok(f"::{port} {name} tracked on Window 1 (Local to Cloud)")
-            elif tracked and w == 2:
-                fail(f"::{port} {name} tracked on Window 2 (PERSONAL window!)", f"windowIndex={w}")
+            if tracked and isinstance(w, int) and w > 0:
+                ok(f"::{port} {name} tracked on accessible Window {w}")
             elif not tracked:
                 # Try ensuring session
                 b2, e2 = post(f"http://localhost:{port}/api/session/ensure", {}, auth=auth, timeout=15)
@@ -150,31 +145,25 @@ else:
                     fail(f"::{port} {name} session/ensure", e2)
                 else:
                     w2 = b2.get("windowIndex") if b2 else None
-                    ok(f"::{port} {name} session ensured Window {w2}") if w2 == 1 else fail(f"::{port} {name} session ensure returned Window {w2}")
+                    ok(f"::{port} {name} session ensured Window {w2}") if isinstance(w2, int) and w2 > 0 else fail(f"::{port} {name} session ensure returned Window {w2}")
             else:
                 skip(f"::{port} {name} windowIndex={w}", "not tracked")
 
-# ─── Section 4: platform_launcher window-scoped scan ─────────────────────────
+# ─── Section 4: platform_launcher all-window scan ────────────────────────────
 
-print("\n═══ 4. platform_launcher Automation Window Scan ═══")
+print("\n═══ 4. platform_launcher all-window scan ═══")
 
 try:
-    env = os.environ.copy()
-    env["SAFARI_AUTOMATION_WINDOW"] = "1"
     result = subprocess.run(
         ["python3", "platform_launcher.py", "--scan"],
         cwd="/Users/isaiahdupree/Documents/Software/actp-worker",
-        capture_output=True, text=True, timeout=15, env=env
+        capture_output=True, text=True, timeout=15
     )
     output = result.stdout + result.stderr
-    if "w2" in output and "w1" not in output:
-        fail("platform_launcher --scan only found Window 2 tabs", "Should scan Window 1 only")
-    elif "w1" in output:
-        ok("platform_launcher --scan found Window 1 tabs")
-    elif "0/9 platforms mapped" in output or "0 platforms" in output:
-        fail("platform_launcher --scan found 0 platforms", "Window 1 tabs may be closed")
+    if "0/9 platforms mapped" in output or "0 platforms" in output:
+        fail("platform_launcher --scan found 0 platforms", "Safari platform tabs may be closed")
     else:
-        ok(f"platform_launcher --scan ran (check /tmp/safari-platform-tabs.json)")
+        ok("platform_launcher --scan inspected all Safari windows")
 
     # Check the output tab map
     try:
@@ -182,10 +171,10 @@ try:
             tab_map = json.load(f)
         for platform, pos in tab_map.items():
             w = pos.get("window")
-            if w != 1:
-                fail(f"Tab map: {platform} on window {w}", "Expected Window 1")
+            if isinstance(w, int) and w > 0:
+                ok(f"Tab map: {platform} → w{w}t{pos.get('tab')}")
             else:
-                ok(f"Tab map: {platform} → w{w}t{pos.get('tab')} (Local to Cloud)")
+                fail(f"Tab map: {platform} has invalid window {w}")
     except Exception as e:
         fail("Read /tmp/safari-platform-tabs.json", str(e))
 

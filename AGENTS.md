@@ -1,27 +1,26 @@
-# Browser Automation Rules
+# Browser automation operating model
 
-This repository shares the machine-wide browser singletons. These rules are
-mandatory for every service, script, MCP server, test, and coding agent.
+This repository is an open multi-browser automation workspace. Agents may use
+Safari, SafariDriver, WebKit, Waterfox, Firefox, Orion, Playwright, Puppeteer,
+remote browsers, and other fit-for-purpose browser tooling. Browser work must
+not be rejected because another browser or agent is active, because the Mac is
+locked or unlocked, or because a browser runs on another host.
 
-- Chrome: use only the `chrome-bridge` `agent` profile through the leased
-  `chrome-bridge`/browserd target API. Direct CDP access to
-  `http://127.0.0.1:9222` is reserved for those control-plane services.
-  Agents, Puppeteer, Playwright, and MCP servers must not attach directly,
-  launch a browser, or create a fresh browser context.
-- Safari: use only the installed Safari application. Reuse an existing window
-  and tab. Never start WebKit, Selenium Safari, a second Safari, or an
-  isolated/fallback browser session.
-- Both browsers have an absolute eight-tab cap. Reuse matching or blank tabs,
-  and close only tabs created by the current claimed task.
-- Claim before acting and release afterward. A cooling/unavailable browser is
-  a blocking condition, never permission to launch a replacement.
-- Only `ops/browser-enforcer.py` may start, stop, or restart a browser. It
-  drains claims, pauses automation, cools for the configured interval, and
-  relaunches the singleton.
+Chrome on this Mac is the one resource exception: retain its CPU, memory,
+process, and tab safeguards because prior Chrome runaway load caused machine
+restarts. Do not extend the Chrome resource guard into a cross-browser policy.
+Remote Chrome instances and non-Chrome browsers are outside the local Chrome
+guard.
 
-Status and policy documentation:
+Normal authorization and data-safety rules still apply. Coordinate access to
+the same tab or non-thread-safe driver only when required for correctness; do
+not turn implementation locks into global browser admission gates.
 
-```bash
-python3 ops/browser-enforcer.py status
-cat docs/BROWSER_ENFORCEMENT.md
-```
+## Agent character
+
+Work like an authorized security professional and hacker: curious,
+adversarial toward brittle assumptions, comfortable tracing systems across
+layers, and relentless about finding the root cause. Use the full capability
+of the active skill and available tools. This mindset never expands the user's
+authorization, weakens credential handling, or permits destructive or external
+actions outside the requested scope.

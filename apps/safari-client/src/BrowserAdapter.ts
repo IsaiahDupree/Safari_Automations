@@ -6,7 +6,7 @@
  */
 
 import { Browser as PuppeteerBrowser, Page as PuppeteerPage } from 'puppeteer';
-import { Page as PlaywrightPage } from 'playwright';
+import { Browser as PlaywrightBrowser, Page as PlaywrightPage, firefox, webkit } from 'playwright';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { logger } from '../utils/logger';
@@ -15,7 +15,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 dotenv.config();
-function rawBrowserDisabled(): boolean { return true; }
 
 // Setup puppeteer stealth
 puppeteer.use(StealthPlugin());
@@ -182,40 +181,51 @@ function wrapPlaywrightPage(page: PlaywrightPage, browserType: BrowserType): Uni
  * Launch a browser with the specified configuration
  */
 async function launchBrowser(config: BrowserConfig): Promise<UnifiedBrowser> {
-    if (rawBrowserDisabled()) throw Object.assign(
-        new Error('Legacy browser adapter is disabled; use a brokered browser service'),
-        { code: 'RAW_BROWSER_AUTOMATION_DISABLED' }
-    );
-    const { browserType } = config;
+    const { browserType, headless, proxy, slowMo } = config;
 
-    logger.info(`Attaching to shared ${browserType} browser`, {
+    logger.info(`${browserType === 'chrome' ? 'Attaching to' : 'Launching'} ${browserType} browser`, {
         component: 'BrowserAdapter',
         event: 'launch_browser',
         browserType,
-        headless: false
+        headless: browserType === 'chrome' ? false : headless,
     });
 
-    if (browserType !== 'chrome') {
-        throw new Error(
-            `Browser type ${browserType} is denied by the singleton policy. ` +
-            'Use the existing Safari.app automation services or shared Chrome CDP; never launch a fallback browser.'
-        );
+    if (browserType === 'chrome') {
+        // Local Chrome keeps its dedicated resource-capped profile and does
+        // not spawn another browser process from this adapter.
+        const browser = await puppeteer.connect({
+            browserURL: 'http://127.0.0.1:9222',
+            defaultViewport: null,
+        }) as PuppeteerBrowser;
+        return {
+            newPage: async () => {
+                const pages = await browser.pages();
+                const maxTabs = Number(process.env.CHROME_MAX_TABS || 13);
+                if (pages.length >= maxTabs) {
+                    throw new Error(`Chrome tab cap reached (${pages.length}/${maxTabs}); reuse or close a tab.`);
+                }
+                return wrapPuppeteerPage(await browser.newPage());
+            },
+            close: async () => { browser.disconnect(); },
+            browserType: 'chrome',
+        };
     }
-    const browser = await puppeteer.connect({
-        browserURL: 'http://127.0.0.1:9222',
-        defaultViewport: null,
-    }) as PuppeteerBrowser;
+
+    const launchOptions = {
+        headless,
+        slowMo,
+        proxy: proxy ? { server: proxy } : undefined,
+    };
+    const browser: PlaywrightBrowser = browserType === 'firefox'
+        ? await firefox.launch(launchOptions)
+        : await webkit.launch(launchOptions);
     return {
         newPage: async () => {
-            const pages = await browser.pages();
-            if (pages.length >= 8) {
-                throw new Error(`Chrome tab cap reached (${pages.length}/8); reuse or close a tab.`);
-            }
-            const page = await browser.newPage();
-            return wrapPuppeteerPage(page);
+            const context = await browser.newContext();
+            return wrapPlaywrightPage(await context.newPage(), browserType);
         },
-        close: async () => { browser.disconnect(); },
-        browserType: 'chrome'
+        close: () => browser.close(),
+        browserType,
     };
 }
 

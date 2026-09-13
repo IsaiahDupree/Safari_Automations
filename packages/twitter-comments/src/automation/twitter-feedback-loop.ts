@@ -28,42 +28,6 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
-async function requireSafariBackgroundPermit(): Promise<void> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
-  await client.requireSafariLanePermit('background');
-}
-
-const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
-const CHECKBACKS_HOLDER = 'twitter-feedback-loop';
-
-async function acquireGatewayLock(task: string, timeoutMs = 120000): Promise<boolean> {
-  try {
-    const res = await fetch(`${GATEWAY_URL}/gateway/lock/acquire`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ holder: CHECKBACKS_HOLDER, platform: 'twitter', task, timeoutMs }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) return false;
-    const data = await res.json() as { acquired?: boolean };
-    return data.acquired === true;
-  } catch {
-    return false;
-  }
-}
-
-async function releaseGatewayLock(): Promise<void> {
-  try {
-    await fetch(`${GATEWAY_URL}/gateway/lock/release`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ holder: CHECKBACKS_HOLDER }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {}
-}
-
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -194,9 +158,6 @@ export class TweetPerformanceTracker {
   }
 
   setTrackedTab(windowIndex: number, tabIndex: number): void {
-    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
-      throw new Error('TweetPerformanceTracker accepts claims only in agent Window 2');
-    }
     this._trackedWindow = windowIndex;
     this._trackedTab = tabIndex;
   }
@@ -249,19 +210,12 @@ export class TweetPerformanceTracker {
   // ─── Extract metrics from a tweet URL via Safari ───────────
 
   async extractMetrics(tweetUrl: string): Promise<TweetMetrics | null> {
-    const lockAcquired = await acquireGatewayLock(`checkback: ${tweetUrl.slice(-40)}`);
-    if (!lockAcquired) {
-      console.log(`[Tracker] Could not acquire Safari lock for ${tweetUrl} — skipping`);
-      return null;
-    }
     try {
-      await requireSafariBackgroundPermit();
-      if (this._trackedWindow !== 2 || !this._trackedTab) {
-        throw new Error('Twitter metric extraction requires a claimed Safari agent tab in Window 2');
-      }
       // Navigate to the tweet
       const safeUrl = tweetUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = `tab ${this._trackedTab} of window 2`;
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
       await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
 
       // Smart wait: poll for tweet article to render (X is slow)
@@ -272,7 +226,9 @@ export class TweetPerformanceTracker {
           const checkTmp = path.join(os.tmpdir(), `safari_check_${Date.now()}.scpt`);
           const checkJs = `(function(){ return document.querySelector('article[data-testid="tweet"]') ? 'found' : 'waiting'; })()`;
           const checkEsc = checkJs.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-          const checkTabSpec = `tab ${this._trackedTab} of window 2`;
+          const checkTabSpec = (this._trackedWindow && this._trackedTab)
+            ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+            : `current tab of front window`;
           fs.writeFileSync(checkTmp, `tell application "Safari" to do JavaScript "${checkEsc}" in ${checkTabSpec}`);
           const { stdout } = await execAsync(`osascript "${checkTmp}"`, { timeout: 5000 });
           try { fs.unlinkSync(checkTmp); } catch {}
@@ -352,7 +308,9 @@ export class TweetPerformanceTracker {
         })()
       `.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 
-      const metricsTabSpec = `tab ${this._trackedTab} of window 2`;
+      const metricsTabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
       const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${metricsTabSpec}`;
       fs.writeFileSync(tmpFile, appleScript);
 
@@ -380,8 +338,6 @@ export class TweetPerformanceTracker {
     } catch (e) {
       console.log(`[Tracker] Failed to extract metrics: ${e}`);
       return null;
-    } finally {
-      await releaseGatewayLock();
     }
   }
 
@@ -856,10 +812,6 @@ export class TwitterFeedbackLoop {
 
   getOffers(): OfferContext[] { return [...this.offers]; }
   getNiches(): NicheContext[] { return [...this.niches]; }
-
-  setTrackedTab(windowIndex: number, tabIndex: number): void {
-    this.tracker.setTrackedTab(windowIndex, tabIndex);
-  }
 
   // ─── Step 1: Register a posted tweet ───────────────────────
 

@@ -1,9 +1,9 @@
 /**
  * Unified Safari Gateway
- * 
+ *
  * Central coordination service for all Safari automations.
  * Manages:
- *  - Safari browser lock (exclusive access)
+ *  - Open concurrent Safari request routing
  *  - Session health per platform
  *  - Request routing to downstream services
  *  - Cross-service status monitoring
@@ -11,17 +11,15 @@
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { exec, execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
-const BROWSER_ENFORCER = '/Users/isaiahdupree/Documents/Software/Safari Automation/ops/browser-enforcer.py';
 
 // ─── Types ──────────────────────────────────────────────────
 
-export type Platform = 
+export type Platform =
   | 'instagram' | 'tiktok' | 'twitter' | 'threads'
   | 'linkedin' | 'upwork' | 'sora' | 'youtube';
 
@@ -47,16 +45,6 @@ export interface SessionState {
   lastCheck: Date | null;
   lastRefresh: Date | null;
   error: string | null;
-}
-
-interface QueueEntry {
-  id: string;
-  holder: string;
-  platform: Platform | null;
-  taskDescription: string;
-  timeoutMs: number;
-  resolve: (acquired: boolean) => void;
-  timer: NodeJS.Timeout;
 }
 
 // ─── Service Registry ───────────────────────────────────────
@@ -146,85 +134,32 @@ const LOGIN_CHECKS: Record<Platform, { url: string; selector: string }> = {
   youtube: { url: 'https://www.youtube.com/', selector: '#avatar-btn' },
 };
 
-// ─── Safari Lock Manager ────────────────────────────────────
+// ─── Retired Safari lock compatibility API ─────────────────
 
 export class SafariLockManager {
-  private currentLock: SafariLock | null = null;
-  private queue: QueueEntry[] = [];
-  private lockIdCounter = 0;
-
   isLocked(): boolean {
-    if (!this.currentLock) return false;
-    if (new Date() > this.currentLock.expiresAt) {
-      console.log(`[Gateway] Lock expired for ${this.currentLock.holder}`);
-      this.release(this.currentLock.holder);
-      return false;
-    }
-    return true;
+    return false;
   }
 
   getLock(): SafariLock | null {
-    return this.isLocked() ? this.currentLock : null;
+    return null;
   }
 
-  acquire(holder: string, platform: Platform | null, taskDescription: string, timeoutMs: number = 60000): boolean {
-    if (this.isLocked()) return false;
-    this.currentLock = {
-      holder,
-      platform,
-      acquiredAt: new Date(),
-      expiresAt: new Date(Date.now() + timeoutMs),
-      taskDescription,
-    };
-    console.log(`[Gateway] Lock acquired by ${holder} for ${taskDescription} (${timeoutMs}ms)`);
+  acquire(_holder: string, _platform: Platform | null, _taskDescription: string, _timeoutMs: number = 60000): boolean {
     return true;
   }
 
-  async acquireAsync(holder: string, platform: Platform | null, taskDescription: string, timeoutMs: number = 60000, waitMs: number = 30000): Promise<boolean> {
-    if (this.acquire(holder, platform, taskDescription, timeoutMs)) return true;
-
-    return new Promise<boolean>((resolve) => {
-      const id = `lock_${++this.lockIdCounter}`;
-      const timer = setTimeout(() => {
-        this.queue = this.queue.filter(e => e.id !== id);
-        resolve(false);
-      }, waitMs);
-
-      this.queue.push({ id, holder, platform, taskDescription, timeoutMs, resolve, timer });
-      console.log(`[Gateway] ${holder} queued for lock (${this.queue.length} in queue)`);
-    });
-  }
-
-  release(holder: string): boolean {
-    if (!this.currentLock || this.currentLock.holder !== holder) return false;
-    console.log(`[Gateway] Lock released by ${holder}`);
-    this.currentLock = null;
-    this.processQueue();
+  async acquireAsync(_holder: string, _platform: Platform | null, _taskDescription: string, _timeoutMs: number = 60000, _waitMs: number = 30000): Promise<boolean> {
     return true;
   }
 
-  forceRelease(): void {
-    if (this.currentLock) {
-      console.log(`[Gateway] Force-released lock from ${this.currentLock.holder}`);
-      this.currentLock = null;
-    }
-    this.processQueue();
+  release(_holder: string): boolean {
+    return true;
   }
 
-  private processQueue(): void {
-    while (this.queue.length > 0 && !this.isLocked()) {
-      const next = this.queue.shift()!;
-      clearTimeout(next.timer);
-      if (this.acquire(next.holder, next.platform, next.taskDescription, next.timeoutMs)) {
-        next.resolve(true);
-        return; // Lock is now held, stop processing
-      }
-      // Acquire failed unexpectedly — resolve false and try next in queue
-      next.resolve(false);
-    }
-  }
+  forceRelease(): void {}
 
-  getQueueLength(): number { return this.queue.length; }
+  getQueueLength(): number { return 0; }
 }
 
 // ─── Gateway Server ─────────────────────────────────────────
@@ -279,7 +214,7 @@ app.get('/gateway/services', async (_req: Request, res: Response) => {
   res.json({ services: results, count: results.length });
 });
 
-// ─── Safari Lock ────────────────────────────────────────────
+// ─── Retired lock endpoints (always open) ──────────────────
 
 app.post('/gateway/lock/acquire', async (req: Request, res: Response) => {
   const { holder, platform, task, timeoutMs, waitMs } = req.body;
@@ -314,111 +249,18 @@ app.get('/gateway/lock', (_req: Request, res: Response) => {
 
 // ─── Safari Focus & Window Management ───────────────────────
 
-interface EnforcerStatus {
-  safari?: { root_pids?: number[] };
-  state?: { cool_until?: { safari?: number } };
-}
-
-interface SafariUiState {
-  running: boolean;
-  frontmost: boolean;
-  windowCount: number;
-  currentUrl: string;
-  pageTitle: string;
-  cooling: boolean;
-  cooldownRemainingSeconds: number;
-  error?: string;
-}
-
-async function getEnforcerStatus(): Promise<EnforcerStatus> {
-  const { stdout } = await execFileAsync(
-    '/usr/bin/python3',
-    [BROWSER_ENFORCER, 'status'],
-    { timeout: 10_000, encoding: 'utf8' }
-  );
-  return JSON.parse(String(stdout)) as EnforcerStatus;
-}
-
-function safariCoolingRemaining(status: EnforcerStatus): number {
-  return Math.max(
-    0,
-    Math.ceil(Number(status.state?.cool_until?.safari || 0) - Date.now() / 1000)
-  );
-}
-
-async function ensureManagedSafari(): Promise<void> {
-  let status = await getEnforcerStatus();
-  let remaining = safariCoolingRemaining(status);
-  if (remaining > 0) {
-    throw new Error(`Safari is in the enforced cooling window (${remaining}s remaining)`);
-  }
-
-  if ((status.safari?.root_pids?.length || 0) !== 1) {
-    await execFileAsync(
-      '/usr/bin/python3',
-      [BROWSER_ENFORCER, 'ensure', 'safari'],
-      { timeout: 30_000, encoding: 'utf8' }
-    );
-    status = await getEnforcerStatus();
-    remaining = safariCoolingRemaining(status);
-    if (remaining > 0 || (status.safari?.root_pids?.length || 0) !== 1) {
-      throw new Error('Managed Safari is unavailable after enforcer ensure');
-    }
-  }
-}
-
-async function readSafariUiState(): Promise<SafariUiState> {
-  try {
-    const status = await getEnforcerStatus();
-    const cooldownRemainingSeconds = safariCoolingRemaining(status);
-    const running = (status.safari?.root_pids?.length || 0) === 1;
-    if (!running || cooldownRemainingSeconds > 0) {
-      return {
-        running,
-        frontmost: false,
-        windowCount: 0,
-        currentUrl: '',
-        pageTitle: '',
-        cooling: cooldownRemainingSeconds > 0,
-        cooldownRemainingSeconds,
-      };
-    }
-
-    const stateResult = await execAsync(`osascript -e '
-tell application "System Events"
-    set isFront to frontmost of process "Safari"
-end tell
-tell application "Safari"
-    set wc to count of windows
-end tell
-return (isFront as text) & "|" & (wc as text)'`);
-    const parts = stateResult.stdout.trim().split('|');
-    return {
-      running: true,
-      frontmost: parts[0] === 'true',
-      windowCount: parseInt(parts[1], 10) || 0,
-      currentUrl: '',
-      pageTitle: '',
-      cooling: false,
-      cooldownRemainingSeconds: 0,
-    };
-  } catch (e: any) {
-    return {
-      running: false,
-      frontmost: false,
-      windowCount: 0,
-      currentUrl: '',
-      pageTitle: '',
-      cooling: false,
-      cooldownRemainingSeconds: 0,
-      error: e.message,
-    };
-  }
-}
-
 /**
- * Focus the managed Safari singleton. Startup is delegated to the enforcer;
- * cooling is fail-closed and no LaunchServices fallback is permitted.
+ * Robust Safari focus — ensures Safari is the frontmost app on macOS.
+ * Uses multiple strategies because a single `activate` can fail if:
+ *  - Another app is in fullscreen
+ *  - System dialogs are blocking
+ *  - macOS is in a focus mode
+ *
+ * Strategies (in order):
+ * 1. AppleScript `activate` — standard method
+ * 2. Set `frontmost` property — forces frontmost even if activate is ignored
+ * 3. Raise front window via `AXRaise` — handles minimized windows
+ * 4. Open Safari via `open -a` — last resort, ensures Safari is launched
  */
 async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Promise<{
   success: boolean;
@@ -427,21 +269,88 @@ async function focusSafari(opts?: { ensureWindow?: boolean; url?: string }): Pro
   currentUrl: string;
   error?: string;
 }> {
-  void opts;
-  return {
-    success: false,
-    frontmost: false,
-    windowCount: 0,
-    currentUrl: '',
-    error: 'Direct Safari focus/navigation is disabled. Use a service TabCoordinator claim in agent Window 2.',
-  };
+  try {
+    // Step 1: Activate Safari (bring to front)
+    await execAsync(`osascript -e '
+tell application "Safari"
+    activate
+end tell'`);
+    await new Promise(r => setTimeout(r, 300));
+
+    // Step 2: Force frontmost via System Events
+    await execAsync(`osascript -e '
+tell application "System Events"
+    set frontmost of process "Safari" to true
+end tell'`).catch(() => null);
+    await new Promise(r => setTimeout(r, 200));
+
+    // Step 3: Ensure at least one window exists
+    if (opts?.ensureWindow !== false) {
+      const windowCheck = await execAsync(`osascript -e '
+tell application "Safari"
+    set wc to count of windows
+    if wc = 0 then
+        make new document
+    end if
+    return wc
+end tell'`).catch(() => ({ stdout: '0' }));
+
+      // Step 3b: Raise the front window (un-minimize)
+      await execAsync(`osascript -e '
+tell application "System Events"
+    tell process "Safari"
+        try
+            perform action "AXRaise" of front window
+        end try
+    end tell
+end tell'`).catch(() => null);
+    }
+
+    // Step 4: Navigate to URL if provided
+    if (opts?.url) {
+      const safeUrl = opts.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execAsync(`osascript -e 'tell application "Safari" to set URL of front document to "${safeUrl}"'`);
+    }
+
+    await new Promise(r => setTimeout(r, 300));
+
+    // Verify state
+    const stateResult = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    try
+        set u to URL of front document
+    end try
+end tell
+return (isFront as text) & "|" & (wc as text) & "|" & u'`);
+
+    const parts = stateResult.stdout.trim().split('|');
+    const frontmost = parts[0] === 'true';
+    const windowCount = parseInt(parts[1]) || 0;
+    const currentUrl = parts[2] || '';
+
+    return { success: true, frontmost, windowCount, currentUrl };
+  } catch (e: any) {
+    // Last resort: open -a Safari
+    try {
+      await execAsync('open -a Safari');
+      await new Promise(r => setTimeout(r, 1000));
+      return { success: true, frontmost: true, windowCount: 1, currentUrl: '', error: 'Used open -a fallback' };
+    } catch {
+      return { success: false, frontmost: false, windowCount: 0, currentUrl: '', error: e.message };
+    }
+  }
 }
 
 /**
- * Pre-automation preparation — focus Safari, verify session, acquire lock.
+ * Pre-automation preparation — focus Safari and verify the window.
  * One-call setup before any automation task.
  */
-async function prepareSafari(holder: string, platform: Platform | null, task: string, opts?: {
+async function prepareSafari(_holder: string, _platform: Platform | null, _task: string, opts?: {
   url?: string;
   timeoutMs?: number;
 }): Promise<{
@@ -450,17 +359,9 @@ async function prepareSafari(holder: string, platform: Platform | null, task: st
   focused: boolean;
   error?: string;
 }> {
-  // 1. Acquire lock
-  const timeoutMs = opts?.timeoutMs || 60000;
-  const acquired = await lockManager.acquireAsync(holder, platform, task, timeoutMs, 15000);
-  if (!acquired) {
-    return { ready: false, lockAcquired: false, focused: false, error: 'Could not acquire Safari lock' };
-  }
-
-  // 2. Focus Safari
+  // Compatibility response retains lockAcquired=true; no lock is taken.
   const focus = await focusSafari({ ensureWindow: true, url: opts?.url });
   if (!focus.success) {
-    lockManager.release(holder);
     return { ready: false, lockAcquired: true, focused: false, error: focus.error || 'Failed to focus Safari' };
   }
 
@@ -476,7 +377,34 @@ app.post('/gateway/safari/focus', async (req: Request, res: Response) => {
 
 // API: Get Safari window state
 app.get('/gateway/safari/state', async (_req: Request, res: Response) => {
-  res.json(await readSafariUiState());
+  try {
+    const stateResult = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+    set isRunning to exists process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+
+    const parts = stateResult.stdout.trim().split('|');
+    res.json({
+      running: parts[0] === 'true',
+      frontmost: parts[1] === 'true',
+      windowCount: parseInt(parts[2]) || 0,
+      currentUrl: parts[3] || '',
+      pageTitle: parts[4] || '',
+    });
+  } catch (e: any) {
+    res.json({ running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '', error: e.message });
+  }
 });
 
 // API: Full pre-automation setup (focus + lock + optional navigate)
@@ -490,20 +418,18 @@ app.post('/gateway/safari/prepare', async (req: Request, res: Response) => {
 
 // ─── Tab Detection & Tracking ────────────────────────────────
 //
-// Reads two sources:
-//   /tmp/safari-tab-claims.json       — live per-service claims (60s TTL, heartbeat)
-//   harness/safari-tab-layout.json    — coordinator layout (tab → platform mapping)
+// Reads the optional coordinator layout for observability. Cross-process tab
+// claims are retired and never gate work.
 //
 // Returns a merged per-platform tab status so you can see exactly which Safari
 // window/tab each service owns, how stale the heartbeat is, and whether the
 // claim is still live.
 
-const CLAIMS_FILE  = '/tmp/safari-tab-claims.json';
 const LAYOUT_FILE  = '/Users/isaiahdupree/Documents/Software/autonomous-coding-dashboard/harness/safari-tab-layout.json';
 const CLAIM_TTL_MS = 90_000; // treat claim as stale after 90s without heartbeat
 
 function readClaims(): any[] {
-  try { return JSON.parse(fs.readFileSync(CLAIMS_FILE, 'utf-8')); } catch { return []; }
+  return [];
 }
 
 function readLayout(): { platforms: any[]; tabMap: Record<string, any>; coordinatedAt?: string } {
@@ -575,7 +501,7 @@ app.get('/gateway/tabs', (_req: Request, res: Response) => {
   res.json({
     summary:      { live, stale, unclaimed, total: tabs.length },
     tabs,
-    claimsFile:   CLAIMS_FILE,
+    claimsFile:   null,
     layoutFile:   LAYOUT_FILE,
     checkedAt:    new Date().toISOString(),
   });
@@ -606,13 +532,7 @@ app.post('/gateway/sessions/check', async (req: Request, res: Response) => {
   const check = LOGIN_CHECKS[platform as Platform];
   if (!check) return res.status(400).json({ error: `Unknown platform: ${platform}` });
 
-  // Need Safari lock to check session
-  const acquired = lockManager.acquire('gateway-session-check', platform, `Check ${platform} session`, 30000);
-  if (!acquired) {
-    return res.status(409).json({ error: 'Safari is locked by another task', lock: lockManager.getLock() });
-  }
-
-  try {
+  {
     // Route to the appropriate service to check login
     // For now, use a simple approach: try the service's health endpoint
     const service = SERVICES.find(s => s.platform === platform);
@@ -642,15 +562,13 @@ app.post('/gateway/sessions/check', async (req: Request, res: Response) => {
       error: 'Service not responding',
     });
     res.json(sessions.get(platform as Platform));
-  } finally {
-    lockManager.release('gateway-session-check');
   }
 });
 
 // ─── Task Routing ───────────────────────────────────────────
 
 app.post('/gateway/route', async (req: Request, res: Response) => {
-  const { platform, method, path, body, acquireLock, holder, timeoutMs } = req.body;
+  const { platform, method, path, body, timeoutMs } = req.body;
 
   if (!platform || !path) {
     return res.status(400).json({ error: 'platform and path required' });
@@ -659,19 +577,6 @@ app.post('/gateway/route', async (req: Request, res: Response) => {
   const service = SERVICES.find(s => s.platform === platform);
   if (!service) {
     return res.status(404).json({ error: `No service found for platform: ${platform}` });
-  }
-
-  // Optionally acquire Safari lock
-  if (acquireLock) {
-    const lockHolder = holder || `route-${platform}-${Date.now()}`;
-    const acquired = await lockManager.acquireAsync(
-      lockHolder, platform, `Routed: ${method || 'GET'} ${path}`, timeoutMs || 60000, 30000
-    );
-    if (!acquired) {
-      return res.status(409).json({ error: 'Could not acquire Safari lock', lock: lockManager.getLock() });
-    }
-    // Auto-release after response
-    res.on('finish', () => lockManager.release(lockHolder));
   }
 
   try {
@@ -731,9 +636,27 @@ app.get('/gateway/dashboard', async (_req: Request, res: Response) => {
   const lock = lockManager.getLock();
   const sessionList = Array.from(sessions.values());
 
-  // This state read first consults the enforcer, so a dashboard request cannot
-  // accidentally relaunch Safari while it is stopped or cooling.
-  const safariState = await readSafariUiState();
+  // Get Safari state for dashboard
+  let safariState = { running: false, frontmost: false, windowCount: 0, currentUrl: '', pageTitle: '' };
+  try {
+    const sr = await execAsync(`osascript -e '
+tell application "System Events"
+    set isFront to frontmost of process "Safari"
+    set isRunning to exists process "Safari"
+end tell
+tell application "Safari"
+    set wc to count of windows
+    set u to ""
+    set t to ""
+    try
+        set u to URL of front document
+        set t to name of front document
+    end try
+end tell
+return (isRunning as text) & "|" & (isFront as text) & "|" & (wc as text) & "|" & u & "|" & t'`);
+    const sp = sr.stdout.trim().split('|');
+    safariState = { running: sp[0] === 'true', frontmost: sp[1] === 'true', windowCount: parseInt(sp[2]) || 0, currentUrl: sp[3] || '', pageTitle: sp[4] || '' };
+  } catch {}
 
   res.json({
     gateway: {

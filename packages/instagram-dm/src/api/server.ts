@@ -79,7 +79,6 @@ export async function generateAIDM(context: { recipientUsername: string; purpose
   }
 }
 import cors from 'cors';
-import { TabCoordinator } from '../automation/tab-coordinator.js';
 import {
   ChromeDriver,
   getDefaultDriver as getChromeDriver,
@@ -152,11 +151,6 @@ let rateLimits: RateLimitConfig = { ...DEFAULT_RATE_LIMITS };
 const SESSION_URL_PATTERN = 'instagram.com';
 const SERVICE_NAME = 'instagram-dm';
 const SERVICE_PORT = parseInt(process.env.PORT || '3100', 10);
-const OPEN_URL = 'https://www.instagram.com/direct/inbox/';
-const STABLE_AGENT_ID = 'instagram-dm-stable';
-const activeCoordinators = new Map<string, TabCoordinator>();
-let stableCoord: TabCoordinator | null = null;
-setInterval(async () => { try { if (stableCoord) await stableCoord.heartbeat(); } catch {} }, 30_000);
 
 // ChromeDriver singleton — replaces the old Safari driver
 function getDriver(): ChromeDriver {
@@ -164,7 +158,8 @@ function getDriver(): ChromeDriver {
 }
 
 /**
- * Ensure this service owns an Instagram tab in Safari Window 2.
+ * Ensure the Instagram Chrome tab is open and reachable.
+ * Connects to Chrome via CDP and finds/opens an instagram.com tab.
  */
 async function ensureInstagramSession(): Promise<{ ok: boolean; windowIndex: number; tabIndex: number; url: string }> {
   try {
@@ -182,21 +177,20 @@ async function ensureInstagramSession(): Promise<{ ok: boolean; windowIndex: num
  */
 async function requireActiveSession(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    stableCoord ??= new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, OPEN_URL);
-    activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
-    const claim = await stableCoord.beginRequestOperation(res);
-    getDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
+    const info = await ensureInstagramSession();
+    if (!info.ok) {
+      res.status(503).json({
+        error: 'Instagram Chrome session not found',
+        fix: 'Start Chrome with --remote-debugging-port=9222 and navigate to instagram.com, then retry',
+        session: info,
+      });
+      return;
+    }
     next();
   } catch (err) {
-    res.status(503).json({ error: 'Safari agent lane unavailable', detail: String(err) });
+    res.status(503).json({ error: `Session activation failed: ${err}` });
   }
 }
-
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/session\/status$|^\/api\/rate-limits/;
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-  void requireActiveSession(req, res, next);
-});
 
 // Rate limit check middleware
 function checkRateLimit(req: Request, res: Response, next: NextFunction): void {
@@ -240,19 +234,8 @@ function checkRateLimit(req: Request, res: Response, next: NextFunction): void {
 
 // === ROUTES ===
 
-// Health check reports the claimed Safari Window 2 lane without allocating it.
+// Health check — includes Chrome CDP connection status
 app.get('/health', async (_req, res) => {
-  const laneClaim = (await TabCoordinator.listClaims()).find(candidate => candidate.agentId === STABLE_AGENT_ID);
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    browser: 'safari',
-    lane: 'window-2',
-    claimed: !!laneClaim,
-    currentUrl: laneClaim?.tabUrl ?? '',
-    rateLimits: { messagesSentToday, messagesSentThisHour, limits: rateLimits },
-  });
-  return;
   let chromeStatus = 'unknown';
   let chromeUrl = '';
   try {
@@ -267,7 +250,7 @@ app.get('/health', async (_req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     browser: 'chrome',
-    cdpUrl: 'disabled',
+    cdpUrl: process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222',
     chromeStatus,
     chromeCurrentUrl: chromeUrl,
     rateLimits: {
@@ -344,45 +327,7 @@ app.post('/api/session/clear', (req, res) => {
 // With Chrome/Puppeteer there is no Safari window+tab claim system —
 // Chrome always has exactly one Instagram page that all operations share.
 
-// Real shared-registry handlers are registered before legacy compatibility routes.
-app.get('/api/tabs/claims', async (_req, res) => {
-  const claims = (await TabCoordinator.listClaims()).filter(candidate => candidate.service === SERVICE_NAME);
-  res.json({ claims, count: claims.length });
-});
-
-app.post('/api/tabs/claim', async (req, res) => {
-  const { agentId, openUrl } = req.body as { agentId?: string; openUrl?: string };
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  try {
-    const coord = new TabCoordinator(agentId, SERVICE_NAME, SERVICE_PORT, SESSION_URL_PATTERN, openUrl || OPEN_URL);
-    activeCoordinators.set(agentId, coord);
-    const claim = await coord.ensureOwnedTab();
-    activeCoordinators.delete(agentId);
-    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
-  } catch (error) { res.status(409).json({ ok: false, error: String(error) }); }
-});
-
-app.post('/api/tabs/release', async (req, res) => {
-  const agentId = (req.body as { agentId?: string }).agentId;
-  const coord = agentId ? activeCoordinators.get(agentId) : undefined;
-  if (!coord) { res.status(404).json({ error: 'active coordinator not found' }); return; }
-  await coord.release();
-  activeCoordinators.delete(agentId!);
-  res.json({ ok: true });
-});
-
-app.post('/api/tabs/heartbeat', async (req, res) => {
-  const agentId = (req.body as { agentId?: string }).agentId;
-  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  res.status(410).json({
-    ok: false,
-    operationLease: false,
-    deprecatedManualClaim: true,
-    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
-  });
-});
-
-// GET /api/tabs/claims — legacy compatibility route (unreachable; first handler responds)
+// GET /api/tabs/claims — returns a synthetic "claim" representing the Chrome page
 app.get('/api/tabs/claims', async (_req, res) => {
   try {
     let url = '';
@@ -1042,9 +987,9 @@ app.post('/api/prospect/discover', async (req, res) => {
     return;
   }
 
-  // Request middleware has already pinned the claimed Safari lane.
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page directly
   const discoverDriver = getDriver();
-  console.log(`[prospect-discover] Using claimed Safari Window 2 lane`);
+  console.log(`[prospect-discover] Using Chrome CDP driver for discovery`);
 
   try {
     const result = await discoverProspects(params, discoverDriver);
@@ -1299,7 +1244,8 @@ app.post('/api/prospect/send-queued', async (req, res) => {
     return;
   }
 
-  console.log(`[send-queued] Using claimed Safari Window 2 lane`);
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page
+  console.log(`[send-queued] Using Chrome CDP driver`);
   const results: { username: string; success: boolean; error?: string }[] = [];
   try {
     for (let i = 0; i < actions.length; i++) {
@@ -1507,7 +1453,8 @@ app.post('/api/prospect/run-pipeline', async (req, res) => {
 
   // requireTabClaim middleware already pinned the driver to the service claim.
   // Re-claiming here would create a conflict since the existing instagram-dm claim
-  console.log(`[run-pipeline] Using claimed Safari Window 2 lane`);
+  // Chrome/Puppeteer: no tab claim needed — ChromeDriver owns the Instagram page directly
+  console.log(`[run-pipeline] Using Chrome CDP driver`);
 
   let discovered = 0;
   let stored = 0;
@@ -1937,7 +1884,7 @@ const PORT = parseInt(process.env.PORT || '3100');
 
 export function startServer(port: number = PORT): void {
   // Chrome/Puppeteer: no stale Safari tab claims to clear
-  console.log('[startup] Instagram DM service using the claimed Safari Window 2 lane');
+  console.log(`[startup] Instagram DM service using Chrome CDP at ${process.env['INSTAGRAM_CDP_URL'] || 'http://localhost:9222'}`);
 
   app.listen(port, () => {
     console.log(`\n🚀 Instagram DM API Server (Chrome) running on http://localhost:${port}`);

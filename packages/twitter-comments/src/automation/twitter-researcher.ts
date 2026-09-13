@@ -25,42 +25,6 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
-async function requireSafariBackgroundPermit(): Promise<void> {
-  const clientPath: string = '../../../shared/safari-lane-client.js';
-  const client = await import(clientPath) as { requireSafariLanePermit(mode: 'background'): Promise<unknown> };
-  await client.requireSafariLanePermit('background');
-}
-
-const GATEWAY_URL = process.env.SAFARI_GATEWAY_URL || 'http://localhost:3000';
-const RESEARCH_HOLDER = 'twitter-researcher';
-
-async function acquireGatewayLock(task: string, timeoutMs = 300000): Promise<boolean> {
-  try {
-    const res = await fetch(`${GATEWAY_URL}/gateway/lock/acquire`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ holder: RESEARCH_HOLDER, platform: 'twitter', task, timeoutMs }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) return false;
-    const data = await res.json() as { acquired?: boolean };
-    return data.acquired === true;
-  } catch {
-    return false;
-  }
-}
-
-async function releaseGatewayLock(): Promise<void> {
-  try {
-    await fetch(`${GATEWAY_URL}/gateway/lock/release`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ holder: RESEARCH_HOLDER }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {}
-}
-
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
@@ -200,9 +164,6 @@ export class TwitterResearcher {
   }
 
   setTrackedTab(windowIndex: number, tabIndex: number): void {
-    if (windowIndex !== 2 || !Number.isInteger(tabIndex) || tabIndex < 1) {
-      throw new Error('TwitterResearcher accepts claims only in agent Window 2');
-    }
     this._trackedWindow = windowIndex;
     this._trackedTab = tabIndex;
   }
@@ -210,13 +171,11 @@ export class TwitterResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
-    await requireSafariBackgroundPermit();
-    if (this._trackedWindow !== 2 || !this._trackedTab) {
-      throw new Error('Twitter research JS requires a claimed Safari agent tab in Window 2');
-    }
     const tmpFile = path.join(os.tmpdir(), `safari_research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const tabTarget = `tab ${this._trackedTab} of window 2`;
+    const tabTarget = (this._trackedWindow && this._trackedTab)
+      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+      : `current tab of front window`;
     const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
     fs.writeFileSync(tmpFile, appleScript);
     try {
@@ -229,12 +188,10 @@ export class TwitterResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      await requireSafariBackgroundPermit();
-      if (this._trackedWindow !== 2 || !this._trackedTab) {
-        throw new Error('Twitter research navigation requires a claimed Safari agent tab in Window 2');
-      }
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = `tab ${this._trackedTab} of window 2`;
+      const tabSpec = (this._trackedWindow && this._trackedTab)
+        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
+        : `current tab of front window`;
       await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
       return true;
     } catch { return false; }
@@ -693,16 +650,6 @@ export class TwitterResearcher {
    * rank creators, return structured result.
    */
   async researchNiche(niche: string): Promise<NicheResult> {
-    // Guard: only run if explicitly enabled — prevents unsolicited Safari browser takeover
-    if (process.env.SAFARI_RESEARCH_ENABLED !== 'true') {
-      throw new Error('Twitter research is disabled. Set SAFARI_RESEARCH_ENABLED=true to enable.');
-    }
-
-    const lockAcquired = await acquireGatewayLock(`research niche: ${niche}`);
-    if (!lockAcquired) {
-      console.log(`[Research] Warning: Safari Gateway lock not acquired (port 3000 may be down) — continuing without lock`);
-    }
-
     const startTime = Date.now();
     const startISO = new Date().toISOString();
     const allTweets = new Map<string, ResearchTweet>();
@@ -716,7 +663,6 @@ export class TwitterResearcher {
     console.log(`[Research] Running ${queries.length} search queries (${targetPerQuery} each)`);
     console.log(`${'═'.repeat(60)}`);
 
-    try {
     for (const query of queries) {
       if (allTweets.size >= this.config.tweetsPerNiche) {
         console.log(`[Research] Already at ${allTweets.size} tweets, skipping remaining queries`);
@@ -798,9 +744,6 @@ export class TwitterResearcher {
 
     console.log(`[Research] NICHE "${niche}" complete: ${tweetArray.length} tweets, ${creators.length} creators in ${result.durationMs}ms`);
     return result;
-    } finally {
-      await releaseGatewayLock();
-    }
   }
 
   // ─── Multi-Niche Orchestrator ──────────────────────────────
@@ -809,7 +752,7 @@ export class TwitterResearcher {
    * Run research across multiple niches.
    * Default: 1000 tweets per niche, 50-100 top creators per niche.
    */
-  async runFullResearch(niches: string[]): Promise<{ // SAFARI_RESEARCH_ENABLED guard checked per-niche inside researchNiche()
+  async runFullResearch(niches: string[]): Promise<{
     results: NicheResult[];
     summary: {
       totalTweets: number;

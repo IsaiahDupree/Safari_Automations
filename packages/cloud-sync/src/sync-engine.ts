@@ -1,14 +1,11 @@
 /**
  * Cloud Sync Engine — orchestrates platform polling and Supabase sync
  * 
- * CRITICAL: Uses Safari Gateway lock to prevent tab-switching chaos.
- * Polls platforms SEQUENTIALLY (one at a time) with lock acquisition
- * per platform, so only one platform's Safari tab is active at a time.
+ * Platform services own independent Safari targets and may run concurrently
+ * with other agents and browser engines.
  * 
  * Architecture:
  *   - Single unified poll loop (not parallel per-type timers)
- *   - Gateway lock acquired before each platform, released after
- *   - 3s settle delay between platforms
  *   - Polling mutex prevents overlapping poll cycles
  *   - Action queue checked only between full poll cycles (no Safari needed)
  */
@@ -18,12 +15,6 @@ import { getPoller, BasePoller } from './pollers';
 import { runAnomalyDetection } from './anomaly-detector';
 import { runMentionMonitor } from './mention-monitor';
 import { writePlatformCache, CACHE_TTLS } from './cache-writer';
-
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3085';
-const LOCK_HOLDER = 'cloud-sync';
-const SETTLE_DELAY_MS = 3000; // wait between platform switches
-const LOCK_TIMEOUT_MS = 60000; // max time to hold lock per platform
-const LOCK_WAIT_MS = 30000; // max time to wait for lock
 
 interface PollResult {
   platform: Platform;
@@ -47,7 +38,6 @@ export class SyncEngine {
   private lastInvitationPoll = 0;
   private lastCommentsPoll = 0;
   private lastFollowerPoll = 0;
-  private gatewayAvailable = false;
 
   constructor(config?: Partial<SyncConfig>) {
     this.config = { ...DEFAULT_SYNC_CONFIG, ...config };
@@ -61,17 +51,12 @@ export class SyncEngine {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    console.log(`\n🔄 Cloud Sync Engine starting (SEQUENTIAL mode)...`);
+    console.log(`\n🔄 Cloud Sync Engine starting (open browser mode)...`);
     console.log(`   Platforms: ${this.config.platforms.join(', ')}`);
     console.log(`   DM poll: ${this.config.dmPollIntervalMs / 1000}s`);
     console.log(`   Notification poll: ${this.config.pollIntervalMs / 1000}s`);
     console.log(`   Stats poll: ${this.config.statsPollIntervalMs / 1000}s`);
     console.log(`   Comments poll: ${this.config.commentsPollIntervalMs / 1000}s`);
-    console.log(`   Settle delay: ${SETTLE_DELAY_MS / 1000}s between platforms`);
-
-    // Check gateway availability
-    this.gatewayAvailable = await this.isGatewayAvailable();
-    console.log(`   Safari Gateway: ${this.gatewayAvailable ? '✅ available (lock protocol ON)' : '⚠️  unavailable (sequential-only mode)'}`);
 
     // Check which services are healthy
     const healthChecks = await this.checkHealth();
@@ -86,7 +71,7 @@ export class SyncEngine {
     // Run initial poll cycle
     this.pollCycle();
 
-    console.log(`\n✅ Sync engine running (sequential, lock-aware)\n`);
+    console.log(`\n✅ Sync engine running (browser admission open)\n`);
   }
 
   async stop(): Promise<void> {
@@ -95,55 +80,7 @@ export class SyncEngine {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    // Release any held lock
-    await this.releaseLock().catch(() => {});
     console.log('🛑 Sync engine stopped');
-  }
-
-  // ─── Safari Gateway Lock ─────────────────────────────────
-  private async isGatewayAvailable(): Promise<boolean> {
-    try {
-      const r = await fetch(`${GATEWAY_URL}/health`, { signal: AbortSignal.timeout(2000) });
-      return r.ok;
-    } catch {
-      return false;
-    }
-  }
-
-  private async acquireLock(platform: Platform, task: string): Promise<boolean> {
-    if (!this.gatewayAvailable) return true; // no gateway = proceed without lock
-    try {
-      const r = await fetch(`${GATEWAY_URL}/gateway/lock/acquire`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          holder: LOCK_HOLDER,
-          platform,
-          task: `cloud-sync: ${task}`,
-          timeoutMs: LOCK_TIMEOUT_MS,
-          waitMs: LOCK_WAIT_MS,
-        }),
-        signal: AbortSignal.timeout(LOCK_WAIT_MS + 5000),
-      });
-      if (!r.ok) return false;
-      const data = await r.json() as { acquired?: boolean; success?: boolean };
-      return data.acquired !== false && data.success !== false;
-    } catch (e) {
-      console.warn(`  ⚠️  Lock acquire failed for ${platform}: ${(e as Error).message}`);
-      return false;
-    }
-  }
-
-  private async releaseLock(): Promise<void> {
-    if (!this.gatewayAvailable) return;
-    try {
-      await fetch(`${GATEWAY_URL}/gateway/lock/release`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ holder: LOCK_HOLDER }),
-        signal: AbortSignal.timeout(3000),
-      });
-    } catch {}
   }
 
   private sleep(ms: number): Promise<void> {
@@ -160,7 +97,7 @@ export class SyncEngine {
   }
 
   // ─── Unified Poll Cycle ────────────────────────────────
-  // Runs every 15s. Checks what's due, then polls SEQUENTIALLY.
+  // Runs every 15s and checks which sources are due.
   // All data types run 24/7 — pollers read from safari_platform_cache only.
   private async pollCycle(): Promise<void> {
     if (!this.running || this.polling) return;
@@ -189,7 +126,7 @@ export class SyncEngine {
     for (const [platform, poller] of this.pollers) {
       if (!this.running) break;
 
-      // Skip if service is offline (no need to acquire lock)
+      // Skip if service is offline.
       if (!(await poller.isServiceHealthy())) {
         if (dmsDue) results.push({ platform, dataType: 'dms', itemsSynced: 0, error: 'service offline', durationMs: 0 });
         if (notifsDue) results.push({ platform, dataType: 'notifications', itemsSynced: 0, error: 'service offline', durationMs: 0 });
@@ -199,7 +136,7 @@ export class SyncEngine {
         continue;
       }
 
-      // YouTube uses a pure REST API — no Safari navigation, no lock needed
+      // YouTube uses a pure REST API.
       if (platform === 'youtube') {
         const youtubeStatsDue = now - this.lastStatsPoll >= this.config.statsPollIntervalMs;
         if (youtubeStatsDue) {
@@ -209,18 +146,9 @@ export class SyncEngine {
         continue;
       }
 
-      // Acquire Safari Gateway lock for this platform
-      const lockAcquired = await this.acquireLock(platform, `polling ${platform}`);
-      if (!lockAcquired) {
-        console.log(`  ⏳ [${platform}] Could not acquire lock, skipping this cycle`);
-        results.push({ platform, dataType: 'all', itemsSynced: 0, error: 'lock busy', durationMs: 0 });
-        continue;
-      }
+      {
+        console.log(`  🌐 [${platform}] Polling independent browser target...`);
 
-      try {
-        console.log(`  🔒 [${platform}] Lock acquired, polling...`);
-
-        // Poll all due data types for this platform while we hold the lock
         if (dmsDue) {
           results.push(await this.pollDataType(platform, poller, 'dms'));
         }
@@ -239,15 +167,6 @@ export class SyncEngine {
         if (followersDue && poller.pollFollowers) {
           results.push(await this.pollDataType(platform, poller, 'followers'));
         }
-      } finally {
-        // Always release the lock
-        await this.releaseLock();
-        console.log(`  🔓 [${platform}] Lock released`);
-      }
-
-      // Settle delay between platforms — give Safari time to stabilize
-      if (this.running) {
-        await this.sleep(SETTLE_DELAY_MS);
       }
     }
 
@@ -415,33 +334,15 @@ export class SyncEngine {
     return this.lastResults.filter(r => r.dataType === 'post_stats');
   }
 
-  // Read-only actions that don't navigate Safari — skip lock acquisition
-  private readonly NO_LOCK_ACTIONS = new Set([
-    'get_crm_top', 'get_conversations', 'fetch_profile',
-    'get_tweet_metrics', 'get_upwork_jobs', 'get_research_results',
-    'get_post_metrics', 'get_profile_posts',
-  ]);
-
   // ─── Action Queue Processing ───────────────────────────
-  // Write/navigation actions acquire the Safari Gateway lock.
-  // Read-only actions (NO_LOCK_ACTIONS) run immediately without lock.
+  // Browser actions run without a global Safari admission lock.
   async processActionQueue(): Promise<void> {
     const actions = await this.db.getPendingActions(5);
     if (!actions.length) return;
 
     for (const action of actions) {
-      const needsLock = !this.NO_LOCK_ACTIONS.has(action.action_type);
-
-      if (needsLock) {
-        const lockAcquired = await this.acquireLock(action.platform as Platform, `action: ${action.action_type}`);
-        if (!lockAcquired) {
-          console.log(`  ⏳ Action ${action.id} (${action.action_type}) skipped — lock busy`);
-          continue;
-        }
-      }
-
       try {
-        console.log(`  ⚡ Executing action: ${action.action_type} on ${action.platform} ${needsLock ? '(lock)' : '(no-lock)'}`);
+        console.log(`  ⚡ Executing action: ${action.action_type} on ${action.platform}`);
         await this.db.updateAction(action.id, 'running');
         const result = await this.executeAction(action);
         await this.db.updateAction(action.id, 'completed', result);
@@ -450,11 +351,7 @@ export class SyncEngine {
         const err = (e as Error).message;
         await this.db.updateAction(action.id, 'failed', undefined, err);
         console.error(`  ❌ Action ${action.id} failed: ${err}`);
-      } finally {
-        if (needsLock) await this.releaseLock();
       }
-
-      if (needsLock) await this.sleep(SETTLE_DELAY_MS);
     }
   }
 
@@ -672,7 +569,7 @@ export class SyncEngine {
       running: this.running,
       polling: this.polling,
       platforms: this.config.platforms,
-      gatewayLock: this.gatewayAvailable,
+      gatewayLock: false,
       lastResults: this.lastResults,
     };
   }

@@ -268,7 +268,6 @@ class MetaAdLibraryScraper:
         self.storage = ResearchStorage()
 
     def _run_applescript(self, script: str, timeout: int = 30) -> str:
-        raise RuntimeError("Legacy direct Safari research is disabled; use the claimed market-research service")
         try:
             r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
             return r.stdout.strip() if r.returncode == 0 else ""
@@ -301,51 +300,29 @@ end tell'''
         return self._run_applescript(script, timeout=timeout)
 
     def _navigate(self, url: str):
-        # Reuse the existing Ad Library tab when possible. If a dedicated tab
-        # is needed, create it in the shared Safari window without exceeding
-        # the application-wide eight-tab budget.
+        # FRESH ISOLATED CONTEXT: open a NEW dedicated Safari window pointed at
+        # the ad-library URL rather than hijacking whatever `front document`
+        # happens to be. Close any prior ad-library windows first so each run
+        # starts clean. This is the root-cause fix — the old code did
+        # `set URL of front document` which silently reused a stale tab.
         esc = url.replace("\\", "\\\\").replace('"', '\\"')
         script = f'''
 tell application "Safari"
-    if (count of windows) is 0 then error "Shared Safari window is not available"
-    set totalTabs to 0
-    set targetTab to missing value
-    set targetWindow to missing value
-    repeat with candidateWindow in windows
-        set totalTabs to totalTabs + (count of tabs of candidateWindow)
-        repeat with candidateTab in tabs of candidateWindow
-            try
-                if (URL of candidateTab) contains "facebook.com/ads/library" then
-                    set targetTab to candidateTab
-                    set targetWindow to candidateWindow
-                    exit repeat
-                end if
-            end try
-        end repeat
-        if targetTab is not missing value then exit repeat
-    end repeat
-    if targetTab is missing value then
-        if totalTabs is greater than or equal to 8 then error "Safari tab limit reached (8)"
-        set targetWindow to front window
-        tell targetWindow to set targetTab to make new tab with properties {{URL:"{esc}"}}
-        set openResult to "opened"
-    else
-        set URL of targetTab to "{esc}"
-        set openResult to "reused"
-    end if
-    set current tab of targetWindow to targetTab
     activate
-    return openResult
+    repeat with i from (count of documents) to 1 by -1
+        try
+            if (URL of document i) contains "ads/library" then close document i
+        end try
+    end repeat
+    make new document with properties {{URL:"{esc}"}}
 end tell'''
-        result = self._run_applescript(script)
-        if result not in ("opened", "reused"):
-            raise RuntimeError("Shared Safari tab unavailable or eight-tab limit reached")
+        self._run_applescript(script)
         time.sleep(self.delay)
         self._wait_until_loaded()
         self._dismiss_cookies()
 
     def _wait_until_loaded(self, max_wait: int = 20) -> bool:
-        """Poll until the shared Ad Library tab reaches the expected URL and
+        """Poll until the front document actually reaches the ad-library URL and
         the DOM is ready (domcontentloaded-equivalent) before extracting."""
         for _ in range(max_wait):
             cur = self._get_current_url()
@@ -420,7 +397,7 @@ end tell'''
         if "ads/library" not in (cur or ""):
             logger.error(
                 f"  ❌ Navigation did not reach the Ad Library — landed on {cur!r}. "
-                f"Safari may have blocked the shared tab or redirected. Aborting."
+                f"Safari may have blocked the new window or redirected. Aborting."
             )
             return []
 

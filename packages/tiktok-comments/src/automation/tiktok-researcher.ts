@@ -126,10 +126,6 @@ export class TikTokResearcher {
 
   private _driver = new TikTokDriver();
 
-  setTrackedTab(windowIndex: number, tabIndex: number, windowId?: number): void {
-    this._driver.setTrackedTab(windowIndex, tabIndex, 'tiktok.com', windowId);
-  }
-
   private async navigate(url: string): Promise<boolean> {
     return this._driver.navigateToPost(url);
   }

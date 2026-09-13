@@ -10,13 +10,11 @@ import { ThreadsAICommentGenerator } from '../automation/ai-comment-generator.js
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
+// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
 const MY_SERVICE = 'threads-comments';
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try { const raw = await fs.readFile(CLAIMS_FILE, 'utf-8'); const all: TabClaim[] = JSON.parse(raw); const now = Date.now(); return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS); } catch { return []; }
+  return [];
 }
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
   const claims = await readActiveClaims();

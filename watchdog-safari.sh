@@ -1,12 +1,9 @@
 #!/bin/zsh -l
-# watchdog-safari.sh — auto-restart the Safari/Chrome automation fleet.
+# watchdog-safari.sh — supervise the Safari automation HTTP services.
 #
-# Responsibilities (in order every cycle):
-#   1. Keep the ONE shared logged-in Chrome ("agent" profile) alive on :9222.
-#      Every platform service drives THIS browser via its own tab — if it dies,
-#      the whole fleet is blind, so it is checked first.
-#   2. Keep each platform HTTP service alive on its port.
-#   3. Keep the ACTP worker alive on :8090.
+# Responsibilities: keep each platform HTTP service and the ACTP worker alive.
+# Browser lifecycle, browser choice, tab allocation, and user-session state are
+# intentionally outside this service watchdog.
 #
 # Failure modes handled explicitly:
 #   - Wiped node_modules  -> a service log showing MODULE_NOT_FOUND triggers a
@@ -22,10 +19,6 @@ ACTP_DIR="/Users/isaiahdupree/Documents/Software/actp-worker"
 ACTP_PID_FILE="/tmp/actp-cloud-server.pid"
 ACTP_START_FILE="/tmp/actp-cloud-server.started"
 ACTP_START_GRACE_SECONDS=90
-
-# -- Shared logged-in browser (chrome-bridge "agent" profile) -----------------
-CDP_PORT=9222
-BROWSER_ENFORCER="$SAFARI_DIR/ops/browser-enforcer.py"
 
 # -- Single-instance guard: only one watchdog may run at a time ---------------
 LOCK="/tmp/safari-watchdog.lock"
@@ -61,16 +54,6 @@ EXTRA_ENV[3108]="MEDIUM_PORT=3108"
 EXTRA_ENV[3107]="UPWORK_PORT=3107"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
-
-# -- Passive-pause coordination (ops/safari-passive.py) -----------------------
-# During an ACTIVE Safari automation (ASC App Privacy, DM send, …), passive
-# data-gathering services are paused so they can't hijack the shared Safari tab.
-# While paused, this watchdog skips restarting the passive ports; safari-passive
-# .py's guardian restores them (launchd + ports) after the 30-min cooldown.
-# Fail-open: if the check errors, we treat it as NOT paused (fleet stays healthy).
-PASSIVE_PAUSE_PORTS=" 3005 3006 3007 3004 3008 3106 3107 7070 3108 "
-passive_paused() { python3 "$SAFARI_DIR/ops/safari-passive.py" is-paused >/dev/null 2>&1; }
-is_passive_port() { [[ "$PASSIVE_PAUSE_PORTS" == *" $1 "* ]]; }
 
 # Launch a service space-safely. The repo path contains a space ("Safari
 # Automation"), so we must NOT build the command via eval/word-splitting — use
@@ -110,7 +93,7 @@ launch_actp_worker() {
   log ":8090 STARTING actp cloud_server (pid $pid)"
 }
 
-# -- Load .env so services inherit the shared-browser CDP config ---------------
+# -- Load service environment --------------------------------------------------
 if [ -f "$SAFARI_DIR/.env" ]; then
   set -a
   source "$SAFARI_DIR/.env"
@@ -136,38 +119,12 @@ maybe_self_heal() {
   fi
 }
 
-# -- Keep the shared logged-in Chrome alive on :9222 --------------------------
-ensure_agent_chrome() {
-  if curl -s --max-time 3 "http://localhost:$CDP_PORT/json/version" >/dev/null 2>&1; then
-    return 0
-  fi
-  log ":$CDP_PORT (shared agent Chrome) DOWN -- requesting canonical singleton"
-  python3 "$BROWSER_ENFORCER" ensure chrome >>"$LOG_DIR/agent-chrome.log" 2>&1
-  for i in $(seq 1 20); do
-    sleep 1
-    if curl -s --max-time 2 "http://localhost:$CDP_PORT/json/version" >/dev/null 2>&1; then
-      log ":$CDP_PORT RESTORED (shared agent Chrome)"
-      return 0
-    fi
-  done
-  log ":$CDP_PORT FAILED to relaunch -- services cannot drive Chrome (check $LOG_DIR/agent-chrome.log)"
-}
-
-log "Safari watchdog started (shared browser :$CDP_PORT, actp :8090) SAFARI_AUTOMATION_WINDOW=${SAFARI_AUTOMATION_WINDOW:-1} TSX=$( [ -x "$TSX_LOCAL" ] && echo local || echo npx )"
+log "Safari service watchdog started (actp :8090) TSX=$( [ -x "$TSX_LOCAL" ] && echo local || echo npx )"
 
 while true; do
-  # 0) shared logged-in browser FIRST -- everything else depends on it
-  # Browser lifecycle belongs exclusively to the global enforcer. This service
-  # watchdog must never make a second availability or relaunch decision.
-  # ensure_agent_chrome
-
-  # 1) platform HTTP services
-  # Check the passive-pause flag ONCE per cycle (cheap) — skip passive restarts while paused.
-  if passive_paused; then PASSIVE_PAUSED=1; else PASSIVE_PAUSED=0; fi
+  # 1) platform HTTP services. Every service remains independently available;
+  # one automation job never pauses unrelated browser work.
   for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do
-    if [ "$PASSIVE_PAUSED" = 1 ] && is_passive_port "$port"; then
-      continue   # passive service intentionally paused for an active Safari automation
-    fi
     result=$(curl -s --max-time 3 "http://localhost:$port/health" 2>/dev/null)
     if [ -z "$result" ]; then
       pkg="${SERVICES[$port]}"

@@ -122,8 +122,8 @@ node twitter-research-agent.js --dry-run --topics "AI agents"
 ## Key Constraints
 
 - Uses real Safari browser automation (no mocks)
-- Uses existing Safari tab claimed by twitter-dm or twitter-comments service
-- Runs topics sequentially, never in parallel (one Safari instance)
+- Resolves or creates an independent Safari target without a global claim
+- May run alongside other browser agents; sequence only when this worker's own data flow requires it
 - All output files are real (no stubs)
 - Never auto-sends to Telegram without explicit confirmation (use --dry-run for testing)
 

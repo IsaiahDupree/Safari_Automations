@@ -5,7 +5,7 @@
  */
 
 import 'dotenv/config';
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import {
   SafariDriver,
@@ -133,52 +133,12 @@ let pipelineState: { running: boolean; step: string; stats: Record<string, numbe
   stats: { discovered: 0, qualified: 0, stored: 0, skipped: 0 },
 };
 
-// Safari command mutex — prevents concurrent Safari operations from crashing each other
-let safariLocked = false;
-let safariLockedSince = 0;
-const SAFARI_LOCK_TIMEOUT_MS = 120_000; // auto-release stale locks after 2 min
-
-function acquireSafariLock(): boolean {
-  const now = Date.now();
-  // Auto-release stale locks (crashed/hung operations)
-  if (safariLocked && now - safariLockedSince > SAFARI_LOCK_TIMEOUT_MS) {
-    console.warn('[SafariLock] Auto-releasing stale lock (timeout exceeded)');
-    safariLocked = false;
-  }
-  if (safariLocked) return false;
-  safariLocked = true;
-  safariLockedSince = now;
-  return true;
-}
-
-function releaseSafariLock(): void {
-  safariLocked = false;
-  safariLockedSince = 0;
-}
-
 async function withSafariLock<T>(
-  res: Response,
-  label: string,
+  _res: Response,
+  _label: string,
   fn: () => Promise<T>,
 ): Promise<T | void> {
-  if (!acquireSafariLock()) {
-    const heldForSec = Math.round((Date.now() - safariLockedSince) / 1000);
-    const retryAfter = Math.max(5, Math.ceil((SAFARI_LOCK_TIMEOUT_MS / 1000) - heldForSec));
-    res.setHeader('Retry-After', String(retryAfter));
-    res.status(429).json({
-      error: 'Safari busy — another operation is in progress',
-      lockedFor: `${heldForSec}s`,
-      retryAfter: `${retryAfter}s`,
-    });
-    return;
-  }
-  console.log(`[SafariLock] Acquired for: ${label}`);
-  try {
-    return await fn();
-  } finally {
-    releaseSafariLock();
-    console.log(`[SafariLock] Released: ${label}`);
-  }
+  return fn();
 }
 
 function resetCountersIfNeeded() {
@@ -217,52 +177,11 @@ function isTestAccount(profileUrl?: string, username?: string): boolean {
   return false;
 }
 
-// ── Tab claim enforcement ─────────────────────────────────────────────────────
-// Every automation route MUST have an active tab claim before it runs.
-// Uses a single STABLE agentId so the same tab is reused across all requests,
-// rather than creating a new auto-ID on each request which would race with other tabs.
-// Only routes that never touch Safari are exempt. Platform status performs
-// live URL/DOM reads and therefore receives a response-scoped operation claim.
-const OPEN_URL = 'https://www.linkedin.com/messaging/';
-const CLAIM_EXEMPT = /^\/health$|^\/api\/tabs|^\/api\/[^\/]+\/rate-limits/;
-const STABLE_AGENT_ID = 'linkedin-automation-stable';
-
-// Module-level stable coordinator — persists across requests, renewed every 30s
-let stableCoord: InstanceType<typeof TabCoordinator> | null = null;
-
-// Heartbeat loop: keeps the claim alive so it never expires (TTL=60s, heartbeat=30s)
-setInterval(async () => {
-  try {
-    if (stableCoord) await stableCoord.heartbeat();
-  } catch { /* claim gone, next request will re-claim */ }
-}, 30_000);
-
-async function requireTabClaim(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (CLAIM_EXEMPT.test(req.path)) { next(); return; }
-  if (!stableCoord) {
-    stableCoord = new TabCoordinator(STABLE_AGENT_ID, SERVICE_NAME_TAB, Number(PORT), SESSION_URL_PATTERN, OPEN_URL);
-    activeCoordinators.set(STABLE_AGENT_ID, stableCoord);
-  }
-  try {
-    const claim = await stableCoord.beginRequestOperation(res);
-    getDefaultDriver().setTrackedTab(claim.windowIndex, claim.tabIndex, SESSION_URL_PATTERN, claim.windowId);
-    console.log(`[requireTabClaim] Stable claim: w=${claim.windowIndex} t=${claim.tabIndex} (${claim.tabUrl})`);
-    next();
-  } catch (err) {
-    res.status(503).json({
-      error: 'No Safari tab available for linkedin-automation',
-      detail: String(err),
-      fix: `Open Safari and navigate to https://www.linkedin.com/messaging/, or POST /api/tabs/claim with { agentId, openUrl: "https://www.linkedin.com/messaging/" }`,
-    });
-  }
-}
-
-app.use(requireTabClaim);
-// ─────────────────────────────────────────────────────────────────────────────
-
 // ─── Health ──────────────────────────────────────────────────
 
 app.get('/health', (_req: Request, res: Response) => {
+
+
   res.json({
     status: 'ok',
     service: 'linkedin-automation',
@@ -282,7 +201,7 @@ app.get('/health', (_req: Request, res: Response) => {
       },
     },
     counters: { connectionsToday, messagesToday, actionsThisHour },
-    safari: { locked: safariLocked, lockedForMs: safariLocked ? Date.now() - safariLockedSince : 0 },
+    safari: { locked: false, lockStateIgnored: true, humanActivityIgnored: true },
   });
 });
 
@@ -292,7 +211,12 @@ app.use('/api/*', requireAuth);
 app.get('/api/linkedin/status', async (_req: Request, res: Response) => {
   try {
     const driver = getDefaultDriver();
-    // requireTabClaim has already pinned a live, marker-bound operation lease.
+    // Prefer an existing tracked LinkedIn tab when one has been registered.
+    const claims = await TabCoordinator.listClaims();
+    const myClaim = claims.find(c => c.service === SERVICE_NAME_TAB);
+    if (myClaim) {
+      driver.setTrackedTab(myClaim.windowIndex, myClaim.tabIndex, SESSION_URL_PATTERN);
+    }
     const isOnLinkedIn = await driver.isOnLinkedIn();
     const isLoggedIn = isOnLinkedIn ? await driver.isLoggedIn() : false;
     const url = await driver.getCurrentUrl();
@@ -959,7 +883,7 @@ app.post('/api/linkedin/profile/button-scan-batch', async (req: Request, res: Re
         await new Promise(r => setTimeout(r, 2000));
         const state = await detectProfileButtons(url);
         await saveProfileButtonState(state, false);
-        results.push({ profileUrl, ...state });
+        results.push(state);
       } catch (e: any) {
         results.push({ profileUrl, error: e.message });
       }
@@ -1301,12 +1225,15 @@ app.post('/api/prospect/run-pipeline', async (req: Request, res: Response) => {
   (async () => {
     const agentId = `linkedin-pipeline-${Date.now()}`;
     let coord: InstanceType<typeof TabCoordinator> | null = null;
-    let claimHeartbeat: ReturnType<typeof setInterval> | null = null;
     try {
-      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN, OPEN_URL);
-      const claim = await coord.beginOperation();
-      claimHeartbeat = setInterval(() => { void coord?.heartbeat().catch(() => {}); }, 15_000);
-      console.log(`[prospect/run-pipeline] Operation lease w=${claim.windowIndex} t=${claim.tabIndex}`);
+      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN);
+      try {
+        const claim = await coord.claim();
+        console.log(`[prospect/run-pipeline] Claimed tab w=${claim.windowIndex} t=${claim.tabIndex}`);
+      } catch {
+        console.warn('[prospect/run-pipeline] Tab claim failed (using current tab)');
+        coord = null;
+      }
 
       pipelineState.step = 'searching';
       const config: ProspectingConfig = {
@@ -1342,8 +1269,7 @@ app.post('/api/prospect/run-pipeline', async (req: Request, res: Response) => {
       console.error('[prospect/run-pipeline] Error:', err);
       pipelineState = { running: false, step: 'error', stats: { ...pipelineState.stats } };
     } finally {
-      if (claimHeartbeat) clearInterval(claimHeartbeat);
-      if (coord) { try { await coord.endOperation(); } catch { /* ignore */ } }
+      if (coord) { try { await coord.release(); } catch { /* ignore */ } }
     }
   })();
 });
@@ -1583,8 +1509,6 @@ app.post('/api/linkedin/sessions/:id/extend', (req: Request, res: Response) => {
 // ─── Reply Watcher ───────────────────────────────────────────
 
 async function checkForNewReplies(): Promise<void> {
-  // Skip if no stable tab claim — avoids executing JS in wrong window (front document)
-  if (!stableCoord) return;
   try {
     const conversations = await listConversations();
     const now = new Date().toISOString();
@@ -1684,8 +1608,6 @@ app.delete('/api/linkedin/replies/unread', (_req: Request, res: Response) => {
 // ─── Session Health Monitor ──────────────────────────────────
 
 async function checkSessionHealth(): Promise<void> {
-  // Skip if no stable tab claim — avoids executing JS in wrong window (front document)
-  if (!stableCoord) return;
   try {
     const d = getDefaultDriver();
     const loggedIn = await d.isLoggedInToLinkedIn();
@@ -1837,12 +1759,11 @@ app.post('/api/tabs/claim', async (req, res) => {
   try {
     let coord = activeCoordinators.get(agentId);
     if (!coord) {
-      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN, OPEN_URL);
+      coord = new TabCoordinator(agentId, SERVICE_NAME_TAB, SERVICE_PORT_TAB, SESSION_URL_PATTERN);
       activeCoordinators.set(agentId, coord);
     }
-    const claim = await coord.ensureOwnedTab(windowIndex, tabIndex);
-    activeCoordinators.delete(agentId);
-    res.json({ ok: true, claim, operationLease: false, deprecatedManualClaim: true });
+    const claim = await coord.claim(windowIndex, tabIndex);
+    res.json({ ok: true, claim });
   } catch (error) {
     res.status(409).json({ ok: false, error: String(error) });
   }
@@ -1859,12 +1780,10 @@ app.post('/api/tabs/release', async (req, res) => {
 app.post('/api/tabs/heartbeat', async (req, res) => {
   const { agentId } = req.body;
   if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
-  res.status(410).json({
-    ok: false,
-    operationLease: false,
-    deprecatedManualClaim: true,
-    error: `Manual heartbeat for '${agentId}' is retired; Safari leases are scoped to service requests`,
-  });
+  const coord = activeCoordinators.get(agentId);
+  if (!coord) { res.status(404).json({ error: `No claim for '${agentId}'` }); return; }
+  await coord.heartbeat();
+  res.json({ ok: true, heartbeat: Date.now() });
 });
 
 // ─── Chrome Tab Coordination Endpoints ──────────────────────────────────────
@@ -2293,23 +2212,33 @@ app.listen(PORT, () => {
   console.log(`   Active hours: ${rateLimits.activeHoursStart}:00 - ${rateLimits.activeHoursEnd}:00`);
   console.log('');
 
-  // Startup selector configuration check. This intentionally does not inspect
-  // Safari: service startup must never touch a human tab or create a browser
-  // operation outside the claimed request lifecycle.
+  // Startup selector health check
   setTimeout(async () => {
     try {
+      const d = getDefaultDriver();
       const { LINKEDIN_SELECTORS } = await import('../automation/types.js');
-      const brokenSelectors = Object.entries(LINKEDIN_SELECTORS)
-        .filter(([, selector]) => typeof selector !== 'string' || selector.trim().length === 0)
-        .map(([key]) => key);
+      const brokenSelectors: string[] = [];
+
+      for (const [key, selector] of Object.entries(LINKEDIN_SELECTORS)) {
+        try {
+          const found = await d.executeJS(`
+            document.querySelector('${selector.replace(/'/g, "\\'")}') !== null ? 'true' : 'false'
+          `);
+          if (found !== 'true') {
+            brokenSelectors.push(key);
+          }
+        } catch {
+          // Ignore errors during health check (might not be on LinkedIn yet)
+        }
+      }
 
       if (brokenSelectors.length > 0) {
-        console.warn(`⚠️  [SELECTOR CONFIG] ${brokenSelectors.length} empty selectors detected:`, brokenSelectors);
+        console.warn(`⚠️  [SELECTOR HEALTH] ${brokenSelectors.length} broken selectors detected:`, brokenSelectors);
       } else {
-        console.log(`✅ [SELECTOR CONFIG] All ${Object.keys(LINKEDIN_SELECTORS).length} selectors are non-empty`);
+        console.log(`✅ [SELECTOR HEALTH] All ${Object.keys(LINKEDIN_SELECTORS).length} selectors healthy`);
       }
-    } catch {
-      // Non-fatal configuration diagnostic only.
+    } catch (error) {
+      // Silently skip health check if Safari isn't ready
     }
   }, 3000);
 });

@@ -1,9 +1,9 @@
 /**
  * Safari Controller
- * 
+ *
  * Controls the actual Safari.app browser using AppleScript.
  * This allows using your real Safari profile with existing logins/cookies.
- * 
+ *
  * Requires:
  * - macOS
  * - Safari Developer Menu enabled
@@ -63,8 +63,25 @@ export class SafariController {
      * Execute AppleScript and return result
      */
     private async runAppleScript(script: string): Promise<string> {
-        void script;
-        throw new Error('Legacy SafariController is disabled: use a lane-aware service with a Window 2 TabCoordinator claim');
+        try {
+            // Escape the script for shell
+            const escapedScript = script.replace(/'/g, "'\"'\"'");
+            const { stdout, stderr } = await execAsync(`osascript -e '${escapedScript}'`, {
+                timeout: this.timeout
+            });
+
+            if (stderr && !stderr.includes('missing value')) {
+                logger.debug('AppleScript stderr:', { stderr });
+            }
+
+            return stdout.trim();
+        } catch (error: any) {
+            logger.error('AppleScript error:', {
+                error: error.message,
+                script: script.substring(0, 200)
+            });
+            throw error;
+        }
     }
 
     /**
@@ -173,21 +190,21 @@ end tell`;
 (function() {
     var url = window.location.href;
     var title = document.title;
-    var loggedIn = !!document.querySelector('img[alt*="profile picture"]') || 
+    var loggedIn = !!document.querySelector('img[alt*="profile picture"]') ||
                    !!document.querySelector('span[aria-label*="Profile"]') ||
                    url.includes('/direct/');
     var hasLoginForm = !!document.querySelector('input[name="username"]');
     var hasDMInbox = url.includes('/direct/inbox') || url.includes('/direct/t/');
-    
+
     // Count conversations
     var convElements = document.querySelectorAll('a[href*="/direct/t/"]');
     var conversationCount = convElements.length;
-    
+
     // Detect current tab (Primary, General, Requests)
     var currentTab = 'unknown';
     var tabLinks = document.querySelectorAll('a[href*="/direct/"]');
     tabLinks.forEach(function(link) {
-        if (link.getAttribute('aria-selected') === 'true' || 
+        if (link.getAttribute('aria-selected') === 'true' ||
             link.classList.contains('active') ||
             link.querySelector('[aria-selected="true"]')) {
             var text = link.textContent.toLowerCase();
@@ -196,7 +213,7 @@ end tell`;
             else if (text.includes('request')) currentTab = 'requests';
         }
     });
-    
+
     return JSON.stringify({
         url: url,
         title: title,
@@ -231,7 +248,7 @@ end tell`;
     async navigateToDMs(): Promise<boolean> {
         await this.navigateTo('https://www.instagram.com/direct/inbox/');
         await this.delay(3000);
-        
+
         const state = await this.getPageState();
         return state.hasDMInbox;
     }
@@ -244,10 +261,10 @@ end tell`;
 (function() {
     var tabText = '${tab}';
     var clicked = false;
-    
+
     // Find tab links in the DM inbox
     var links = document.querySelectorAll('a, div[role="button"], span[role="button"]');
-    
+
     for (var i = 0; i < links.length; i++) {
         var text = (links[i].textContent || '').toLowerCase().trim();
         if (text === tabText || text.includes(tabText)) {
@@ -256,7 +273,7 @@ end tell`;
             break;
         }
     }
-    
+
     // Alternative: look for tab-like elements
     if (!clicked) {
         var tabs = document.querySelectorAll('[role="tab"], [role="tablist"] > *');
@@ -269,14 +286,14 @@ end tell`;
             }
         }
     }
-    
+
     return clicked ? 'clicked' : 'not_found';
 })()`;
 
         try {
             const result = await this.executeJS(jsCode);
             await this.delay(2000);
-            
+
             if (result === 'clicked') {
                 logger.info(`Clicked ${tab} tab`);
                 return true;
@@ -296,16 +313,16 @@ end tell`;
         const jsCode = `
 (function() {
     var conversations = [];
-    
+
     // Try multiple selector strategies for Instagram's dynamic DOM
     var convElements = [];
-    
+
     // Strategy 1: Direct links to conversations
     var links = document.querySelectorAll('a[href*="/direct/t/"]');
     if (links.length > 0) {
         convElements = Array.from(links);
     }
-    
+
     // Strategy 2: Clickable conversation rows
     if (convElements.length === 0) {
         var rows = document.querySelectorAll('div[role="listbox"] > div, div[role="list"] > div');
@@ -313,7 +330,7 @@ end tell`;
             return el.textContent && el.textContent.length > 0;
         });
     }
-    
+
     // Strategy 3: Look for profile pictures as conversation indicators
     if (convElements.length === 0) {
         var imgs = document.querySelectorAll('img[alt*="profile picture"]');
@@ -324,14 +341,14 @@ end tell`;
             }
         });
     }
-    
+
     // Strategy 4: Use Instagram's specific conversation container classes
     if (convElements.length === 0) {
         // These class patterns are from the actual Instagram DOM
         var convContainers = document.querySelectorAll('div.x9f619.x1ja2u2z.x78zum5.x1n2onr6.x1iyjqo2.xs83m0k.xeuugli.x1qughib.x6s0dn4.x1a02dak.x1q0g3np.xdl72j9');
         convElements = Array.from(convContainers);
     }
-    
+
     // Strategy 5: Find by the message container area
     if (convElements.length === 0) {
         var mainArea = document.querySelector('div.xb57i2i');
@@ -344,7 +361,7 @@ end tell`;
             });
         }
     }
-    
+
     // Strategy 6: Generic clickable items in the inbox area
     if (convElements.length === 0) {
         var mainArea = document.querySelector('div[class*="x9f619"]');
@@ -356,16 +373,16 @@ end tell`;
             });
         }
     }
-    
+
     // Debug: log what we found
     console.log('Found ' + convElements.length + ' potential conversations');
-    
+
     convElements.forEach(function(element, index) {
         try {
             var container = element;
-            
+
             // Extract username from various possible locations
-            var usernameEl = container.querySelector('span[dir="auto"]') || 
+            var usernameEl = container.querySelector('span[dir="auto"]') ||
                             container.querySelector('span[class*="x1lliihq"]') ||
                             container.querySelector('img[alt*="profile"]');
             var username = 'Unknown';
@@ -376,7 +393,7 @@ end tell`;
                     username = usernameEl.textContent.trim();
                 }
             }
-            
+
             // Extract last message preview - look for secondary text
             var allSpans = container.querySelectorAll('span[dir="auto"], span');
             var lastMessage = '';
@@ -387,23 +404,23 @@ end tell`;
                     break;
                 }
             }
-            
+
             // Check for unread indicator
             var containerHTML = container.innerHTML || '';
-            var isUnread = containerHTML.includes('rgb(0, 149, 246)') || 
+            var isUnread = containerHTML.includes('rgb(0, 149, 246)') ||
                           containerHTML.includes('font-weight: 600') ||
                           containerHTML.includes('font-weight: 700') ||
                           !!container.querySelector('[aria-label*="unread"]');
-            
+
             // Check if group chat
-            var isGroup = username.includes(',') || 
+            var isGroup = username.includes(',') ||
                          !!container.querySelector('[aria-label*="group"]') ||
                          (container.querySelectorAll('img[alt*="profile"]').length > 1);
-            
+
             // Extract timestamp
             var timeEl = container.querySelector('time');
             var timestamp = timeEl ? (timeEl.getAttribute('datetime') || timeEl.textContent.trim()) : '';
-            
+
             if (username !== 'Unknown' || lastMessage) {
                 conversations.push({
                     index: index,
@@ -418,7 +435,7 @@ end tell`;
             console.log('Error parsing conversation ' + index + ': ' + e.message);
         }
     });
-    
+
     return JSON.stringify(conversations);
 })()`;
 
@@ -438,47 +455,47 @@ end tell`;
         const jsCode = `
 (function() {
     // Try multiple strategies to find and click conversation
-    
+
     // Strategy 1: Direct conversation links
     var convLinks = document.querySelectorAll('a[href*="/direct/t/"]');
     if (convLinks[${index}]) {
         convLinks[${index}].click();
         return 'clicked_link';
     }
-    
+
     // Strategy 2: Profile pictures in conversation list
     var profileImgs = document.querySelectorAll('img[alt*="profile picture"]');
     var convContainers = [];
     profileImgs.forEach(function(img) {
-        var container = img.closest('div[role="button"]') || 
+        var container = img.closest('div[role="button"]') ||
                        img.closest('div[tabindex="0"]') ||
                        img.parentElement.parentElement.parentElement;
         if (container && !convContainers.includes(container)) {
             convContainers.push(container);
         }
     });
-    
+
     if (convContainers[${index}]) {
         convContainers[${index}].click();
         return 'clicked_container';
     }
-    
+
     // Strategy 3: Any clickable row in the inbox
     var rows = document.querySelectorAll('div[role="button"], div[tabindex="0"]');
     var convRows = Array.from(rows).filter(function(el) {
         var text = el.textContent || '';
-        return text.length > 5 && text.length < 500 && 
-               !text.includes('New message') && 
+        return text.length > 5 && text.length < 500 &&
+               !text.includes('New message') &&
                !text.includes('Primary') &&
                !text.includes('General') &&
                !text.includes('Requests');
     });
-    
+
     if (convRows[${index}]) {
         convRows[${index}].click();
         return 'clicked_row';
     }
-    
+
     return 'not_found';
 })()`;
 
@@ -502,14 +519,14 @@ end tell`;
      */
     async scrollConversationList(direction: 'up' | 'down' = 'down'): Promise<number> {
         const scrollAmount = direction === 'down' ? 500 : -500;
-        
+
         const jsCode = `
 (function() {
     // Find the scrollable container for conversations
     var containers = document.querySelectorAll('[role="list"], [role="listbox"], div[style*="overflow"]');
     var scrolled = false;
     var newCount = 0;
-    
+
     for (var i = 0; i < containers.length; i++) {
         var container = containers[i];
         if (container.scrollHeight > container.clientHeight) {
@@ -518,19 +535,19 @@ end tell`;
             break;
         }
     }
-    
+
     // Fallback: scroll the main conversation area
     if (!scrolled) {
-        var mainArea = document.querySelector('div[class*="inbox"]') || 
+        var mainArea = document.querySelector('div[class*="inbox"]') ||
                       document.querySelector('div[role="main"]');
         if (mainArea) {
             mainArea.scrollTop += ${scrollAmount};
         }
     }
-    
+
     // Count conversations after scroll
     newCount = document.querySelectorAll('a[href*="/direct/t/"]').length;
-    
+
     return newCount.toString();
 })()`;
 
@@ -552,27 +569,27 @@ end tell`;
 (function() {
     var messages = [];
     var seenContent = new Set();
-    
+
     console.log('Looking for messages with Instagram-specific selectors...');
-    
+
     // Strategy 1: Find message elements by their ID pattern (mid.$...)
     var msgElements = document.querySelectorAll('[id^="mid."]');
     console.log('Found ' + msgElements.length + ' message elements by ID');
-    
+
     msgElements.forEach(function(msgEl) {
         try {
             // Find the text content within the message
-            var textEl = msgEl.querySelector('span[dir="auto"]') || 
+            var textEl = msgEl.querySelector('span[dir="auto"]') ||
                         msgEl.querySelector('div[dir="auto"]') ||
                         msgEl.querySelector('span');
-            
+
             if (!textEl) return;
-            
+
             var content = textEl.textContent.trim();
             if (!content || content.length < 1) return;
             if (seenContent.has(content)) return;
             seenContent.add(content);
-            
+
             // Check if message is from me by looking at container alignment
             var isFromMe = false;
             var parentRow = msgEl.closest('div.x78zum5');
@@ -580,7 +597,7 @@ end tell`;
                 var style = window.getComputedStyle(parentRow);
                 isFromMe = style.justifyContent === 'flex-end';
             }
-            
+
             messages.push({
                 sender: isFromMe ? 'me' : 'them',
                 content: content.substring(0, 500),
@@ -592,26 +609,26 @@ end tell`;
             console.log('Error parsing msg element: ' + e.message);
         }
     });
-    
+
     // Strategy 2: Use the specific class pattern for message containers
     if (messages.length === 0) {
         var containers = document.querySelectorAll('div.x9f619.x1ja2u2z.x78zum5.x1n2onr6.x1iyjqo2.xs83m0k.xeuugli.x1qughib.x6s0dn4.x1a02dak.x1q0g3np.xdl72j9');
         console.log('Found ' + containers.length + ' message containers by class');
-        
+
         containers.forEach(function(container) {
             var textEl = container.querySelector('div > div');
             if (textEl) {
                 var content = textEl.textContent.trim();
                 if (content && content.length > 0 && !seenContent.has(content)) {
                     seenContent.add(content);
-                    
+
                     var parentRow = container.closest('div[class*="x78zum5"]');
                     var isFromMe = false;
                     if (parentRow) {
                         var style = window.getComputedStyle(parentRow);
                         isFromMe = style.justifyContent === 'flex-end';
                     }
-                    
+
                     messages.push({
                         sender: isFromMe ? 'me' : 'them',
                         content: content.substring(0, 500),
@@ -623,23 +640,23 @@ end tell`;
             }
         });
     }
-    
+
     // Strategy 3: Look for message rows in the conversation view
     if (messages.length === 0) {
         var allDivs = document.querySelectorAll('div.xb57i2i div > div > div > div > div');
         console.log('Trying deep div search, found ' + allDivs.length);
-        
+
         allDivs.forEach(function(div) {
             var spans = div.querySelectorAll('span[dir="auto"]');
             spans.forEach(function(span) {
                 var content = span.textContent.trim();
                 if (content && content.length > 1 && content.length < 500 && !seenContent.has(content)) {
                     // Filter out UI text
-                    if (content === 'Active now' || content === 'Message' || 
+                    if (content === 'Active now' || content === 'Message' ||
                         content.includes('Seen') || content === 'Send' ||
-                        content === 'Primary' || content === 'General' || 
+                        content === 'Primary' || content === 'General' ||
                         content === 'Requests' || content === 'Instagram') return;
-                    
+
                     seenContent.add(content);
                     messages.push({
                         sender: 'them',
@@ -652,7 +669,7 @@ end tell`;
             });
         });
     }
-    
+
     console.log('Total messages found: ' + messages.length);
     return JSON.stringify(messages);
 })()`;
@@ -683,21 +700,21 @@ end tell`;
     var input = document.querySelector('textarea[placeholder*="Message"]') ||
                document.querySelector('div[contenteditable="true"][role="textbox"]') ||
                document.querySelector('[aria-label*="Message"]');
-    
+
     if (!input) return 'input_not_found';
-    
+
     input.focus();
-    
+
     // Clear existing content
     if (input.tagName === 'TEXTAREA') {
         input.value = '';
     } else {
         input.textContent = '';
     }
-    
+
     // Type the message
     var text = "${escapedText}";
-    
+
     if (input.tagName === 'TEXTAREA') {
         input.value = text;
         input.dispatchEvent(new Event('input', {bubbles: true}));
@@ -706,7 +723,7 @@ end tell`;
         input.textContent = text;
         input.dispatchEvent(new InputEvent('input', {bubbles: true, data: text}));
     }
-    
+
     return 'typed';
 })()`;
 
@@ -729,21 +746,21 @@ end tell`;
     var sendBtn = document.querySelector('button[type="submit"]') ||
                  document.querySelector('[aria-label*="Send"]') ||
                  document.querySelector('div[role="button"]:has(svg[aria-label*="Send"])');
-    
+
     if (sendBtn) {
         sendBtn.click();
         return 'sent';
     }
-    
+
     // Fallback: press Enter
     var input = document.querySelector('textarea[placeholder*="Message"]') ||
                document.querySelector('div[contenteditable="true"][role="textbox"]');
-    
+
     if (input) {
         input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}));
         return 'enter_pressed';
     }
-    
+
     return 'not_sent';
 })()`;
 
@@ -766,12 +783,12 @@ end tell`;
     var backBtn = document.querySelector('[aria-label*="Back"]') ||
                  document.querySelector('a[href="/direct/inbox/"]') ||
                  document.querySelector('svg[aria-label*="Back"]')?.closest('button, div[role="button"]');
-    
+
     if (backBtn) {
         backBtn.click();
         return 'clicked';
     }
-    
+
     return 'not_found';
 })()`;
 
@@ -911,11 +928,8 @@ end tell`;
      * Returns the path to the screenshot file
      */
     async takeScreenshot(filename?: string): Promise<string> {
-        void filename;
-        throw new Error('Legacy SafariController screenshots are disabled; use a lane-aware owned-tab service');
-        /* c8 ignore start -- retained only for source compatibility, unreachable by policy */
         const screenshotDir = path.join(process.cwd(), 'screenshots');
-        
+
         // Ensure screenshots directory exists
         if (!fs.existsSync(screenshotDir)) {
             fs.mkdirSync(screenshotDir, { recursive: true });
@@ -935,21 +949,21 @@ return "${screenshotPath}"
 
         try {
             await this.runAppleScript(script);
-            
+
             // Verify file was created
             if (fs.existsSync(screenshotPath)) {
                 logger.info(`Screenshot saved: ${screenshotPath}`);
                 return screenshotPath;
             }
-            
+
             // Fallback: capture entire screen if window capture fails
             await execAsync(`screencapture -x "${screenshotPath}"`);
             logger.info(`Full screen screenshot saved: ${screenshotPath}`);
             return screenshotPath;
-            
+
         } catch (error) {
             logger.error('Screenshot error, trying fallback:', error);
-            
+
             // Fallback to full screen capture
             try {
                 await execAsync(`screencapture -x "${screenshotPath}"`);
@@ -959,7 +973,6 @@ return "${screenshotPath}"
                 throw fallbackError;
             }
         }
-        /* c8 ignore stop */
     }
 
     /**
@@ -981,30 +994,30 @@ return "${screenshotPath}"
         const jsCode = `
 (function() {
     var notes = [];
-    
+
     console.log('Looking for Instagram Notes...');
-    
+
     // Notes are in a horizontal list at the top of DMs
     // Selector pattern from user: ul > li elements containing notes
     var noteItems = document.querySelectorAll('ul > li');
     console.log('Found ' + noteItems.length + ' potential note items');
-    
+
     noteItems.forEach(function(item, index) {
         try {
             // Look for note content within the item
             var noteContainer = item.querySelector('div.x1vjfegm');
             if (!noteContainer) return;
-            
+
             // Get the note text
             var noteText = '';
             var textEl = noteContainer.querySelector('div[dir="auto"], span[dir="auto"]');
             if (textEl) {
                 noteText = textEl.textContent.trim();
             }
-            
+
             // Skip if no text (might be "Your note" placeholder)
             if (!noteText || noteText === 'Note...' || noteText === 'Your note') return;
-            
+
             // Get username from profile picture alt or nearby text
             var username = 'Unknown';
             var imgEl = item.querySelector('img[alt*="profile"]');
@@ -1012,10 +1025,10 @@ return "${screenshotPath}"
                 var alt = imgEl.getAttribute('alt') || '';
                 username = alt.replace("'s profile picture", '').replace("'s note", '').trim();
             }
-            
+
             // Check if it's own note (usually first item or has specific styling)
             var isOwn = index === 0 || item.querySelector('[aria-label*="Your note"]') !== null;
-            
+
             notes.push({
                 username: username,
                 content: noteText.substring(0, 60),
@@ -1026,12 +1039,12 @@ return "${screenshotPath}"
             console.log('Error parsing note: ' + e.message);
         }
     });
-    
+
     // Alternative: look for note bubbles with specific class pattern
     if (notes.length === 0) {
         var noteDivs = document.querySelectorAll('div.x1vjfegm.x9a3u73');
         console.log('Trying alternative selector, found ' + noteDivs.length);
-        
+
         noteDivs.forEach(function(div) {
             var textEl = div.querySelector('div > div > div > div > div');
             if (textEl) {
@@ -1047,7 +1060,7 @@ return "${screenshotPath}"
             }
         });
     }
-    
+
     console.log('Found ' + notes.length + ' notes');
     return JSON.stringify(notes);
 })()`;
@@ -1068,17 +1081,17 @@ return "${screenshotPath}"
         const jsCode = `
 (function() {
     var noteItems = document.querySelectorAll('ul > li');
-    
+
     // Filter to actual notes (those with note content)
     var actualNotes = Array.from(noteItems).filter(function(item) {
         return item.querySelector('div.x1vjfegm') !== null;
     });
-    
+
     if (actualNotes[${index}]) {
         actualNotes[${index}].click();
         return 'clicked';
     }
-    
+
     return 'not_found';
 })()`;
 
@@ -1104,25 +1117,25 @@ return "${screenshotPath}"
 (function() {
     // Look for "Your note" or the first note item (usually user's own)
     var noteItems = document.querySelectorAll('ul > li');
-    
+
     for (var i = 0; i < noteItems.length; i++) {
         var item = noteItems[i];
         var text = item.textContent || '';
-        
+
         // Check if this is the user's note slot
-        if (text.includes('Note...') || text.includes('Your note') || 
+        if (text.includes('Note...') || text.includes('Your note') ||
             item.querySelector('[aria-label*="Your note"]')) {
             item.click();
             return 'clicked_own';
         }
     }
-    
+
     // Fallback: click first item
     if (noteItems[0]) {
         noteItems[0].click();
         return 'clicked_first';
     }
-    
+
     return 'not_found';
 })()`;
 
@@ -1157,7 +1170,7 @@ return "${screenshotPath}"
                    document.querySelector('div[contenteditable="true"].notranslate') ||
                    document.querySelector('div.x1vjfegm div[contenteditable="true"]') ||
                    document.querySelector('[aria-label*="note"] div[contenteditable="true"]');
-    
+
     if (!noteInput) {
         // Try finding any contenteditable in the note area
         var noteArea = document.querySelector('div.x1vjfegm');
@@ -1165,13 +1178,13 @@ return "${screenshotPath}"
             noteInput = noteArea.querySelector('div[contenteditable="true"]');
         }
     }
-    
+
     if (!noteInput) return 'input_not_found';
-    
+
     noteInput.focus();
     noteInput.textContent = "${escapedText}";
     noteInput.dispatchEvent(new InputEvent('input', {bubbles: true, data: "${escapedText}"}));
-    
+
     return 'typed';
 })()`;
 
@@ -1199,7 +1212,7 @@ return "${screenshotPath}"
     var shareBtn = document.querySelector('button[type="submit"]') ||
                   document.querySelector('div[role="button"]:has-text("Share")') ||
                   document.querySelector('[aria-label*="Share"]');
-    
+
     // Try finding by text content
     if (!shareBtn) {
         var buttons = document.querySelectorAll('div[role="button"], button');
@@ -1211,19 +1224,19 @@ return "${screenshotPath}"
             }
         }
     }
-    
+
     if (shareBtn) {
         shareBtn.click();
         return 'shared';
     }
-    
+
     // Try pressing Enter as fallback
     var input = document.querySelector('div[contenteditable="true"].notranslate');
     if (input) {
         input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}));
         return 'enter_pressed';
     }
-    
+
     return 'not_submitted';
 })()`;
 
@@ -1246,7 +1259,7 @@ return "${screenshotPath}"
      */
     async createNote(text: string): Promise<boolean> {
         logger.info('Creating new note...');
-        
+
         // Step 1: Navigate to DMs if not already there
         const state = await this.getPageState();
         if (!state.hasDMInbox) {

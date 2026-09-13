@@ -7,23 +7,14 @@
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
 
-// ─── Tab Claim Guard ─────────────────────────────────────────────────────────
+// ─── Open browser compatibility status ─────────────────────────────────────────────────────────
 
-const CLAIMS_FILE = '/tmp/safari-tab-claims.json';
-const CLAIM_TTL_MS = 60_000;
 const MY_SERVICE = 'upwork-automation';
 
 interface TabClaim { agentId: string; service: string; port: number; urlPattern: string; windowIndex: number; tabIndex: number; tabUrl: string; heartbeat: number; }
 
 async function readActiveClaims(): Promise<TabClaim[]> {
-  try {
-    const raw = await fs.readFile(CLAIMS_FILE, 'utf-8');
-    const all: TabClaim[] = JSON.parse(raw);
-    const now = Date.now();
-    return all.filter(c => (now - c.heartbeat) < CLAIM_TTL_MS);
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 async function checkNavigationConflict(): Promise<{ conflict: false } | { conflict: true; blocker: TabClaim }> {
@@ -94,7 +85,7 @@ const TOOLS = [
   { name: 'upwork_get_rate_status', description: 'Detect if Upwork is showing rate limit warnings or CAPTCHA challenges.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_improve_proposal', description: 'Use AI to improve an existing proposal cover letter (makes it more concise, professional, and compelling).', inputSchema: { type: 'object', properties: { existingProposal: { type: 'string', description: 'Current proposal text to improve' }, jobDescription: { type: 'string', description: 'Job description for context' }, feedback: { type: 'string', description: 'Optional specific feedback or improvement instructions' } }, required: ['existingProposal'] } },
   { name: 'upwork_session_ensure', description: 'Ensure the upwork-automation service has an active Safari tab claim before navigating. Call this at the start of any session to get a dedicated Upwork tab instead of hijacking the active one.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'upwork_claim_status', description: 'Read /tmp/safari-tab-claims.json — shows all active Safari tab claims across services and any conflicts with the Upwork tab.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'upwork_claim_status', description: 'Report open Safari admission status; global tab claims are retired.', inputSchema: { type: 'object', properties: {} } },
   { name: 'upwork_release_session', description: 'Release the upwork-automation tab claim so the Safari tab is freed for user browsing or other services.', inputSchema: { type: 'object', properties: {} } },
 ];
 

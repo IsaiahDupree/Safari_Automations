@@ -1,24 +1,30 @@
 {
   "schemaVersion": 1,
-  "status": "pending_live_capture",
-  "capturedAt": null,
+  "status": "captured",
+  "capturedAt": "2026-09-12T22:06:00-04:00",
   "verifiedAt": null,
   "host": "www.printables.com",
   "profileHandle": "Isaiah_Dupre_1141044",
-  "createUrl": null,
+  "createUrl": "https://www.printables.com/model/create",
   "selectors": {
-    "title": null,
-    "description": null,
-    "license": null,
-    "category": null,
-    "fileInput": null,
-    "imageInput": null,
-    "saveDraft": null,
-    "publish": null
+    "title": "input[id^=\"f-name-\"]",
+    "summary": "textarea[id^=\"f-summary-\"]",
+    "category": "button[id^=\"f-category-\"]",
+    "tags": "input[id^=\"f-tags-\"]",
+    "authorshipOriginal": "input[name=\"authorship\"]",
+    "aiUsed": "input[name=\"aiGenerated\"]",
+    "description": "[role=\"textbox\"][contenteditable=\"true\"]",
+    "license": "button[id^=\"f-license-\"]",
+    "fileInput": "input[type=\"file\"][id^=\"files-upload-box-\"]",
+    "imageInput": "input[type=\"file\"][id^=\"files-upload-box-\"]",
+    "saveDraft": "button",
+    "publish": "#publish-state"
   },
   "notes": [
-    "Selectors must be captured from Isaiah's authenticated Printables create-model page in the managed Safari Window 2.",
-    "The service refuses draft creation and publication while this contract is pending or incomplete.",
+    "Selectors were captured from Isaiah's authenticated Printables create-model page in managed Safari Window 2.",
+    "Captured permits a private draft pilot only; public publication requires a verified round-trip plus exact approval.",
+    "saveDraft is resolved by unique visible exact button text because CSS has no text selector.",
+    "authorshipOriginal and aiUsed resolve to the first matching radio, matching the captured Original and Yes choices.",
     "The final publish control must remain distinct from save-draft and is never activated by draft execution."
   ]
 }
