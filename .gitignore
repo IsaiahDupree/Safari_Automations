@@ -93,4 +93,5 @@ id_ed25519*
 .netrc
 .npmrc
 .pypirc
-/.env.supabase  # secret-looking filename, untracked (2026-09-07)
+# secret-looking filename, untracked (2026-09-07)
+/.env.supabase
