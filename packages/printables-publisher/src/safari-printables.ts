@@ -302,23 +302,35 @@ end tell`);
   }
 
   private async enterTags(windowId: number, tabIndex: number, selector: string, tags: string[]): Promise<void> {
-    const coordinate = await this.focusAndCoordinate(windowId, tabIndex, selector);
-    await execFileAsync('/opt/homebrew/bin/cliclick', [`c:${coordinate.x},${coordinate.y}`], { timeout: 10_000 });
-    await this.javascript(windowId, tabIndex, `(() => {
-      const element = document.querySelector(${jsLiteral(selector)});
-      element?.focus();
-      return 'focused';
-    })()`);
-    await this.runAppleScript(`
-tell application "System Events"
-  ${SAFARI_FOCUS_GUARD}
-  tell process "Safari"
-    keystroke "a" using {command down}
-    key code 51
-    keystroke "${appleScriptString(`${tags.join(' ')} `)}"
-  end tell
-end tell`);
-    await delay(750);
+    const cleared = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+      const input = document.querySelector(${jsLiteral(selector)});
+      if (!(input instanceof HTMLInputElement)) return JSON.stringify({ok:false});
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      input.focus();
+      setter.call(input, '');
+      input.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'deleteContentBackward', data:null}));
+      return JSON.stringify({ok:true});
+    })()`)) as { ok: boolean };
+    if (!cleared.ok) throw new Error('Printables tag input is unavailable');
+    for (const tag of tags) {
+      const entered = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+        const input = document.querySelector(${jsLiteral(selector)});
+        if (!(input instanceof HTMLInputElement)) return JSON.stringify({ok:false});
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, ${jsLiteral(tag + ' ')});
+        input.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:${jsLiteral(tag + ' ')}}));
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+          key:' ', code:'Space', keyCode:32, which:32, charCode:32, bubbles:true, cancelable:true
+        }));
+        input.dispatchEvent(new KeyboardEvent('keyup', {
+          key:' ', code:'Space', keyCode:32, which:32, charCode:32, bubbles:true, cancelable:true
+        }));
+        return JSON.stringify({ok:true});
+      })()`)) as { ok: boolean };
+      if (!entered.ok) throw new Error(`Printables tag input disappeared while adding ${tag}`);
+      await delay(180);
+    }
+    await delay(600);
     const result = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
       const input = document.querySelector(${jsLiteral(selector)});
       // Read only the tag field's own chips; page text such as the title can contain tag words.
@@ -537,7 +549,10 @@ return "opened"`, 45_000);
   const inputs = [...document.querySelectorAll('input,textarea,select,button,[contenteditable="true"]')].map((el, index) => ({
     index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), name: el.getAttribute('name'),
     id: el.id || null, ariaLabel: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder'),
-    text: (el.innerText || '').trim().slice(0, 120)
+    text: (el.innerText || '').trim().slice(0, 120),
+    parentText: (el.parentElement?.innerText || '').trim().slice(0, 240),
+    grandparentText: (el.parentElement?.parentElement?.innerText || '').trim().slice(0, 400),
+    parentHtml: (el.parentElement?.outerHTML || '').slice(0, 1_500)
   }));
   return JSON.stringify({ url: location.href, title: document.title, inputs });
 })()`;
