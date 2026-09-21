@@ -12,8 +12,11 @@
     "category": "button[id^=\"f-category-\"]",
     "tags": "input[id^=\"f-tags-\"]",
     "authorshipOriginal": "input[name=\"authorship\"]",
+    "authorshipRemix": "input[name=\"authorship\"]",
+    "remixSource": "#remix-parent-search-input",
+    "remixDifferences": "[contenteditable=\"true\"][aria-label=\"Rich Text Editor. Editing area: main\"]",
     "aiUsed": "input[name=\"aiGenerated\"]",
-    "description": "[role=\"textbox\"][contenteditable=\"true\"]",
+    "description": "[role=\"textbox\"][contenteditable=\"true\"]:not([aria-label])",
     "license": "button[id^=\"f-license-\"]",
     "fileInput": "input[type=\"file\"][id^=\"files-upload-box-\"]",
     "imageInput": "input[type=\"file\"][id^=\"files-upload-box-\"]",
@@ -25,7 +28,8 @@
     "Verified by private draft round-trip at https://www.printables.com/model/1840792/edit; title, summary, category, tags, license, authorship, AI disclosure, archive, six previews, and draft state were read back.",
     "Captured permits a private draft pilot only; public publication requires a verified round-trip plus exact approval.",
     "saveDraft is resolved by unique visible exact button text because CSS has no text selector.",
-    "authorshipOriginal and aiUsed resolve to the first matching radio, matching the captured Original and Yes choices.",
+    "authorshipOriginal/authorshipRemix use the first/second authorship radios; aiUsed uses the first/second AI radios.",
+    "Remix source and differences selectors were captured from the authenticated 2026-09-20 create-model form.",
     "The final publish control must remain distinct from save-draft and is never activated by draft execution."
   ]
 }

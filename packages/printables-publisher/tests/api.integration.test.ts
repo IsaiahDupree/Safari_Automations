@@ -11,7 +11,7 @@ async function sha(filePath: string): Promise<string> {
   return createHash('sha256').update(await readFile(filePath)).digest('hex');
 }
 
-async function realRelease(root: string): Promise<string> {
+async function realRelease(root: string, remix = false): Promise<string> {
   const bundle = path.join(root, 'staging', 'models', 'fit-gauge-a1b2c3');
   await mkdir(path.join(bundle, 'files'), { recursive: true });
   await mkdir(path.join(bundle, 'preview'), { recursive: true });
@@ -33,7 +33,16 @@ async function realRelease(root: string): Promise<string> {
     license: 'CC BY 4.0',
     category: 'Automotive',
     tags: ['fitgauge'],
-    model_origin: 'Original model — I made it',
+    model_origin: remix ? 'Remix of another model' : 'Original model — I made it',
+    ...(remix ? {
+      remix_sources: [{
+        title: 'Scrunchie holder',
+        author: 'MattMo3D',
+        url: 'https://www.printables.com/model/281155',
+        license: 'CC BY-NC 4.0',
+      }],
+      remix_differences: 'Changed the single post into a taller four-peg tree.',
+    } : {}),
     ai_used: false,
     public_publish_approved: false,
     github_repository_url: 'https://github.com/IsaiahDupree/3d-print-library',
@@ -57,12 +66,12 @@ async function realRelease(root: string): Promise<string> {
   return bundle;
 }
 
-async function startService() {
+async function startService(remix = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'printables-publisher-'));
   roots.push(root);
   const token = 'integration-token-with-32-characters';
   const stagingRoot = path.join(root, 'staging', 'models');
-  const bundlePath = await realRelease(root);
+  const bundlePath = await realRelease(root, remix);
   const contract = path.join(root, 'selectors.json');
   await writeFile(contract, JSON.stringify({
     schemaVersion: 1, status: 'pending_live_capture', capturedAt: null, verifiedAt: null,
@@ -98,6 +107,26 @@ describe('Printables publisher loopback API', () => {
       const validated = await validatedResponse.json() as { state: string; release: { license: string } };
       expect(validated.state).toBe('validated');
       expect(validated.release.license).toBe('CC BY 4.0');
+    } finally {
+      await new Promise<void>((resolve, reject) => service.server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('validates credited remix metadata through the real HTTP service', async () => {
+    const service = await startService(true);
+    try {
+      const headers = { authorization: `Bearer ${service.token}`, 'content-type': 'application/json' };
+      const created = await (await fetch(`${service.base}/api/printables/jobs`, {
+        method: 'POST', headers, body: JSON.stringify({ bundlePath: service.bundlePath }),
+      })).json() as { id: string };
+      const response = await fetch(`${service.base}/api/printables/jobs/${created.id}/validate`, { method: 'POST', headers });
+      expect(response.status).toBe(200);
+      const validated = await response.json() as {
+        release: { modelOrigin: string; remixDifferences: string; remixSources: Array<{ url: string }> };
+      };
+      expect(validated.release.modelOrigin).toBe('Remix of another model');
+      expect(validated.release.remixDifferences).toContain('four-peg tree');
+      expect(validated.release.remixSources[0].url).toBe('https://www.printables.com/model/281155');
     } finally {
       await new Promise<void>((resolve, reject) => service.server.close(error => error ? reject(error) : resolve()));
     }

@@ -10,9 +10,15 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTRACT = path.resolve(MODULE_DIR, '../selectors/printables.v1.json');
 const CREATE_FIELDS = [
   'title', 'summary', 'description', 'license', 'category', 'tags',
-  'authorshipOriginal', 'aiUsed', 'fileInput', 'imageInput', 'saveDraft',
+  'authorshipOriginal', 'authorshipRemix', 'remixSource', 'remixDifferences',
+  'aiUsed', 'fileInput', 'imageInput', 'saveDraft',
 ];
 const execFileAsync = promisify(execFile);
+// System Events keystrokes go to whichever app is frontmost, not to the named
+// process. Refuse to type if another app (or a locked screen) holds focus.
+// Fully qualified so it resolves both inside and outside `tell process "Safari"`.
+const SAFARI_FOCUS_GUARD =
+  'if not (frontmost of application process "Safari" of application "System Events") then error "Safari lost keyboard focus; refusing to type into another app"';
 
 function appleScriptString(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
@@ -305,6 +311,7 @@ end tell`);
     })()`);
     await this.runAppleScript(`
 tell application "System Events"
+  ${SAFARI_FOCUS_GUARD}
   tell process "Safari"
     keystroke "a" using {command down}
     key code 51
@@ -314,11 +321,123 @@ end tell`);
     await delay(750);
     const result = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
       const input = document.querySelector(${jsLiteral(selector)});
-      const body = document.body?.innerText || '';
-      return JSON.stringify({value:input?.value || '', found:${jsLiteral(tags)}.filter(tag => body.includes(tag))});
+      // Read only the tag field's own chips; page text such as the title can contain tag words.
+      const tagText = input?.parentElement?.innerText || '';
+      return JSON.stringify({value:input?.value || '', found:${jsLiteral(tags)}.filter(tag => tagText.includes(tag))});
     })()`)) as { value: string; found: string[] };
     if (result.found.length !== tags.length || /\S/.test(result.value)) {
       throw new Error(`Printables tag entry failed: ${JSON.stringify(result)}`);
+    }
+  }
+
+  private async enterRemixSources(
+    windowId: number,
+    tabIndex: number,
+    selector: string,
+    sources: Array<{ title: string; author: string; url: string }>,
+  ): Promise<void> {
+    for (const source of sources) {
+      const availableDeadline = Date.now() + 10_000;
+      let available = false;
+      while (Date.now() < availableDeadline && !available) {
+        available = JSON.parse(await this.javascript(windowId, tabIndex, `JSON.stringify({
+          available:Boolean(document.querySelector(${jsLiteral(selector)}))
+        })`)).available;
+        if (!available) await delay(300);
+      }
+      if (!available) throw new Error('Printables remix-source field is unavailable');
+
+      await this.javascript(windowId, tabIndex, `(() => {
+        const input = document.querySelector(${jsLiteral(selector)});
+        if (!(input instanceof HTMLInputElement)) return JSON.stringify({ok:false});
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, ${jsLiteral(source.url)});
+        input.focus();
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        input.dispatchEvent(new Event('change', {bubbles:true}));
+        return JSON.stringify({ok:true});
+      })()`);
+
+      const suggestionDeadline = Date.now() + 15_000;
+      let suggestionReady = false;
+      while (Date.now() < suggestionDeadline && !suggestionReady) {
+        const state = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+          const input = document.querySelector(${jsLiteral(selector)});
+          const text = document.body?.innerText || '';
+          return JSON.stringify({
+            focused:document.activeElement === input,
+            exactValue:input?.value === ${jsLiteral(source.url)},
+            hasTitle:text.includes(${jsLiteral(source.title)}),
+            hasAuthor:text.includes(${jsLiteral(source.author)})
+          });
+        })()`)) as { focused: boolean; exactValue: boolean; hasTitle: boolean; hasAuthor: boolean };
+        suggestionReady = state.focused && state.exactValue && state.hasTitle && state.hasAuthor;
+        if (!suggestionReady) await delay(350);
+      }
+      if (!suggestionReady) throw new Error(`Printables did not resolve remix source: ${source.url}`);
+
+      const clicked = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+        const expected = new URL(${jsLiteral(source.url)});
+        const modelMatch = expected.hostname === 'www.printables.com'
+          ? expected.pathname.match(/^\\/model\\/(\\d+)/)
+          : null;
+        const candidates = [...document.querySelectorAll('a[href]')].filter(anchor => {
+          if (!anchor.getClientRects().length) return false;
+          const link = new URL(anchor.href);
+          const hrefMatches = modelMatch
+            ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
+            : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, '');
+          const text = anchor.textContent || '';
+          return hrefMatches && text.includes(${jsLiteral(source.title)}) && text.includes(${jsLiteral(source.author)});
+        });
+        if (candidates.length !== 1) return JSON.stringify({ok:false,count:candidates.length});
+        candidates[0].click();
+        return JSON.stringify({ok:true});
+      })()`)) as { ok: boolean; count?: number };
+      if (!clicked.ok) {
+        throw new Error(`Expected one exact Printables remix-source suggestion for ${source.url}, found ${clicked.count}`);
+      }
+
+      const selectedDeadline = Date.now() + 12_000;
+      let selected = false;
+      while (Date.now() < selectedDeadline && !selected) {
+        const selection = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+          const expected = new URL(${jsLiteral(source.url)});
+          const modelMatch = expected.hostname === 'www.printables.com'
+            ? expected.pathname.match(/^\\/model\\/(\\d+)/)
+            : null;
+          const links = [...document.querySelectorAll('a[href]')].map(anchor => new URL(anchor.href));
+          const found = links.some(link => modelMatch
+            ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
+            : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, ''));
+          const input = document.querySelector(${jsLiteral(selector)});
+          return JSON.stringify({found, cleared:!input?.value});
+        })()`)) as { found: boolean; cleared: boolean };
+        selected = selection.found && selection.cleared;
+        if (!selected) await delay(350);
+      }
+      if (!selected) throw new Error(`Printables did not select remix source: ${source.url}`);
+    }
+  }
+
+  private async setRichText(
+    windowId: number,
+    tabIndex: number,
+    selector: string,
+    value: string,
+    label: string,
+  ): Promise<void> {
+    const result = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+      const editor = document.querySelector(${jsLiteral(selector)});
+      if (!editor) return JSON.stringify({ok:false});
+      editor.focus();
+      document.execCommand('selectAll', false);
+      const inserted = document.execCommand('insertText', false, ${jsLiteral(value)});
+      editor.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:null}));
+      return JSON.stringify({ok:inserted, text:editor.innerText || ''});
+    })()`)) as { ok: boolean; text?: string };
+    if (!result.ok || !result.text?.replace(/\s+/g, ' ').includes(value.replace(/\s+/g, ' ').slice(0, 80))) {
+      throw new Error(`Printables ${label} entry failed`);
     }
   }
 
@@ -342,13 +461,17 @@ end tell`);
       await delay(1_000);
       const opened = await this.runAppleScript(`
 tell application "System Events"
+  ${SAFARI_FOCUS_GUARD}
   tell process "Safari"
+    if (count of sheets of front window) is 0 then error "Printables file picker did not open"
     keystroke "g" using {command down, shift down}
     delay 0.5
+    ${SAFARI_FOCUS_GUARD}
     keystroke "${appleScriptString(uploadDir)}"
     delay 0.3
     key code 36
     delay 1
+    ${SAFARI_FOCUS_GUARD}
     keystroke "a" using {command down}
     delay 0.3
     key code 36
@@ -410,13 +533,14 @@ return "opened"`, 45_000);
     const contract = await this.contract();
     if (!contract.createUrl) throw new Error('Printables selector contract has no create URL');
     return this.withTarget(contract.createUrl, async target => {
-      const script = `
-const inputs = [...document.querySelectorAll('input,textarea,select,button,[contenteditable="true"]')].map((el, index) => ({
-  index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), name: el.getAttribute('name'),
-  id: el.id || null, ariaLabel: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder'),
-  text: (el.innerText || '').trim().slice(0, 120)
-}));
-JSON.stringify({ url: location.href, title: document.title, inputs });`;
+      const script = `(() => {
+  const inputs = [...document.querySelectorAll('input,textarea,select,button,[contenteditable="true"]')].map((el, index) => ({
+    index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), name: el.getAttribute('name'),
+    id: el.id || null, ariaLabel: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder'),
+    text: (el.innerText || '').trim().slice(0, 120)
+  }));
+  return JSON.stringify({ url: location.href, title: document.title, inputs });
+})()`;
       return JSON.parse(await this.javascript(target.windowId, target.tabIndex, script)) as Record<string, unknown>;
     });
   }
@@ -427,16 +551,26 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
     const contract = await this.contract();
     this.requireContract(contract);
     const selectors = contract.selectors as Record<string, string>;
+    const isRemix = release.modelOrigin === 'Remix of another model';
+    const originIndex = isRemix ? 1 : 0;
 
     return this.withTarget(contract.createUrl!, async target => {
-      const existing = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `JSON.stringify({
-        url:location.href,
-        title:document.querySelector(${jsLiteral(selectors.title)})?.value || ''
-      })`)) as { url: string; title: string };
+      const existing = JSON.parse(await this.javascript(target.windowId, target.tabIndex, `(() => {
+        const expectedModelStems = ${jsLiteral(release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath))))};
+        return JSON.stringify({
+          url:location.href,
+          title:document.querySelector(${jsLiteral(selectors.title)})?.value || '',
+          modelFilesPresent:expectedModelStems.every(stem => [...document.querySelectorAll('input')]
+            .some(input => input.type === 'text' && input.value === stem))
+        });
+      })()`)) as { url: string; title: string; modelFilesPresent: boolean };
       if (existing.url.startsWith(contract.createUrl!) && existing.title.trim() && existing.title !== release.title) {
         throw new Error('Safari automation tab contains an unsaved Printables form; refusing to overwrite it');
       }
-      const resumeExisting = existing.url.startsWith(contract.createUrl!) && existing.title === release.title;
+      // Only an interrupted upload may skip entry. A same-title form that stopped
+      // before its files were attached is refilled in place from the release.
+      const resumeExisting = existing.url.startsWith(contract.createUrl!)
+        && existing.title === release.title && existing.modelFilesPresent;
       if (!existing.url.startsWith(contract.createUrl!)) {
         await this.runTargeted(target.windowId, target.tabIndex, `set URL of agentTab to "${appleScriptString(contract.createUrl!)}"`);
       }
@@ -459,21 +593,21 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         };
         const title = setValue(${jsLiteral(selectors.title)}, ${jsLiteral(release.title)});
         const summary = setValue(${jsLiteral(selectors.summary)}, ${jsLiteral(release.summary)});
-        const origin = document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[0];
+        const origin = document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[${originIndex}];
         const ai = document.querySelectorAll(${jsLiteral(selectors.aiUsed)})[${release.aiUsed ? 0 : 1}];
         if (origin) origin.click();
         if (ai) ai.click();
-        const editor = document.querySelector(${jsLiteral(selectors.description)});
-        let description = false;
-        if (editor) {
-          editor.focus();
-          document.execCommand('selectAll', false);
-          description = document.execCommand('insertText', false, ${jsLiteral(release.description)});
-          editor.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:null}));
-        }
-        return JSON.stringify({title, summary, origin:Boolean(origin?.checked), ai:Boolean(ai?.checked), description});
+        return JSON.stringify({title, summary, origin:Boolean(origin?.checked), ai:Boolean(ai?.checked)});
       })()`)) as Record<string, boolean>;
       if (!Object.values(filled).every(Boolean)) throw new Error(`Printables metadata entry failed: ${JSON.stringify(filled)}`);
+
+      if (isRemix) {
+        await this.enterRemixSources(target.windowId, target.tabIndex, selectors.remixSource, release.remixSources);
+        await this.setRichText(
+          target.windowId, target.tabIndex, selectors.remixDifferences, release.remixDifferences, 'remix differences',
+        );
+      }
+      await this.setRichText(target.windowId, target.tabIndex, selectors.description, release.description, 'description');
 
       await this.enterTags(target.windowId, target.tabIndex, selectors.tags, release.tags);
 
@@ -495,8 +629,19 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const license = normalize(document.querySelector(${jsLiteral(selectors.license)})?.textContent);
         const description = document.querySelector(${jsLiteral(selectors.description)})?.innerText || '';
         const tagText = document.querySelector(${jsLiteral(selectors.tags)})?.parentElement?.innerText || '';
-        const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[0]?.checked);
+        const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[${originIndex}]?.checked);
         const ai = Boolean(document.querySelectorAll(${jsLiteral(selectors.aiUsed)})[${release.aiUsed ? 0 : 1}]?.checked);
+        const remixDifferences = document.querySelector(${jsLiteral(selectors.remixDifferences)})?.innerText || '';
+        const remixSourcesPresent = ${jsLiteral(release.remixSources.map(source => source.url))}.every(sourceUrl => {
+          const expected = new URL(sourceUrl);
+          const modelMatch = expected.hostname === 'www.printables.com' ? expected.pathname.match(/^\\/model\\/(\\d+)/) : null;
+          return [...document.querySelectorAll('a[href]')].some(anchor => {
+            const link = new URL(anchor.href);
+            return modelMatch
+              ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
+              : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, '');
+          });
+        });
         const publish = document.querySelector(${jsLiteral(selectors.publish || '#publish-state')});
         const saves = [...document.querySelectorAll(${jsLiteral(selectors.saveDraft)})].filter(el =>
           el.getClientRects().length && normalize(el.textContent).toLowerCase() === 'save draft'
@@ -506,10 +651,12 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
           .some(input => input.type === 'text' && input.value === stem));
         const photoCount = [...document.querySelectorAll('img')]
           .filter(img => (img.src || '').includes('media.printables.com/media/prints/')).length;
-        return JSON.stringify({title, summary, category, license, description, tagText, modelFilesPresent, photoCount, origin, ai,
+        return JSON.stringify({title, summary, category, license, description, tagText, remixDifferences, remixSourcesPresent,
+          modelFilesPresent, photoCount, origin, ai,
           publishChecked:Boolean(publish?.checked), saveCount:saves.length, saveDisabled:Boolean(saves[0]?.disabled)});
       })()`)) as {
         title: string; summary: string; category: string; license: string; description: string; tagText: string;
+        remixDifferences: string; remixSourcesPresent: boolean;
         modelFilesPresent: boolean; photoCount: number;
         origin: boolean; ai: boolean; publishChecked: boolean; saveCount: number; saveDisabled: boolean;
       };
@@ -520,6 +667,8 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         normalized(preflight.category) !== normalized(release.category) && 'category',
         normalized(preflight.license) !== normalized(release.license) && 'license',
         !normalized(preflight.description).includes(normalized(release.description.slice(0, 100))) && 'description',
+        isRemix && !normalized(preflight.remixDifferences).includes(normalized(release.remixDifferences.slice(0, 100))) && 'remix-differences',
+        isRemix && !preflight.remixSourcesPresent && 'remix-sources',
         !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
         !preflight.modelFilesPresent && 'model-files', preflight.photoCount < release.previews.length && 'previews',
         !preflight.origin && 'origin', !preflight.ai && 'ai', preflight.publishChecked && 'publish-state',
@@ -573,6 +722,8 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
     if (!job.printablesDraftUrl) throw new Error('Job has no verified Printables draft URL');
     const release = job.release;
     const selectors = contract.selectors as Record<string, string>;
+    const isRemix = release.modelOrigin === 'Remix of another model';
+    const originIndex = isRemix ? 1 : 0;
     const editUrl = new URL(job.printablesDraftUrl);
     if (editUrl.hostname !== contract.host || !/^\/model\/\d+\/edit$/.test(editUrl.pathname)) {
       throw new Error('Verified Printables draft URL is outside the expected model editor');
@@ -592,8 +743,19 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const license = normalize(document.querySelector(${jsLiteral(selectors.license)})?.textContent);
         const description = document.querySelector(${jsLiteral(selectors.description)})?.innerText || '';
         const tagText = document.querySelector(${jsLiteral(selectors.tags)})?.parentElement?.innerText || '';
-        const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[0]?.checked);
+        const origin = Boolean(document.querySelectorAll(${jsLiteral(selectors.authorshipOriginal)})[${originIndex}]?.checked);
         const ai = Boolean(document.querySelectorAll(${jsLiteral(selectors.aiUsed)})[${release.aiUsed ? 0 : 1}]?.checked);
+        const remixDifferences = document.querySelector(${jsLiteral(selectors.remixDifferences)})?.innerText || '';
+        const remixSourcesPresent = ${jsLiteral(release.remixSources.map(source => source.url))}.every(sourceUrl => {
+          const expected = new URL(sourceUrl);
+          const modelMatch = expected.hostname === 'www.printables.com' ? expected.pathname.match(/^\\/model\\/(\\d+)/) : null;
+          return [...document.querySelectorAll('a[href]')].some(anchor => {
+            const link = new URL(anchor.href);
+            return modelMatch
+              ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
+              : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, '');
+          });
+        });
         const publish = document.querySelector(${jsLiteral(selectors.publish)});
         const modelFilesPresent = ${jsLiteral(release.files.map(file => path.basename(file.absolutePath, path.extname(file.absolutePath))))}
           .every(stem => [...document.querySelectorAll('input')]
@@ -603,11 +765,13 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         const primary = [...document.querySelectorAll('button')].filter(button =>
           button.getClientRects().length && button.classList.contains('btn-primary') && button.classList.contains('btn-bold')
         );
-        return JSON.stringify({title, summary, category, license, description, tagText, origin, ai,
+        return JSON.stringify({title, summary, category, license, description, tagText, remixDifferences, remixSourcesPresent,
+          origin, ai,
           publishChecked:Boolean(publish?.checked), publishDisabled:Boolean(publish?.disabled),
           modelFilesPresent, photoCount, primaryCount:primary.length, primaryDisabled:Boolean(primary[0]?.disabled)});
       })()`)) as {
         title: string; summary: string; category: string; license: string; description: string; tagText: string;
+        remixDifferences: string; remixSourcesPresent: boolean;
         origin: boolean; ai: boolean; publishChecked: boolean; publishDisabled: boolean;
         modelFilesPresent: boolean; photoCount: number; primaryCount: number; primaryDisabled: boolean;
       };
@@ -621,6 +785,8 @@ JSON.stringify({ url: location.href, title: document.title, inputs });`;
         normalized(preflight.category) !== normalized(release.category) && 'category',
         normalized(preflight.license) !== normalized(release.license) && 'license',
         !normalized(preflight.description).includes(normalized(release.description.slice(0, 100))) && 'description',
+        isRemix && !normalized(preflight.remixDifferences).includes(normalized(release.remixDifferences.slice(0, 100))) && 'remix-differences',
+        isRemix && !preflight.remixSourcesPresent && 'remix-sources',
         !release.tags.every(tag => preflight.tagText.includes(tag)) && 'tags',
         !preflight.origin && 'origin', !preflight.ai && 'ai',
         preflight.publishChecked && 'already-published', preflight.publishDisabled && 'publish-disabled',

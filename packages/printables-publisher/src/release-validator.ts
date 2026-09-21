@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { ReleaseFile, ValidatedRelease } from './types.js';
+import type { ReleaseFile, RemixSource, ValidatedRelease } from './types.js';
 
-const RELEASE_EXTENSIONS = new Set(['.stl', '.step', '.stp', '.3mf', '.fcstd', '.zip']);
+const RELEASE_EXTENSIONS = new Set(['.stl', '.step', '.stp', '.3mf', '.fcstd', '.pdf', '.zip']);
 const PREVIEW_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
@@ -16,6 +16,18 @@ function objectValue(value: unknown, label: string): Record<string, unknown> {
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`${label} is required`);
   return value.trim();
+}
+
+function requiredHttpsUrl(value: unknown, label: string): string {
+  const raw = requiredString(value, label);
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`${label} must be a valid URL`);
+  }
+  if (parsed.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
+  return parsed.href;
 }
 
 async function sha256File(filePath: string): Promise<string> {
@@ -104,7 +116,25 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
   const license = requiredString(worksheet.license, 'license');
   const category = requiredString(worksheet.category, 'category');
   const modelOrigin = requiredString(worksheet.model_origin, 'model_origin');
-  if (modelOrigin !== 'Original model — I made it') throw new Error('Only an original-model release is supported');
+  const supportedOrigins = new Set(['Original model — I made it', 'Remix of another model']);
+  if (!supportedOrigins.has(modelOrigin)) throw new Error(`Unsupported model_origin: ${modelOrigin}`);
+  let remixSources: RemixSource[] = [];
+  let remixDifferences = '';
+  if (modelOrigin === 'Remix of another model') {
+    if (!Array.isArray(worksheet.remix_sources) || worksheet.remix_sources.length === 0) {
+      throw new Error('Remix releases require at least one remix_sources entry');
+    }
+    remixSources = worksheet.remix_sources.map((entry, index) => {
+      const source = objectValue(entry, `remix_sources[${index}]`);
+      return {
+        title: requiredString(source.title, `remix_sources[${index}].title`),
+        author: requiredString(source.author, `remix_sources[${index}].author`),
+        url: requiredHttpsUrl(source.url, `remix_sources[${index}].url`),
+        license: requiredString(source.license, `remix_sources[${index}].license`),
+      };
+    });
+    remixDifferences = requiredString(worksheet.remix_differences, 'remix_differences');
+  }
   if (typeof worksheet.ai_used !== 'boolean') throw new Error('ai_used must be explicitly true or false');
   const tagEntries = worksheet.tags ?? [];
   if (!Array.isArray(tagEntries) || !tagEntries.every(tag => typeof tag === 'string' && tag.trim())) {
@@ -131,6 +161,8 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
     category,
     tags,
     modelOrigin,
+    remixSources,
+    remixDifferences,
     aiUsed: worksheet.ai_used,
     publicPublishApproved: worksheet.public_publish_approved === true,
     files: files.map(file => [file.relativePath, file.sha256]),
@@ -148,6 +180,8 @@ export async function validateReleaseBundle(bundleInput: string, stagingRootInpu
     category,
     tags,
     modelOrigin,
+    remixSources,
+    remixDifferences,
     aiUsed: worksheet.ai_used,
     publicPublishApproved: worksheet.public_publish_approved === true,
     files,

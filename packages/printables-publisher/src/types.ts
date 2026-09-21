@@ -22,6 +22,13 @@ export interface ReleaseFile {
   bytes: number;
 }
 
+export interface RemixSource {
+  title: string;
+  author: string;
+  url: string;
+  license: string;
+}
+
 export interface ValidatedRelease {
   bundlePath: string;
   bundleDigest: string;
@@ -33,6 +40,8 @@ export interface ValidatedRelease {
   category: string;
   tags: string[];
   modelOrigin: string;
+  remixSources: RemixSource[];
+  remixDifferences: string;
   aiUsed: boolean;
   publicPublishApproved: boolean;
   files: ReleaseFile[];
