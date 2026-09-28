@@ -12,6 +12,12 @@ restarts. Do not extend the Chrome resource guard into a cross-browser policy.
 Remote Chrome instances and non-Chrome browsers are outside the local Chrome
 guard.
 
+The resource guard is passive: closing Chrome must leave it closed. Missing
+CDP alone must not restart it. Only explicit `ensure chrome` requests launch
+an idle browser; launches use `--no-startup-window` so background work does
+not open an unsolicited window. Resource breaches still use sustained samples
+and the restart cooldown.
+
 Normal authorization and data-safety rules still apply. Coordinate access to
 the same tab or non-thread-safe driver only when required for correctness; do
 not turn implementation locks into global browser admission gates.

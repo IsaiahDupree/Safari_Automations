@@ -39,6 +39,24 @@ class ChromeResourceGuardTests(unittest.TestCase):
             ["processes=25>24", "rss_mb=3073.0>3072", "cpu=176.0>175", "tabs=14>13"],
         )
 
+    def test_closed_chrome_is_not_a_resource_violation(self):
+        snapshot = {
+            "root_pids": [], "canonical_pids": [], "processes": 0,
+            "cpu_percent": 0.0, "rss_mb": 0.0, "tabs": 0,
+            "cdp_available": False,
+        }
+        self.assertEqual(GUARD.violations(snapshot, self.policy), [])
+
+    def test_disconnected_debugger_does_not_trigger_resource_restart(self):
+        snapshot = {
+            "root_pids": [10], "canonical_pids": [10], "processes": 1,
+            "cpu_percent": 0.0, "rss_mb": 100.0, "tabs": 0,
+            "cdp_available": False,
+        }
+        self.assertEqual(GUARD.violations(snapshot, self.policy), [])
+        snapshot["cpu_percent"] = 176.0
+        self.assertEqual(GUARD.violations(snapshot, self.policy), ["cpu=176.0>175"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -169,8 +169,8 @@ def inspect(policy: dict[str, Any]) -> dict[str, Any]:
 def violations(snapshot: dict[str, Any], policy: dict[str, Any]) -> list[str]:
     cfg = policy["chrome"]
     reasons: list[str] = []
-    if cfg.get("enabled", True) and not snapshot["root_pids"]:
-        reasons.append("root_processes=0<1")
+    # A closed browser is idle, not a resource violation. Only an explicit
+    # ensure request may start Chrome when it is absent.
     if len(snapshot["root_pids"]) > int(cfg["max_root_processes"]):
         reasons.append(f"root_processes={len(snapshot['root_pids'])}>{cfg['max_root_processes']}")
     if snapshot["root_pids"] and len(snapshot["canonical_pids"]) != 1:
@@ -183,8 +183,8 @@ def violations(snapshot: dict[str, Any], policy: dict[str, Any]) -> list[str]:
         reasons.append(f"cpu={snapshot['cpu_percent']}>{cfg['max_cpu_percent']}")
     if int(snapshot["tabs"]) > int(cfg["max_tabs"]):
         reasons.append(f"tabs={snapshot['tabs']}>{cfg['max_tabs']}")
-    if snapshot["root_pids"] and not snapshot["cdp_available"]:
-        reasons.append("cdp_unavailable")
+    # CDP health is reported by inspect(), but a disconnected debugger is
+    # not resource pressure and must not cause unsolicited browser restarts.
     return reasons
 
 
@@ -231,6 +231,7 @@ def launch_chrome(policy: dict[str, Any]) -> int:
             "--profile-directory=Default",
             "--no-first-run",
             "--no-default-browser-check",
+            "--no-startup-window",
             f"--renderer-process-limit={int(cfg['renderer_process_limit'])}",
         ],
         stdin=subprocess.DEVNULL,
@@ -275,13 +276,13 @@ def restart_chrome(policy: dict[str, Any], reason: str) -> bool:
 
 
 def enforce_once(policy: dict[str, Any]) -> dict[str, Any]:
-    if policy["chrome"].get("enabled", True):
-        ensure_chrome(policy)
+    # Passive monitoring must never call ensure_chrome: it starts an absent
+    # browser and replaces an unavailable one before the breach/cooldown gates.
     snapshot = inspect(policy)
     normalize_priority(snapshot, policy)
     reasons = snapshot["chrome"]["policy_violations"]
     state = load_state()
-    restart_reasons = [reason for reason in reasons if not reason.startswith("root_processes=0")]
+    restart_reasons = reasons if policy["chrome"].get("enabled", True) else []
     state["breach_samples"] = state["breach_samples"] + 1 if restart_reasons else 0
     state["last_check"] = utc_now()
     state["last_reason"] = "; ".join(restart_reasons) if restart_reasons else None
