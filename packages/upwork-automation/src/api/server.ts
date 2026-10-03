@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Upwork Automation API Server
  * REST API for job discovery, applications, messaging, and scoring.

@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Upwork MCP Server — JSON-RPC 2.0 over stdio
  * Service: http://localhost:3104

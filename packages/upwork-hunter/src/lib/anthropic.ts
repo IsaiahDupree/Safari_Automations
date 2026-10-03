@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 let _client: Anthropic | null = null;

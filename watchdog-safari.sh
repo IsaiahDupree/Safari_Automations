@@ -39,7 +39,6 @@ SERVICES[3003]="packages/twitter-dm/src/api/server.ts"
 SERVICES[3102]="packages/tiktok-dm/src/api/server.ts"
 SERVICES[3105]="packages/linkedin-automation/src/api/server.ts"
 SERVICES[3005]="packages/instagram-comments/src/api/server.ts"
-SERVICES[3107]="packages/upwork-automation/src/api/server.ts"
 SERVICES[3006]="packages/tiktok-comments/src/api/server.ts"
 SERVICES[3007]="packages/twitter-comments/src/api/server.ts"
 SERVICES[3004]="packages/threads-comments/src/api/server.ts"
@@ -51,7 +50,6 @@ SERVICES[3008]="packages/facebook-comments/src/api/server.ts"
 declare -A EXTRA_ENV
 EXTRA_ENV[3007]="SAFARI_RESEARCH_ENABLED=true"
 EXTRA_ENV[3108]="MEDIUM_PORT=3108"
-EXTRA_ENV[3107]="UPWORK_PORT=3107"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
@@ -124,7 +122,7 @@ log "Safari service watchdog started (actp :8090) TSX=$( [ -x "$TSX_LOCAL" ] && 
 while true; do
   # 1) platform HTTP services. Every service remains independently available;
   # one automation job never pauses unrelated browser work.
-  for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do
+  for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 7070 3108 3008; do
     result=$(curl -s --max-time 3 "http://localhost:$port/health" 2>/dev/null)
     if [ -z "$result" ]; then
       pkg="${SERVICES[$port]}"
@@ -177,7 +175,7 @@ while true; do
   # wipe can self-heal again.
   if [ -f "$REINSTALL_FLAG" ]; then
     healthy=1
-    for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 3107 7070 3108 3008; do
+    for port in 3100 3003 3102 3105 3005 3006 3007 3004 3106 7070 3108 3008; do
       curl -s --max-time 2 "http://localhost:$port/health" >/dev/null 2>&1 || healthy=0
     done
     [ "$healthy" = "1" ] && { rm -f "$REINSTALL_FLAG"; log "fleet fully healthy -- cleared reinstall guard"; }

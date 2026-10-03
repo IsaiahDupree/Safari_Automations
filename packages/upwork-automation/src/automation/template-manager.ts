@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Proposal Template Manager
  * In-memory + file-backed template storage for Upwork proposals

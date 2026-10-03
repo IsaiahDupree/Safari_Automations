@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Safari Automation Driver
  * Handles low-level Safari/AppleScript interactions.

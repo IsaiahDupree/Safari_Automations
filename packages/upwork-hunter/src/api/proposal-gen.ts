@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 import { getAnthropicClient, isAnthropicConfigured } from '../lib/anthropic.js';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase.js';
 import type { UpworkJob, UpworkProposal, OfferType } from '../types/index.js';

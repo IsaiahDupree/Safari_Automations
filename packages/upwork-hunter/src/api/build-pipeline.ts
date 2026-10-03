@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Autonomous Build Pipeline
  *

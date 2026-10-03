@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 export { SafariDriver, getDefaultDriver, setDefaultDriver } from './safari-driver.js';
 export * from './job-operations.js';
 export * from './message-operations.js';

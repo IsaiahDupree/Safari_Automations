@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Analytics Tracker - In-memory application analytics
  * Tracks job applications, views, and responses for analytics reporting

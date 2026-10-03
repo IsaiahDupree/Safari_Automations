@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Upwork Message Operations
  * High-level Safari automation for reading/sending Upwork messages.

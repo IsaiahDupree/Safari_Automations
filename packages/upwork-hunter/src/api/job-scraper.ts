@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Job scraper for upwork-hunter.
  *

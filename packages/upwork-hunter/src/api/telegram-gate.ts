@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 import * as https from 'https';
 import * as http from 'http';
 import { existsSync } from 'fs';

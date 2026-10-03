@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Open Safari target coordinator.
  *

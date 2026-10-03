@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Upwork Job Discovery & Extraction Operations
  * High-level Safari automation for job search, extraction, and scoring.

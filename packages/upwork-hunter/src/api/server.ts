@@ -1,3 +1,4 @@
+import '../legacy-containment.js';
 /**
  * Upwork Hunter API Server
  *
