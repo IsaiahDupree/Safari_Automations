@@ -8,6 +8,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
@@ -797,6 +798,80 @@ def insert_crm_message(
         "sent_at": sent_at or _utcnow(),
     }
     return _request("POST", "crm_messages", body=[message])
+
+
+def get_outbound_email_evidence(contact_id: str) -> tuple[list[dict], Optional[str]]:
+    """Return canonical sent CRM messages used to verify inbound thread linkage."""
+    return _select(
+        "crm_messages",
+        f"?contact_id=eq.{contact_id}&is_outbound=eq.true&select=id,message_id,platform_message_id,message_text,sent_at,message_type,metadata&order=sent_at.asc",
+    )
+
+
+def find_contacts_by_email(email: str) -> tuple[list[dict], Optional[str]]:
+    """Resolve sender identity only when exactly one matching CRM contact exists."""
+    safe_email = quote(email.replace(",", ""), safe="@.+_- ")
+    return _select(
+        "crm_contacts",
+        f"?email=ilike.{safe_email}&select=id,email,display_name,pipeline_stage,last_offer_sent,niche_label&limit=2",
+    )
+
+
+def upsert_inbound_message(row: dict) -> tuple[Any, Optional[str]]:
+    """Persist provider message once; duplicate mailbox reads merge by source+Message-ID."""
+    return _request(
+        "POST", "acq_inbound_messages", body=[row],
+        params="?on_conflict=source,message_id",
+    )
+
+
+def set_inbox_sync_state(attempted_at: str, success: bool, messages_seen: int,
+                         error: Optional[str] = None, source: str = "gmail") -> tuple[Any, Optional[str]]:
+    row = {
+        "source": source,
+        "last_attempt_at": attempted_at,
+        "last_error": error,
+        "messages_seen": messages_seen,
+        "updated_at": _utcnow(),
+    }
+    if success:
+        row["last_success_at"] = attempted_at
+    return _request(
+        "POST", "acq_inbox_sync_state", body=[row],
+        params="?on_conflict=source",
+    )
+
+
+def get_inbox_sync_state(source: str = "gmail") -> tuple[Optional[dict], Optional[str]]:
+    rows, err = _select("acq_inbox_sync_state", f"?source=eq.{source}&limit=1")
+    return (rows[0] if rows else None), err
+
+
+def get_inbound_messages(contact_id: Optional[str] = None, limit: int = 500,
+                         source: str = "gmail") -> tuple[list[dict], Optional[str]]:
+    params = "?select=*&order=occurred_at.desc&limit=" + str(max(1, min(limit, 1000)))
+    if contact_id:
+        params += "&contact_id=eq." + contact_id
+    params += "&source=eq." + source
+    return _select("acq_inbound_messages", params)
+
+
+def get_outbound_messages(contact_ids: list[str], limit: int = 1000) -> tuple[list[dict], Optional[str]]:
+    if not contact_ids:
+        return [], None
+    ids = ",".join(contact_ids)
+    return _select(
+        "crm_messages",
+        f"?contact_id=in.({ids})&is_outbound=eq.true&select=id,contact_id,message_text,sent_at,message_type&order=sent_at.desc&limit={max(1, min(limit, 1000))}",
+    )
+
+
+def get_contacts_with_outreach(limit: int = 500) -> tuple[list[dict], Optional[str]]:
+    """Get current conversations that have an outbound message timestamp."""
+    return _select(
+        "crm_contacts",
+        f"?last_outbound_at=not.is.null&select=id,email,display_name,pipeline_stage,last_outbound_at,last_inbound_at,last_offer_sent,niche_label&order=last_outbound_at.desc&limit={max(1, min(limit, 1000))}",
+    )
 
 
 def count_crm_messages(

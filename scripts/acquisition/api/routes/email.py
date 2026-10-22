@@ -16,9 +16,195 @@ from pydantic import BaseModel
 
 from ...db import queries
 from ...config import EMAIL_UNSUB_SECRET
+from ...email.gmail_watcher import GmailWatcher
+from ...email.imap_watcher import assess_reply_link
+from ...email.reply_state import conversation_review
 
 
 router = APIRouter(prefix="/api/acquisition/email", tags=["email"])
+
+
+@router.post("/inbox/sync")
+def sync_reply_inbox(since_days: int = Query(default=30, ge=1, le=365)):
+    """Synchronize IMAP evidence. This reads mail and writes only CRM evidence."""
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    try:
+        watcher = GmailWatcher()
+    except Exception as exc:
+        queries.set_inbox_sync_state(attempted_at, False, 0, str(exc), source="gmail")
+        raise HTTPException(status_code=503, detail={"status": "failed", "error": str(exc)})
+
+    outreach_contacts, contacts_err = queries.get_contacts_with_outreach(limit=50)
+    if contacts_err:
+        queries.set_inbox_sync_state(attempted_at, False, 0, contacts_err, source="gmail")
+        raise HTTPException(status_code=503, detail={"status": "failed", "error": contacts_err})
+    sender_emails = list({contact["email"] for contact in outreach_contacts if contact.get("email")})
+    result = watcher.fetch_new_replies(
+        datetime.now(timezone.utc) - timedelta(days=since_days), sender_emails=sender_emails,
+    )
+    if not result.ok:
+        _, state_err = queries.set_inbox_sync_state(
+            result.synced_at.isoformat(), False, 0, result.error or "Gmail sync failed",
+            source=result.source,
+        )
+        raise HTTPException(status_code=502, detail={
+            "status": "failed", "error": result.error, "state_write_error": state_err
+        })
+
+    stored = 0
+    ambiguous = 0
+    unmatched = 0
+    errors: list[str] = []
+    # Resolve a sender only when it maps uniquely. Then compare against that
+    # contact's real sent outreach before marking it as a human reply.
+    for message in result.replies:
+        contacts, err = queries.find_contacts_by_email(message.from_email)
+        if err:
+            errors.append(f"contact lookup: {err}")
+            continue
+        contact = contacts[0] if len(contacts) == 1 else None
+        status, reason = "unmatched", "Sender email does not resolve to exactly one CRM contact"
+        if contact:
+            outbound, err = queries.get_outbound_email_evidence(contact["id"])
+            if err:
+                errors.append(f"outbound lookup {contact['id']}: {err}")
+                continue
+            # Resend IDs are provider IDs, not RFC Message-IDs, so linkage can
+            # only be confirmed if a stored RFC ID is available. Subject-only
+            # similarity remains reviewable, never auto-confirmed.
+            outbound_ids = {
+                message_id for row in outbound
+                for message_id in (row.get("message_id"), row.get("platform_message_id"))
+                if message_id
+            }
+            outbound_subjects = {
+                (row.get("metadata") or {}).get("subject", "")
+                for row in outbound if (row.get("metadata") or {}).get("subject")
+            }
+            status, reason = assess_reply_link(message, outbound_ids, outbound_subjects)
+
+        if status == "needs_review":
+            ambiguous += 1
+        elif status == "unmatched":
+            unmatched += 1
+        row = {
+            "source": result.source,
+            "source_uid": message.source_uid,
+            "message_id": message.message_id or f"uid:{message.source_uid}",
+            "contact_id": contact.get("id") if contact else None,
+            "from_email": message.from_email,
+            "subject": message.subject,
+            "body_text": message.body,
+            "in_reply_to": message.in_reply_to,
+            "references_ids": list(message.references),
+            "occurred_at": message.received_at.isoformat(),
+            "link_status": status,
+            "link_reason": reason,
+        }
+        _, err = queries.upsert_inbound_message(row)
+        if err:
+            errors.append(f"message {row['message_id']}: {err}")
+            continue
+        stored += 1
+        if contact and status in ("human_reply", "needs_review"):
+            _, err = queries.update_last_inbound_at(contact["id"], message.received_at.isoformat())
+            if err:
+                errors.append(f"contact timestamp {contact['id']}: {err}")
+
+    _, state_err = queries.set_inbox_sync_state(
+        result.synced_at.isoformat(), not errors, stored,
+        "; ".join(errors)[:1000] if errors else None, source=result.source,
+    )
+    if state_err:
+        errors.append(f"sync state write: {state_err}")
+    return {
+        "status": "ok" if not errors else "partial",
+        "synced_at": result.synced_at.isoformat(),
+        "messages_seen": len(result.replies),
+        "messages_stored": stored,
+        "needs_review": ambiguous,
+        "unmatched": unmatched,
+        "errors": errors,
+    }
+
+
+@router.get("/inbox/review")
+def get_reply_inbox_review(
+    limit: int = Query(default=100, ge=1, le=500),
+    contact_id: Optional[str] = Query(default=None),
+    state: Optional[str] = Query(default=None),
+):
+    """Return evidence-backed conversation rows and mailbox freshness."""
+    sync, err = queries.get_inbox_sync_state(source="gmail")
+    if err:
+        raise HTTPException(status_code=503, detail=f"Cannot read mailbox sync state: {err}")
+    inbound, err = queries.get_inbound_messages(contact_id=contact_id, limit=limit * 5, source="gmail")
+    if err:
+        raise HTTPException(status_code=503, detail=f"Cannot read inbox evidence: {err}")
+
+    contacts_by_id = {}
+    if not contact_id:
+        outreach_contacts, err = queries.get_contacts_with_outreach(limit=limit * 5)
+        if err:
+            raise HTTPException(status_code=503, detail=f"Cannot read outreach contacts: {err}")
+        contacts_by_id.update({contact["id"]: contact for contact in outreach_contacts})
+    for msg in inbound:
+        if msg.get("contact_id") and msg["contact_id"] not in contacts_by_id:
+            contact, contact_err = queries.get_contact(msg["contact_id"])
+            if contact_err:
+                raise HTTPException(status_code=503, detail=f"Cannot read contact: {contact_err}")
+            if contact:
+                contacts_by_id[msg["contact_id"]] = contact
+    contact_ids = list(contacts_by_id)
+    outbound, err = queries.get_outbound_messages(contact_ids, limit=limit * 5)
+    if err:
+        raise HTTPException(status_code=503, detail=f"Cannot read outbound evidence: {err}")
+
+    by_contact: dict[str, list[dict]] = {}
+    for msg in inbound:
+        if msg.get("contact_id"):
+            by_contact.setdefault(msg["contact_id"], []).append({
+                **msg, "is_outbound": False, "occurred_at": msg.get("occurred_at"),
+                "source_record_id": msg.get("id"),
+            })
+    for msg in outbound:
+        cid = msg.get("contact_id")
+        if cid in contacts_by_id:
+            by_contact.setdefault(cid, []).append({
+                **msg, "source": msg.get("message_type", "crm"),
+                "source_record_id": msg.get("id"), "is_outbound": True,
+                "occurred_at": msg.get("sent_at"),
+            })
+
+    sync_ok = bool(sync and sync.get("last_success_at") and not sync.get("last_error"))
+    rows = [conversation_review(contacts_by_id[cid], messages, sync_ok,
+                                sync.get("last_success_at") if sync else None)
+            for cid, messages in by_contact.items()]
+    # Unresolved inbound messages remain visible as explicit review items.
+    for msg in inbound:
+        if not msg.get("contact_id"):
+            rows.append({
+                "customer_id": None, "customer": msg.get("from_email"), "offer": None,
+                "state": "needs_review" if sync_ok else "stale_data",
+                "last_inbound_at": msg.get("occurred_at"), "last_outbound_at": None,
+                "last_inbound_preview": (msg.get("body_text") or "")[:500],
+                "last_inbound_subject": msg.get("subject"),
+                "evidence": {"source": msg.get("source", "gmail"), "source_record_id": msg.get("id"),
+                             "message_id": msg.get("message_id"),
+                             "occurred_at": msg.get("occurred_at"),
+                             "subject": msg.get("subject"),
+                             "excerpt": (msg.get("body_text") or "")[:500],
+                             "link_reason": msg.get("link_reason")},
+                "next_action": "Resolve customer identity and verify the outreach thread",
+                "sync": {"ok": sync_ok, "synced_at": sync.get("last_success_at") if sync else None,
+                         "status": "fresh" if sync_ok else "failed"},
+            })
+    if state:
+        rows = [row for row in rows if row["state"] == state]
+    rows.sort(key=lambda row: row.get("last_inbound_at") or row.get("last_outbound_at") or "", reverse=True)
+    return {"items": rows[:limit], "total": len(rows), "sync": sync or {
+        "source": "gmail", "last_success_at": None, "last_error": "No sync has completed"
+    }}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

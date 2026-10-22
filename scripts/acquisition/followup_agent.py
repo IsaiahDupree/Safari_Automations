@@ -121,7 +121,10 @@ class ReplyDetector:
         success, err = await self.trigger_crm_sync()
         if not success:
             print(f"[ReplyDetector] Warning: Sync failed - {err}")
-            print("[ReplyDetector] Continuing with existing data...")
+            # Stale mailbox state cannot establish that no reply arrived. Fail
+            # closed so downstream no-reply follow-up logic cannot act on it.
+            print("[ReplyDetector] Stopping reply detection; mailbox state is stale")
+            return []
 
         # Step 2: Query contacts with replies
         contacts, err = queries.get_contacts_with_replies(limit=100)

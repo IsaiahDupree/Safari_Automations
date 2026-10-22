@@ -27,7 +27,9 @@ acquisition/
 │   ├── resend_client.py
 │   ├── discovery.py
 │   ├── generator.py
-│   └── imap_watcher.py
+│   ├── gmail_watcher.py      # Read-only inbox sync via existing ACTP Gmail OAuth
+│   ├── imap_watcher.py       # IMAP read + reply-link evidence helpers
+│   └── reply_state.py        # Deterministic evidence-backed conversation review projection
 ├── entity/
 │   ├── perplexity_client.py
 │   ├── username_matcher.py
@@ -113,6 +115,31 @@ new → scored → qualified → warming → ready_for_dm → contacted → repl
                                                                         → closed_lost → (re-entry after 90d)
                                                          → archived → (re-entry after 180d)
 ```
+
+## Reply visibility contract
+
+`email.imap_watcher.IMAPWatcher.fetch_new_replies()` returns an
+`InboxSyncResult`, not a bare list. Consumers must check `ok` before making a
+no-reply decision; failed IMAP reads return `ok=False` and an error so an empty
+result cannot masquerade as a healthy inbox. Each parsed email retains its
+Message-ID, In-Reply-To, References, and IMAP UID. `assess_reply_link()` marks
+an inbound message as a confirmed reply only when its thread headers match a
+known outbound Message-ID. Subject-only matches are `needs_review`; unlinked
+mail stays `unmatched`.
+
+`email.reply_state.conversation_review(contact, messages, sync_ok, synced_at)`
+projects stored message evidence into one review row with state, timestamps,
+message excerpt, source identifiers, link reason, freshness, and next action.
+A failed sync always projects `stale_data`, never `awaiting_reply`. The
+acquisition API connects this projection to durable inbox records and exposes
+the review data as JSON; this repository does not include a visual inbox UI.
+
+The API exposes `POST /api/acquisition/email/inbox/sync?since_days=30` and
+`GET /api/acquisition/email/inbox/review?limit=100`. Sync uses the existing
+ACTP Gmail OAuth token in read-only fashion, then stores message evidence in
+`acq_inbound_messages`. Apply the generated `supabase/migrations/*_reply_inbox.sql`
+migration before starting the service. Run the API on loopback (the Uvicorn
+default) because its review endpoint returns private email content.
 
 ## Daily Caps (default)
 

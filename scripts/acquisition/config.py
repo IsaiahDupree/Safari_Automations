@@ -5,6 +5,13 @@ All environment variables, service ports, daily cap defaults, and pipeline
 stage transitions live here so every other module imports from one place.
 """
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+except ImportError:
+    pass
 
 # ── Core Services ─────────────────────────────────────────────────────────────
 
