@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Reply Inbox · Acquisition</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17211c;background:#f3f6f2;font-synthesis:none;font-weight:400}
+    *{box-sizing:border-box}body{margin:0}.shell{max-width:1100px;margin:auto;padding:32px 22px 64px}
+    header{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:22px}h1{font-size:28px;letter-spacing:-.04em;margin:0 0 7px}.sub{color:#68756d;margin:0;font-size:14px}
+    button,select,input{font:inherit;border:1px solid #d4ddd6;border-radius:9px;background:white;color:#17211c;padding:10px 13px}button{cursor:pointer;font-weight:650}button.primary{background:#176b48;color:white;border-color:#176b48}button:disabled{opacity:.55;cursor:wait}
+    .toolbar{display:flex;gap:9px;flex-wrap:wrap;margin:20px 0}.toolbar input{flex:1;min-width:190px}.banner{display:none;padding:12px 15px;border-radius:10px;margin:14px 0;font-size:14px}.banner.show{display:block}.banner.warn{background:#fff1d8;color:#754b05}.banner.error{background:#fde9e7;color:#8d2119}.banner.ok{background:#e4f4ea;color:#175b37}
+    .summary{display:flex;align-items:center;justify-content:space-between;color:#657269;font-size:13px;margin:14px 2px}.cards{display:grid;gap:12px}.card{background:#fff;border:1px solid #e0e7e1;border-radius:13px;padding:17px 18px;box-shadow:0 2px 8px #17382008}.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.identity{min-width:0}.name{font-weight:720;font-size:16px}.email,.meta{color:#728077;font-size:12px;margin-top:4px;overflow-wrap:anywhere}.badge{white-space:nowrap;border-radius:99px;padding:5px 9px;font-size:11px;font-weight:700;background:#edf1ee;color:#56645b}.badge.reply{background:#e3f4e9;color:#176b48}.badge.review,.badge.stale_data{background:#fff1d8;color:#79500a}.badge.awaiting_reply{background:#e9efff;color:#3e5590}.details{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:15px}.label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#819087;font-weight:750;margin-bottom:6px}.excerpt{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5;color:#344139}.action{font-size:13px;line-height:1.45;font-weight:600;color:#234b37}.evidence{border-top:1px solid #edf1ee;margin-top:14px;padding-top:10px}.empty{padding:42px 18px;text-align:center;color:#758178;background:#fff;border:1px dashed #d5ded7;border-radius:13px}.foot{font-size:11px;color:#89948c;text-align:center;margin-top:24px}
+    @media(max-width:650px){.shell{padding:22px 14px 40px}header{display:block}header .buttons{margin-top:15px}.details{grid-template-columns:1fr}.top{align-items:flex-start}.summary{align-items:flex-start;gap:10px;flex-direction:column}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div><h1>Reply inbox</h1><p class="sub">Customer replies and open outreach, with source evidence behind each state.</p></div>
+      <div class="buttons"><button id="refresh">Refresh</button> <button class="primary" id="sync">Sync mailbox</button></div>
+    </header>
+    <div id="banner" class="banner" role="status" aria-live="polite"></div>
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search customer, offer, or message">
+      <select id="state" aria-label="Filter by conversation state">
+        <option value="">All states</option><option value="human_reply_received">Reply received</option><option value="needs_review">Needs review</option><option value="awaiting_reply">Awaiting reply</option><option value="stale_data">Stale data</option><option value="closed">Closed</option>
+      </select>
+      <select id="window" aria-label="Mailbox lookback"><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select>
+    </div>
+    <div class="summary"><span id="count">Loading conversations…</span><span id="freshness"></span></div>
+    <section id="cards" class="cards" aria-live="polite"></section>
+    <p class="foot">Mailbox sync reads messages and records evidence. It does not send replies or follow-ups.</p>
+  </main>
+  <script>
+    const api='/api/acquisition/email/inbox';
+    const el=(id)=>document.getElementById(id);
+    const banner=el('banner');
+    function message(text,kind='ok'){banner.textContent=text;banner.className='banner show '+kind;}
+    function hideMessage(){banner.textContent='';banner.className='banner';}
+    function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
+    function stateLabel(s){return ({human_reply_received:'Reply received',needs_review:'Needs review',awaiting_reply:'Awaiting reply',stale_data:'Stale data',closed:'Closed'})[s]||s||'Unknown';}
+    function date(value){if(!value)return 'No recorded activity';const d=new Date(value);return Number.isNaN(d.getTime())?value:d.toLocaleString();}
+    function renderCard(item){
+      const card=node('article','card'),top=node('div','top'),identity=node('div','identity');
+      identity.append(node('div','name',item.customer||'Unknown customer'));
+      if(item.email)identity.append(node('div','email',item.email));
+      if(item.offer)identity.append(node('div','meta','Offer: '+item.offer));
+      const badge=node('span','badge '+(item.state||''),stateLabel(item.state));top.append(identity,badge);card.append(top);
+      const details=node('div','details'),evidence=item.evidence||{};
+      const left=node('div'),right=node('div');
+      left.append(node('div','label',item.last_inbound_at?'Latest customer message':'Latest message evidence'));
+      left.append(node('div','meta',(evidence.subject||item.last_inbound_subject||'')+(evidence.occurred_at?' · '+date(evidence.occurred_at):'')));
+      const excerpt=evidence.excerpt||item.last_inbound_preview;
+      left.append(node('div','excerpt',excerpt||'No message excerpt is available.'));
+      right.append(node('div','label','Next action'),node('div','action',item.next_action||'Review conversation'));
+      right.append(node('div','meta','Last outbound: '+date(item.last_outbound_at)));
+      right.append(node('div','meta','Last inbound: '+date(item.last_inbound_at)));
+      details.append(left,right);card.append(details);
+      const foot=node('div','evidence'),source=evidence.source||'CRM';
+      foot.append(node('div','meta','Evidence: '+source+(evidence.message_id?' · '+evidence.message_id:'')));
+      if(evidence.link_reason)foot.append(node('div','meta','Link review: '+evidence.link_reason));
+      card.append(foot);return card;
+    }
+    async function load(){
+      el('count').textContent='Loading conversations…';
+      try{
+        const params=new URLSearchParams({limit:'100'});if(el('state').value)params.set('state',el('state').value);
+        const response=await fetch(api+'/review?'+params);if(!response.ok)throw new Error('Inbox request failed ('+response.status+')');
+        const data=await response.json(),items=data.items||[],query=el('search').value.trim().toLowerCase();
+        const visible=items.filter(x=>!query||[x.customer,x.email,x.offer,x.last_inbound_preview,x.last_inbound_subject,x.next_action,x.evidence?.excerpt].filter(Boolean).join(' ').toLowerCase().includes(query));
+        const cards=el('cards');cards.replaceChildren();
+        if(!visible.length)cards.append(node('div','empty',items.length?'No conversations match this search.':'No conversations are available.'));
+        else visible.forEach(x=>cards.append(renderCard(x)));
+        el('count').textContent=visible.length+' shown · '+(data.total||0)+' total conversations';
+        const sync=data.sync||{},stamp=sync.last_success_at;
+        el('freshness').textContent=stamp?'Last successful sync: '+date(stamp):'Mailbox has not synced successfully';
+        if(!stamp||sync.last_error)message(sync.last_error?'Mailbox data may be stale: '+sync.last_error:'Mailbox has not synced successfully.','warn');else hideMessage();
+      }catch(err){el('cards').replaceChildren(node('div','empty',err.message));el('count').textContent='Inbox unavailable';message(err.message,'error');}
+    }
+    async function syncMailbox(){
+      const button=el('sync');button.disabled=true;button.textContent='Syncing…';message('Reading mailbox evidence…','warn');
+      try{const response=await fetch(api+'/sync?since_days='+encodeURIComponent(el('window').value),{method:'POST'});const result=await response.json();if(!response.ok)throw new Error(result.detail?.error||'Mailbox sync failed ('+response.status+')');await load();message('Sync '+result.status+': '+result.messages_seen+' messages checked, '+result.messages_stored+' evidence records stored, '+result.needs_review+' need review.','ok');}
+      catch(err){message(err.message,'error');await load();}
+      finally{button.disabled=false;button.textContent='Sync mailbox';}
+    }
+    el('refresh').addEventListener('click',load);el('sync').addEventListener('click',syncMailbox);
+    el('state').addEventListener('change',load);el('search').addEventListener('input',load);
+    load();
+  </script>
+</body>
+</html>

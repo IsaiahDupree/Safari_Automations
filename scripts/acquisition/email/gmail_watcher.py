@@ -34,7 +34,9 @@ class GmailWatcher:
                 if not credentials.expired or not credentials.refresh_token:
                     raise RuntimeError("Gmail OAuth token is invalid; owner reauthorization is required")
                 from google.auth.transport.requests import Request
-                credentials.refresh(Request(timeout=15))
+                # google-auth's requests transport takes timeout on each call,
+                # not in its constructor.
+                credentials.refresh(Request())
                 self.client._save_credentials(credentials)
             import httpx
             headers = {"Authorization": f"Bearer {credentials.token}"}

@@ -24,6 +24,15 @@ from ...email.reply_state import conversation_review
 router = APIRouter(prefix="/api/acquisition/email", tags=["email"])
 
 
+@router.get("/inbox", response_class=HTMLResponse)
+def reply_inbox_page():
+    """Serve the local operator view for evidence-backed reply review."""
+    from pathlib import Path
+
+    page = Path(__file__).resolve().parents[1] / "static" / "reply_inbox.html"
+    return HTMLResponse(page.read_text(encoding="utf-8"))
+
+
 @router.post("/inbox/sync")
 def sync_reply_inbox(since_days: int = Query(default=30, ge=1, le=365)):
     """Synchronize IMAP evidence. This reads mail and writes only CRM evidence."""
