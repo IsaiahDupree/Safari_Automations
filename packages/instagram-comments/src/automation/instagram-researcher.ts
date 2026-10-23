@@ -20,13 +20,14 @@
  *   Pass 2: Open top posts to extract detailed engagement (slower, optional)
  */
 
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -161,6 +162,15 @@ export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
 export class InstagramResearcher {
   private config: InstagramResearchConfig;
 
+  private target(): string {
+    const windowId = Number(process.env.SAFARI_INSTAGRAM_RESEARCH_WINDOW_ID);
+    const tabIndex = Number(process.env.SAFARI_INSTAGRAM_RESEARCH_TAB_INDEX || '1');
+    if (!Number.isSafeInteger(windowId) || windowId <= 0 || !Number.isSafeInteger(tabIndex) || tabIndex <= 0) {
+      throw new Error('Instagram research requires an explicit dedicated Safari window ID and tab; front-window fallback is disabled');
+    }
+    return `tab ${tabIndex} of (first window whose id is ${windowId})`;
+  }
+
   constructor(config: Partial<InstagramResearchConfig> = {}) {
     this.config = { ...DEFAULT_IG_RESEARCH_CONFIG, ...config };
   }
@@ -175,7 +185,10 @@ export class InstagramResearcher {
   private async executeJS(script: string): Promise<string> {
     const tmpFile = path.join(os.tmpdir(), `safari_ig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in current tab of front window`;
+    const appleScript = `tell application "Safari"
+if URL of ${this.target()} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
+do JavaScript "${jsCode}" in ${this.target()}
+end tell`;
     fs.writeFileSync(tmpFile, appleScript);
     try {
       const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
@@ -187,8 +200,12 @@ export class InstagramResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
+      if (new URL(url).origin !== 'https://www.instagram.com') throw new Error('Instagram research origin required');
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      await execFileAsync('osascript', ['-e', `tell application "Safari"
+if URL of ${this.target()} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
+set URL of ${this.target()} to "${safeUrl}"
+end tell`], { timeout: this.config.timeout });
       return true;
     } catch { return false; }
   }
