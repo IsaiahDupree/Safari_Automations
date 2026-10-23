@@ -125,6 +125,7 @@ export class TikTokResearcher {
   // attribute values so they survive TikTokDriver's " → \" AppleScript embedding.
 
   private _driver = new TikTokDriver();
+  private sessionBound = false;
 
   private async navigate(url: string): Promise<boolean> {
     return this._driver.navigateToPost(url);
@@ -144,6 +145,30 @@ export class TikTokResearcher {
     return false;
   }
 
+  /** Stop a whole research run at an authentication wall; never count it as empty results. */
+  async assertResearchSession(requireTikTok = true): Promise<void> {
+    if (!this.sessionBound) {
+      await this._driver.bindExistingTikTokTab();
+      this.sessionBound = true;
+    }
+    const state = await this._driver.executeJS(`(function() {
+      if (location.hostname !== 'www.tiktok.com' && location.hostname !== 'tiktok.com') return 'other_origin';
+      var text = (document.body.innerText || '').toLowerCase();
+      if (/verify it.s really you|enter.{0,20}(verification|security) code|verify your identity/.test(text)) return 'mfa_required';
+      if (/log in to search|log in to tiktok/.test(text) || /\\/login(?:\\/|$)/.test(location.pathname)) return 'login_required';
+      var visible = function(el) { return el.getClientRects().length > 0; };
+      if (Array.from(document.querySelectorAll('input[type="password"]')).some(visible)) return 'login_required';
+      if (Array.from(document.querySelectorAll('button')).some(function(el) { return visible(el) && /^log in$/i.test((el.textContent || '').trim()); })) return 'login_required';
+      return 'ready';
+    })()`);
+    if (state === 'login_required' || state === 'mfa_required') {
+      throw new Error('TIKTOK_AUTH_REQUIRED: ' + state + '. Research stopped; complete saved-password sign-in in this Safari profile before starting a new run.');
+    }
+    if (requireTikTok && state !== 'ready') {
+      throw new Error('TIKTOK_SESSION_UNVERIFIED: research tab changed or its session could not be inspected');
+    }
+  }
+
   // ─── Search ────────────────────────────────────────────────
 
   /**
@@ -151,6 +176,7 @@ export class TikTokResearcher {
    * Navigates to the "Videos" tab of search results.
    */
   async search(query: string): Promise<boolean> {
+    await this.assertResearchSession();
     const url = `https://www.tiktok.com/search/video?q=${encodeURIComponent(query)}`;
     console.log(`[TT Research] Searching: "${query}"`);
     const ok = await this.navigate(url);  // includes 3s internal wait
@@ -158,6 +184,7 @@ export class TikTokResearcher {
     // Fixed wait — waitForSelector via osascript polling is too slow (~1-2s/call)
     // and unreliable when concurrent platform researchers navigate Safari concurrently.
     await this.wait(7000);
+    await this.assertResearchSession(true);
     console.log('[TT Research] navigation wait complete, proceeding to extract');
     return true;
   }
@@ -165,6 +192,7 @@ export class TikTokResearcher {
   // ─── Extract visible videos ────────────────────────────────
 
   async extractVisibleVideos(niche: string): Promise<TikTokVideo[]> {
+    await this.assertResearchSession(true);
     // Use TikTokDriver.executeJS with \\' selectors (same as search-cards endpoint on port 3006).
     // \\' in TS template literal → \' in JS string → survives TikTokDriver's " → \" transform.
     // Diagnostic: check card count and URL right before extraction

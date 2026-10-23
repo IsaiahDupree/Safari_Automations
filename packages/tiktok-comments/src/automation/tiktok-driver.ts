@@ -1,9 +1,10 @@
 /**
  * TikTok Comment Driver - Safari automation for TikTok comments
  */
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export const SELECTORS = {
   COMMENT_INPUT: '[data-e2e="comment-input"]',
@@ -31,6 +32,7 @@ export const DEFAULT_CONFIG: TikTokConfig = {
 export class TikTokDriver {
   private config: TikTokConfig;
   private commentLog: { timestamp: Date }[] = [];
+  private _trackedWindowId: number | null = null;
   private _trackedWindow: number | null = null;
   private _trackedTab: number | null = null;
   private _trackedUrlPattern: string | null = null;
@@ -47,6 +49,21 @@ export class TikTokDriver {
     console.log(`[TikTokDriver] Pinned to w=${windowIndex} t=${tabIndex} (${urlPattern})`);
   }
 
+  /** Bind research to exactly one existing TikTok tab, independent of window ordering. */
+  async bindExistingTikTokTab(): Promise<void> {
+    const source = `const s=Application('Safari'); const found=[];
+      for(const w of s.windows()) { const tabs=w.tabs();
+        for(let i=0;i<tabs.length;i++) { const u=tabs[i].url() || '';
+          if(/^https:\\/\\/(www\\.)?tiktok\\.com(?:\\/|$)/.test(u)) found.push({windowId:w.id(),tabIndex:i+1});
+        }
+      } JSON.stringify(found);`;
+    const { stdout } = await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', source], {timeout:10000});
+    const found = JSON.parse(stdout) as Array<{windowId:number;tabIndex:number}>;
+    if (found.length !== 1) throw new Error('TIKTOK_TAB_REQUIRED: select one unambiguous existing TikTok tab before research');
+    this._trackedWindowId = found[0].windowId;
+    this._trackedTab = found[0].tabIndex;
+  }
+
   async executeJS(script: string): Promise<string> {
     // Use temp file approach to avoid shell escaping issues (same as ThreadsDriver)
     const fs = await import('fs');
@@ -56,7 +73,9 @@ export class TikTokDriver {
     const tmpFile = path.join(os.tmpdir(), `safari_js_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
     // Use tracked tab if claimed; otherwise fall back to front window
-    const tabSpec = (this._trackedWindow && this._trackedTab)
+    const tabSpec = (this._trackedWindowId && this._trackedTab)
+      ? `tab ${this._trackedTab} of (first window whose id is ${this._trackedWindowId})`
+      : (this._trackedWindow && this._trackedTab)
       ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
       : 'current tab of front window';
     const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabSpec}`;
@@ -73,7 +92,9 @@ export class TikTokDriver {
   private async navigate(url: string): Promise<boolean> {
     try {
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
+      const tabSpec = (this._trackedWindowId && this._trackedTab)
+      ? `tab ${this._trackedTab} of (first window whose id is ${this._trackedWindowId})`
+      : (this._trackedWindow && this._trackedTab)
         ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
         : `current tab of front window`;
       await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
