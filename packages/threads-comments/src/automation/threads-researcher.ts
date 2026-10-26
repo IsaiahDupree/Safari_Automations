@@ -17,14 +17,14 @@
  *   smart waits, retry with backoff, error detection.
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { researchRelevance } from '../../../twitter-comments/src/automation/twitter-researcher.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -114,6 +114,8 @@ export const DEFAULT_THREADS_RESEARCH_CONFIG: ThreadsResearchConfig = {
 
 export class ThreadsResearcher {
   private config: ThreadsResearchConfig;
+  private targetWindowId: number | null = null;
+  private targetCreation: Promise<number> | null = null;
 
   constructor(config: Partial<ThreadsResearchConfig> = {}) {
     this.config = { ...DEFAULT_THREADS_RESEARCH_CONFIG, ...config };
@@ -126,14 +128,50 @@ export class ThreadsResearcher {
 
   // ─── Low-level Safari helpers ──────────────────────────────
 
+  private async targetWindow(): Promise<number> {
+    if (this.targetWindowId !== null) return this.targetWindowId;
+    if (!this.targetCreation) {
+      this.targetCreation = (async () => {
+        const { stdout } = await execFileAsync('osascript', ['-e', `
+tell application "Safari"
+  set previousWindow to missing value
+  if (count windows) > 0 then set previousWindow to id of front window
+  make new document with properties {URL:"https://www.threads.com/"}
+  set researchWindow to id of front window
+  if previousWindow is not missing value then set index of window id previousWindow to 1
+  return researchWindow
+end tell`], { timeout: this.config.timeout });
+        const id = Number(stdout.trim());
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Safari did not return a research window identity');
+        this.targetWindowId = id;
+        this.log(`Bound research to Safari window id ${id}; unrelated tabs stay outside this target`);
+        return id;
+      })();
+    }
+    // A failed/closed target is never replaced by a foreground-tab fallback.
+    return this.targetCreation;
+  }
+
+  private targetGuard(id: number): string {
+    return `
+  if not (exists window id ${id}) then error "Threads research window closed"
+  set researchWindow to window id ${id}
+  if (count tabs of researchWindow) is not 1 then error "Threads research tab inventory changed"
+  set researchTab to tab 1 of researchWindow
+  set targetUrl to URL of researchTab
+  if not (targetUrl starts with "https://www.threads.com/" or targetUrl starts with "https://www.threads.net/" or targetUrl starts with "https://threads.com/" or targetUrl starts with "https://threads.net/") then error "Threads research target changed origin"
+`;
+  }
+
   private async executeJS(script: string): Promise<string> {
+    const id = await this.targetWindow();
     const jsFile = path.join(os.tmpdir(), `safari_threads_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.js`);
     const scptFile = jsFile.replace('.js', '.scpt');
-    fs.writeFileSync(jsFile, script);
-    const appleScript = `tell application "Safari"\ntell front document\nset jsCode to read POSIX file "${jsFile}"\ndo JavaScript jsCode\nend tell\nend tell`;
-    fs.writeFileSync(scptFile, appleScript);
+    fs.writeFileSync(jsFile, script, { mode: 0o600 });
+    const appleScript = `tell application "Safari"\n${this.targetGuard(id)}\nset jsCode to read POSIX file "${jsFile}" as «class utf8»\ndo JavaScript jsCode in researchTab\nend tell`;
+    fs.writeFileSync(scptFile, appleScript, { mode: 0o600 });
     try {
-      const { stdout } = await execAsync(`osascript "${scptFile}"`, { timeout: this.config.timeout });
+      const { stdout } = await execFileAsync('osascript', [scptFile], { timeout: this.config.timeout });
       return stdout.trim();
     } finally {
       try { fs.unlinkSync(jsFile); } catch {}
@@ -143,8 +181,14 @@ export class ThreadsResearcher {
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of current tab of front window to "${safeUrl}"'`);
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port
+          || !['threads.com', 'www.threads.com', 'threads.net', 'www.threads.net'].includes(parsed.hostname)) {
+        throw new Error('Threads research navigation must stay at the Threads origin');
+      }
+      const id = await this.targetWindow();
+      const safeUrl = parsed.href.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execFileAsync('osascript', ['-e', `tell application "Safari"\n${this.targetGuard(id)}\nset URL of researchTab to "${safeUrl}"\nend tell`], { timeout: this.config.timeout });
       return true;
     } catch { return false; }
   }
