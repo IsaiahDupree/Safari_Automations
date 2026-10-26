@@ -161,14 +161,33 @@ export const DEFAULT_IG_RESEARCH_CONFIG: InstagramResearchConfig = {
 
 export class InstagramResearcher {
   private config: InstagramResearchConfig;
+  private targetWindowId: number | null = null;
+  private targetCreation: Promise<string> | null = null;
 
-  private target(): string {
+  private async target(): Promise<string> {
     const windowId = Number(process.env.SAFARI_INSTAGRAM_RESEARCH_WINDOW_ID);
     const tabIndex = Number(process.env.SAFARI_INSTAGRAM_RESEARCH_TAB_INDEX || '1');
-    if (!Number.isSafeInteger(windowId) || windowId <= 0 || !Number.isSafeInteger(tabIndex) || tabIndex <= 0) {
-      throw new Error('Instagram research requires an explicit dedicated Safari window ID and tab; front-window fallback is disabled');
+    if (Number.isSafeInteger(windowId) && windowId > 0 && Number.isSafeInteger(tabIndex) && tabIndex > 0) {
+      return `tab ${tabIndex} of (first window whose id is ${windowId})`;
     }
-    return `tab ${tabIndex} of (first window whose id is ${windowId})`;
+    if (process.env.SAFARI_INSTAGRAM_RESEARCH_WINDOW_ID || process.env.SAFARI_INSTAGRAM_RESEARCH_TAB_INDEX) {
+      throw new Error('Explicit Instagram research target is invalid');
+    }
+    if (!this.targetCreation) this.targetCreation = (async () => {
+      const { stdout } = await execFileAsync('osascript', ['-e', `tell application "Safari"
+set prior to missing value
+if (count windows) > 0 then set prior to id of front window
+make new document with properties {URL:"https://www.instagram.com/"}
+set researchId to id of front window
+if prior is not missing value then set index of window id prior to 1
+return researchId
+end tell`], { timeout: this.config.timeout });
+      const id = Number(stdout.trim());
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Instagram research window identity unavailable');
+      this.targetWindowId = id;
+      return `tab 1 of (first window whose id is ${id})`;
+    })();
+    return this.targetCreation;
   }
 
   constructor(config: Partial<InstagramResearchConfig> = {}) {
@@ -183,15 +202,16 @@ export class InstagramResearcher {
   // ─── Low-level Safari helpers ──────────────────────────────
 
   private async executeJS(script: string): Promise<string> {
+    const target = await this.target();
     const tmpFile = path.join(os.tmpdir(), `safari_ig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
     const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
     const appleScript = `tell application "Safari"
-if URL of ${this.target()} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
-do JavaScript "${jsCode}" in ${this.target()}
+if URL of ${target} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
+do JavaScript "${jsCode}" in ${target}
 end tell`;
-    fs.writeFileSync(tmpFile, appleScript);
+    fs.writeFileSync(tmpFile, appleScript, { mode: 0o600 });
     try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
+      const { stdout } = await execFileAsync('osascript', [tmpFile], { timeout: this.config.timeout });
       return stdout.trim();
     } finally {
       try { fs.unlinkSync(tmpFile); } catch {}
@@ -201,10 +221,11 @@ end tell`;
   private async navigate(url: string): Promise<boolean> {
     try {
       if (new URL(url).origin !== 'https://www.instagram.com') throw new Error('Instagram research origin required');
+      const target = await this.target();
       const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await execFileAsync('osascript', ['-e', `tell application "Safari"
-if URL of ${this.target()} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
-set URL of ${this.target()} to "${safeUrl}"
+if URL of ${target} does not start with "https://www.instagram.com/" then error "Instagram research target origin changed"
+set URL of ${target} to "${safeUrl}"
 end tell`], { timeout: this.config.timeout });
       return true;
     } catch { return false; }

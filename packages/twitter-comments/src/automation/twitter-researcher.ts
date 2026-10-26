@@ -17,13 +17,14 @@
  *   smart waits, multi-selector fallbacks, retry with backoff.
  */
 
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -156,6 +157,8 @@ export function researchRelevance(text: string, author: string, niche: string): 
 
 export class TwitterResearcher {
   private config: ResearchConfig;
+  private targetWindowId: number | null = null;
+  private targetCreation: Promise<number> | null = null;
   private _trackedWindow: number | null = null;
   private _trackedTab: number | null = null;
 
@@ -164,35 +167,92 @@ export class TwitterResearcher {
   }
 
   setTrackedTab(windowIndex: number, tabIndex: number): void {
+    if (this.targetCreation || this.targetWindowId !== null) throw new Error('A bound Twitter research target cannot be retargeted');
+    if (!Number.isSafeInteger(windowIndex) || windowIndex <= 0 || !Number.isSafeInteger(tabIndex) || tabIndex <= 0) {
+      throw new Error('Explicit Twitter research target must identify a real window and tab');
+    }
     this._trackedWindow = windowIndex;
     this._trackedTab = tabIndex;
   }
 
   // ─── Low-level Safari helpers ──────────────────────────────
 
+  private async targetWindow(): Promise<number> {
+    if (this.targetWindowId !== null) return this.targetWindowId;
+    if (this._trackedWindow && this._trackedTab && !this.targetCreation) {
+      this.targetCreation = (async () => {
+        const { stdout } = await execFileAsync('osascript', ['-e', `tell application "Safari"
+set w to window ${this._trackedWindow}
+set u to URL of tab ${this._trackedTab} of w
+if not (u starts with "https://x.com/" or u starts with "https://www.x.com/" or u starts with "https://twitter.com/" or u starts with "https://www.twitter.com/") then error "Explicit Twitter target origin changed"
+return id of w
+end tell`], { timeout: this.config.timeout });
+        const id = Number(stdout.trim());
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Explicit Twitter window identity unavailable');
+        this.targetWindowId = id;
+        return id;
+      })();
+    }
+    if (!this.targetCreation) {
+      this.targetCreation = (async () => {
+        const { stdout } = await execFileAsync('osascript', ['-e', `
+tell application "Safari"
+  set previousWindow to missing value
+  if (count windows) > 0 then set previousWindow to id of front window
+  make new document with properties {URL:"https://x.com/"}
+  set researchWindow to id of front window
+  if previousWindow is not missing value then set index of window id previousWindow to 1
+  return researchWindow
+end tell`], { timeout: this.config.timeout });
+        const id = Number(stdout.trim());
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Safari did not return a research window identity');
+        this.targetWindowId = id;
+        console.log(`[Twitter] Bound research to Safari window id ${id}; unrelated tabs stay outside this target`);
+        return id;
+      })();
+    }
+    // A failed/closed target is never replaced by a foreground-tab fallback.
+    return this.targetCreation;
+  }
+
+  private targetGuard(id: number): string {
+    return `
+  if not (exists window id ${id}) then error "Twitter research window closed"
+  set researchWindow to window id ${id}
+  if (count tabs of researchWindow) is less than ${this._trackedTab || 1} then error "Twitter research tab inventory changed"
+  ${this._trackedTab ? "" : 'if (count tabs of researchWindow) is not 1 then error "Twitter research tab inventory changed"'}
+  set researchTab to tab ${this._trackedTab || 1} of researchWindow
+  set targetUrl to URL of researchTab
+  if not (targetUrl starts with "https://x.com/" or targetUrl starts with "https://www.x.com/" or targetUrl starts with "https://twitter.com/" or targetUrl starts with "https://www.twitter.com/") then error "Twitter research target changed origin"
+`;
+  }
+
   private async executeJS(script: string): Promise<string> {
-    const tmpFile = path.join(os.tmpdir(), `safari_research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.scpt`);
-    const jsCode = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const tabTarget = (this._trackedWindow && this._trackedTab)
-      ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-      : `current tab of front window`;
-    const appleScript = `tell application "Safari" to do JavaScript "${jsCode}" in ${tabTarget}`;
-    fs.writeFileSync(tmpFile, appleScript);
+    const id = await this.targetWindow();
+    const jsFile = path.join(os.tmpdir(), `safari_twitter_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.js`);
+    const scptFile = jsFile.replace('.js', '.scpt');
+    fs.writeFileSync(jsFile, script, { mode: 0o600 });
+    const appleScript = `tell application "Safari"\n${this.targetGuard(id)}\nset jsCode to read POSIX file "${jsFile}" as «class utf8»\ndo JavaScript jsCode in researchTab\nend tell`;
+    fs.writeFileSync(scptFile, appleScript, { mode: 0o600 });
     try {
-      const { stdout } = await execAsync(`osascript "${tmpFile}"`, { timeout: this.config.timeout });
+      const { stdout } = await execFileAsync('osascript', [scptFile], { timeout: this.config.timeout });
       return stdout.trim();
     } finally {
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(jsFile); } catch {}
+      try { fs.unlinkSync(scptFile); } catch {}
     }
   }
 
   private async navigate(url: string): Promise<boolean> {
     try {
-      const safeUrl = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const tabSpec = (this._trackedWindow && this._trackedTab)
-        ? `tab ${this._trackedTab} of window ${this._trackedWindow}`
-        : `current tab of front window`;
-      await execAsync(`osascript -e 'tell application "Safari" to set URL of ${tabSpec} to "${safeUrl}"'`);
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port
+          || !['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(parsed.hostname)) {
+        throw new Error('Twitter research navigation must stay at the Twitter origin');
+      }
+      const id = await this.targetWindow();
+      const safeUrl = parsed.href.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await execFileAsync('osascript', ['-e', `tell application "Safari"\n${this.targetGuard(id)}\nset URL of researchTab to "${safeUrl}"\nend tell`], { timeout: this.config.timeout });
       return true;
     } catch { return false; }
   }

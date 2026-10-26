@@ -430,9 +430,6 @@ function createResearcher(platform: Platform, config: Record<string, any> = {}) 
         outputDir,
         ...config,
       });
-      if (stableClaim) {
-        twitter.setTrackedTab(stableClaim.windowIndex, stableClaim.tabIndex);
-      }
       return twitter;
     case 'threads':
       return new ThreadsResearcher({
