@@ -16,6 +16,7 @@ import type {
   NavigationResult,
 } from './types.js';
 import { LINKEDIN_SELECTORS as SEL } from './types.js';
+import { canonicalLinkedInProfileUrl, classifyRelationship } from './relationship-policy.js';
 
 const LINKEDIN_NETWORK = 'https://www.linkedin.com/mynetwork/';
 const LINKEDIN_SEARCH = 'https://www.linkedin.com/search/results/people/';
@@ -34,11 +35,16 @@ export async function navigateToNetwork(driver?: SafariDriver): Promise<Navigati
 
 export async function navigateToProfile(profileUrl: string, driver?: SafariDriver): Promise<NavigationResult> {
   const d = driver || getDefaultDriver();
-  const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
+  const url = canonicalLinkedInProfileUrl(profileUrl);
+  if (!url) return { success: false, error: 'Invalid LinkedIn profile URL' };
   const success = await d.navigateTo(url);
   if (!success) return { success: false, error: 'Failed to navigate to profile' };
   await d.wait(3000);
-  return { success: true, currentUrl: await d.getCurrentUrl() };
+  const currentUrl = await d.getCurrentUrl();
+  if (canonicalLinkedInProfileUrl(currentUrl) !== url) {
+    return { success: false, currentUrl, error: 'LinkedIn profile navigation redirected or changed target' };
+  }
+  return { success: true, currentUrl };
 }
 
 // ─── Profile Extraction JS (Feb 2026 LinkedIn DOM) ──────────
@@ -210,48 +216,47 @@ export async function extractProfile(profileUrl: string, driver?: SafariDriver):
 
 export async function getConnectionStatus(profileUrl: string, driver?: SafariDriver): Promise<ConnectionStatus> {
   const d = driver || getDefaultDriver();
-  await navigateToProfile(profileUrl, d);
+  const nav = await navigateToProfile(profileUrl, d);
+  if (!nav.success) return classifyRelationship({ requestedProfileUrl: profileUrl });
   await d.humanDelay(2000, 3000);
+  return readCurrentConnectionStatus(profileUrl, d);
+}
 
+/** Reads only the requested profile's intro card; unknown or conflicting evidence fails closed. */
+export async function readCurrentConnectionStatus(profileUrl: string, driver?: SafariDriver): Promise<ConnectionStatus> {
+  const d = driver || getDefaultDriver();
   const statusJson = await d.executeJS(`
     (function() {
+      var scope = document.querySelector('main section.artdeco-card') || document.querySelector('main section');
+      if (!scope) return '{}';
       var canMessage = false, canConnect = false, pending = false, following = false;
-      // Check buttons
-      var btns = document.querySelectorAll('button');
+      var btns = scope.querySelectorAll('button, a');
       for (var i = 0; i < btns.length; i++) {
-        var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-        if (a.indexOf('message') !== -1) canMessage = true;
-        if (a.indexOf('connect') !== -1 || a.indexOf('invite') !== -1) canConnect = true;
+        if (!btns[i].getClientRects().length) continue;
+        var a = ((btns[i].getAttribute('aria-label') || '') + ' ' + (btns[i].innerText || '')).trim().toLowerCase();
+        var href = btns[i].getAttribute('href') || '';
+        if (/\\bmessage\\b/.test(a) || href.indexOf('/messaging/compose') !== -1) canMessage = true;
+        if (/^(connect|invite.*connect)\\b/.test(a) || href.indexOf('custom-invite') !== -1) canConnect = true;
         if (a.indexOf('pending') !== -1) pending = true;
         if (a.indexOf('following') !== -1) following = true;
       }
-      // Check anchors (LinkedIn Feb 2026 uses <a> for Connect/Message)
-      var anchors = document.querySelectorAll('a');
-      for (var j = 0; j < anchors.length; j++) {
-        var al = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
-        var ah = (anchors[j].href || '').toLowerCase();
-        if (al.indexOf('message') !== -1 || ah.indexOf('/messaging/compose') !== -1) canMessage = true;
-        if (al.indexOf('connect') !== -1 || al.indexOf('invite') !== -1 || ah.indexOf('custom-invite') !== -1) canConnect = true;
-      }
-
-      var status = 'not_connected';
-      if (canMessage && !canConnect) status = 'connected';
-      else if (pending) status = 'pending_sent';
-      else if (following) status = 'following';
-
+      var degree = scope.querySelector('.dist-value');
+      var canonical = document.querySelector('link[rel="canonical"]');
       return JSON.stringify({
-        status: status,
-        canMessage: canMessage,
-        canConnect: canConnect,
+        currentProfileUrl: window.location.href,
+        canonicalProfileUrl: canonical ? canonical.href : '',
+        degreeText: degree ? degree.innerText.trim() : '',
+        pending: pending, following: following,
+        canMessage: canMessage, canConnect: canConnect,
       });
     })()
   `);
 
   try {
     const raw = JSON.parse(statusJson || '{}');
-    return { profileUrl, ...raw };
+    return classifyRelationship({ ...raw, requestedProfileUrl: profileUrl });
   } catch {
-    return { profileUrl, status: 'not_connected', canMessage: false, canConnect: false };
+    return classifyRelationship({ requestedProfileUrl: profileUrl });
   }
 }
 
@@ -311,7 +316,8 @@ export async function sendConnectionRequest(
     if (request.skipIfPending) return { success: true, status: 'pending' };
     return { success: false, status: 'pending', reason: state.pending.label };
   }
-  if (state.message && !state.connect) {
+  const relationship = await readCurrentConnectionStatus(request.profileUrl, d);
+  if (relationship.status === 'connected') {
     if (request.skipIfConnected) return { success: true, status: 'already_connected' };
     return { success: false, status: 'already_connected' };
   }

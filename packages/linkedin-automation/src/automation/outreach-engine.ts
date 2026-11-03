@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SafariDriver, getDefaultDriver } from './safari-driver.js';
-import { sendConnectionRequest, searchPeople, scoreProfile } from './connection-operations.js';
+import { sendConnectionRequest, searchPeople, scoreProfile, getConnectionStatus } from './connection-operations.js';
 import { sendMessageToProfile, listConversations, openConversation } from './dm-operations.js';
 import type { SearchResult, LinkedInProfile, LeadScore, PeopleSearchConfig } from './types.js';
 
@@ -390,34 +390,9 @@ export async function runOutreachCycle(
     try {
       if (dry) continue;
       await d.humanDelay(1500, 3000);
-      // Navigate to their profile and check if Message button is now visible
-      await d.navigateTo(p.profileUrl);
-      await d.wait(3000);
-      const status = await d.executeJS(`
-        (function() {
-          var main = document.querySelector('main');
-          if (!main) return 'unknown';
-          var section = main.querySelector('section');
-          if (!section) return 'unknown';
-          // Check buttons
-          var btns = section.querySelectorAll('button');
-          for (var i = 0; i < btns.length; i++) {
-            var a = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-            if (a.includes('message')) return 'connected';
-            if (a.includes('pending')) return 'pending';
-          }
-          // Check anchors (LinkedIn Feb 2026 uses <a> for Message)
-          var anchors = section.querySelectorAll('a');
-          for (var j = 0; j < anchors.length; j++) {
-            var al = (anchors[j].getAttribute('aria-label') || '').toLowerCase();
-            var ah = (anchors[j].href || '').toLowerCase();
-            if (al.includes('message') || ah.indexOf('/messaging/compose') !== -1) return 'connected';
-          }
-          return 'not_connected';
-        })()
-      `);
+      const relationship = await getConnectionStatus(p.profileUrl, d);
       p.lastCheckedAt = new Date().toISOString();
-      if (status === 'connected') {
+      if (relationship.status === 'connected') {
         p.stage = 'connected';
         p.connectedAt = new Date().toISOString();
         p.nextFollowUpAt = addHours(p.connectedAt, campaign.timing.afterConnectedHours);

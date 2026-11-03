@@ -11,6 +11,8 @@ import type {
   NavigationResult,
 } from './types.js';
 import { LINKEDIN_SELECTORS as SEL } from './types.js';
+import { readCurrentConnectionStatus } from './connection-operations.js';
+import { canonicalLinkedInProfileUrl } from './relationship-policy.js';
 
 const LINKEDIN_MESSAGING = 'https://www.linkedin.com/messaging/';
 
@@ -358,7 +360,8 @@ export async function sendMessageToProfile(
   }
 
   // ── Step 2: Navigate to profile page ──
-  const url = profileUrl.startsWith('http') ? profileUrl : `https://www.linkedin.com/in/${profileUrl}/`;
+  const url = canonicalLinkedInProfileUrl(profileUrl);
+  if (!url) return { success: false, error: 'Invalid LinkedIn profile URL' };
   log(`Navigating to profile: ${url}`);
   await d.navigateTo(url);
 
@@ -388,6 +391,10 @@ export async function sendMessageToProfile(
   await d.wait(300);
 
   // ── Step 2a: Detect profile button state and persist to Supabase ──
+  const relationship = await readCurrentConnectionStatus(url, d);
+  if (relationship.status !== 'connected') {
+    return { success: false, error: 'Accepted 1st-degree connection could not be verified for this profile — message blocked' };
+  }
   const btnState = await detectProfileButtons(url, d);
   log(`Profile buttons — Message:${btnState.hasMessage} Connect:${btnState.hasConnect} Follow:${btnState.hasFollow} degree:${btnState.connectionDegree || '?'} raw:[${btnState.rawButtons.join(', ')}]`);
   // Premium-wall check will be done after attempting the Message button click (see Step 4).
