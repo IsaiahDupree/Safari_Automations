@@ -244,28 +244,31 @@ end tell`);
     optionText: string,
   ): Promise<void> {
     const deadline = Date.now() + 8_000;
-    let clicked: { ok: boolean } = { ok: false };
-    while (Date.now() < deadline && !clicked.ok) {
-      clicked = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+    let selected = false;
+    while (Date.now() < deadline && !selected) {
+      const state = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
         const control = document.querySelector(${jsLiteral(controlSelector)});
-        if (!control) return JSON.stringify({ok:false});
-        control.click();
-        return JSON.stringify({ok:true});
-      })()`)) as { ok: boolean };
-      if (!clicked.ok) await delay(400);
+        if (!control) return JSON.stringify({selected:false});
+        const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+        const expected = normalize(${jsLiteral(optionText)});
+        if (normalize(control.textContent) === expected) return JSON.stringify({selected:true});
+        const options = [...document.querySelectorAll('button.option')]
+          .filter(option => option.getClientRects().length);
+        if (!options.length) {
+          control.click();
+          return JSON.stringify({selected:false});
+        }
+        const matches = options.filter(option => normalize(option.textContent) === expected);
+        if (matches.length === 1) matches[0].click();
+        return JSON.stringify({selected:matches.length === 1, count:matches.length});
+      })()`)) as { selected: boolean; count?: number };
+      if (state.count !== undefined && state.count !== 1) {
+        throw new Error(`Expected one visible Printables option '${optionText}', found ${state.count}`);
+      }
+      selected = state.selected;
+      if (!selected) await delay(400);
     }
-    if (!clicked.ok) throw new Error(`Could not open Printables option control ${controlSelector}`);
-    await delay(500);
-    const selected = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
-      const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
-      const expected = normalize(${jsLiteral(optionText)});
-      const matches = [...document.querySelectorAll('button.option')]
-        .filter(el => el.getClientRects().length && normalize(el.textContent) === expected);
-      if (matches.length !== 1) return JSON.stringify({ok:false, count:matches.length});
-      matches[0].click();
-      return JSON.stringify({ok:true});
-    })()`)) as { ok: boolean; count?: number };
-    if (!selected.ok) throw new Error(`Expected one visible Printables option '${optionText}', found ${selected.count}`);
+    if (!selected) throw new Error(`Could not select Printables option '${optionText}'`);
   }
 
   private async focusAndCoordinate(
@@ -349,6 +352,18 @@ end tell`);
     sources: Array<{ title: string; author: string; url: string }>,
   ): Promise<void> {
     for (const source of sources) {
+      const url = new URL(source.url);
+      const modelId = url.hostname === 'www.printables.com'
+        ? /^\/model\/(\d+)(?:[-/]|$)/.exec(url.pathname)?.[1]
+        : undefined;
+      const matchesLink = `(href) => {
+        const link = new URL(href);
+        return link.hostname === ${jsLiteral(url.hostname)} && ${modelId
+          ? `link.pathname.match(/^\\/model\\/(\\d+)(?:[-/]|$)/)?.[1] === ${jsLiteral(modelId)}`
+          : `link.pathname.replace(/\\/$/, '') === ${jsLiteral(url.pathname.replace(/\/$/, ''))}`};
+      }`;
+      const isSelected = `() => [...document.querySelectorAll('a[href]')].some(anchor =>
+        anchor.target === '_blank' && (${matchesLink})(anchor.href))`;
       const availableDeadline = Date.now() + 10_000;
       let available = false;
       while (Date.now() < availableDeadline && !available) {
@@ -358,72 +373,59 @@ end tell`);
         if (!available) await delay(300);
       }
       if (!available) throw new Error('Printables remix-source field is unavailable');
+      if (JSON.parse(await this.javascript(windowId, tabIndex, `JSON.stringify((${isSelected})())`))) continue;
 
-      await this.javascript(windowId, tabIndex, `(() => {
+      await this.focusAndCoordinate(windowId, tabIndex, selector);
+      const searchTerm = modelId ? source.title : source.url;
+      const entered = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
         const input = document.querySelector(${jsLiteral(selector)});
-        if (!(input instanceof HTMLInputElement)) return JSON.stringify({ok:false});
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-        setter.call(input, ${jsLiteral(source.url)});
+        if (!(input instanceof HTMLInputElement)) return JSON.stringify(false);
         input.focus();
-        input.dispatchEvent(new Event('input', {bubbles:true}));
-        input.dispatchEvent(new Event('change', {bubbles:true}));
-        return JSON.stringify({ok:true});
-      })()`);
+        if (input.value === ${jsLiteral(searchTerm)}) {
+          input.select();
+          document.execCommand('delete');
+        }
+        input.select();
+        document.execCommand('insertText', false, ${jsLiteral(searchTerm)});
+        return JSON.stringify(document.activeElement === input && input.value === ${jsLiteral(searchTerm)});
+      })()`));
+      if (!entered) throw new Error(`Could not enter Printables remix source: ${source.url}`);
 
       const suggestionDeadline = Date.now() + 15_000;
-      let suggestionReady = false;
-      while (Date.now() < suggestionDeadline && !suggestionReady) {
-        const state = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
+      let clicked = false;
+      while (Date.now() < suggestionDeadline && !clicked) {
+        const result = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
           const input = document.querySelector(${jsLiteral(selector)});
-          const text = document.body?.innerText || '';
-          return JSON.stringify({
-            focused:document.activeElement === input,
-            exactValue:input?.value === ${jsLiteral(source.url)},
-            hasTitle:text.includes(${jsLiteral(source.title)}),
-            hasAuthor:text.includes(${jsLiteral(source.author)})
+          if (document.activeElement !== input || input.value !== ${jsLiteral(searchTerm)}) return JSON.stringify(0);
+          const normalize = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+          const candidates = [...document.querySelectorAll('[role="option"], a[href]')].filter(option => {
+            if (!option.getClientRects().length) return false;
+            if (option instanceof HTMLAnchorElement) {
+              const text = normalize(option.textContent);
+              return (${matchesLink})(option.href) && text.includes(normalize(${jsLiteral(source.title)}))
+                && text.includes(normalize(${jsLiteral(source.author)}));
+            }
+            const title = normalize(option.querySelector('h6')?.textContent);
+            const author = normalize(option.querySelector('.author')?.textContent).replace(/^by /, '');
+            const imagePath = option.querySelector('img')?.getAttribute('src') || '';
+            return ${Boolean(modelId)} && imagePath.includes(${jsLiteral(`/media/prints/${modelId}/`)})
+              && title === normalize(${jsLiteral(source.title)}) && author === normalize(${jsLiteral(source.author)});
           });
-        })()`)) as { focused: boolean; exactValue: boolean; hasTitle: boolean; hasAuthor: boolean };
-        suggestionReady = state.focused && state.exactValue && state.hasTitle && state.hasAuthor;
-        if (!suggestionReady) await delay(350);
+          if (candidates.length === 1) candidates[0].click();
+          return JSON.stringify(candidates.length);
+        })()`)) as number;
+        if (result > 1) throw new Error(`Printables returned ambiguous remix suggestions for ${source.url}`);
+        clicked = result === 1;
+        if (!clicked) await delay(350);
       }
-      if (!suggestionReady) throw new Error(`Printables did not resolve remix source: ${source.url}`);
-
-      const clicked = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
-        const expected = new URL(${jsLiteral(source.url)});
-        const modelMatch = expected.hostname === 'www.printables.com'
-          ? expected.pathname.match(/^\\/model\\/(\\d+)/)
-          : null;
-        const candidates = [...document.querySelectorAll('a[href]')].filter(anchor => {
-          if (!anchor.getClientRects().length) return false;
-          const link = new URL(anchor.href);
-          const hrefMatches = modelMatch
-            ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
-            : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, '');
-          const text = anchor.textContent || '';
-          return hrefMatches && text.includes(${jsLiteral(source.title)}) && text.includes(${jsLiteral(source.author)});
-        });
-        if (candidates.length !== 1) return JSON.stringify({ok:false,count:candidates.length});
-        candidates[0].click();
-        return JSON.stringify({ok:true});
-      })()`)) as { ok: boolean; count?: number };
-      if (!clicked.ok) {
-        throw new Error(`Expected one exact Printables remix-source suggestion for ${source.url}, found ${clicked.count}`);
-      }
+      if (!clicked) throw new Error(`Printables did not resolve remix source: ${source.url}`);
 
       const selectedDeadline = Date.now() + 12_000;
       let selected = false;
       while (Date.now() < selectedDeadline && !selected) {
         const selection = JSON.parse(await this.javascript(windowId, tabIndex, `(() => {
-          const expected = new URL(${jsLiteral(source.url)});
-          const modelMatch = expected.hostname === 'www.printables.com'
-            ? expected.pathname.match(/^\\/model\\/(\\d+)/)
-            : null;
-          const links = [...document.querySelectorAll('a[href]')].map(anchor => new URL(anchor.href));
-          const found = links.some(link => modelMatch
-            ? link.hostname === expected.hostname && link.pathname.startsWith('/model/' + modelMatch[1])
-            : link.hostname === expected.hostname && link.pathname.replace(/\\/$/, '') === expected.pathname.replace(/\\/$/, ''));
           const input = document.querySelector(${jsLiteral(selector)});
-          return JSON.stringify({found, cleared:!input?.value});
+          return JSON.stringify({found:(${isSelected})(), cleared:!input?.value});
         })()`)) as { found: boolean; cleared: boolean };
         selected = selection.found && selection.cleared;
         if (!selected) await delay(350);
